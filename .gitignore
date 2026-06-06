@@ -1,7 +1,0 @@
-.env
-.DS_Store
-*.log
-secrets/
-tmp/
-.hermes/
-.worktrees/
