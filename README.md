@@ -1,22 +1,8 @@
 # Hermes Remote Ops
 
-Small operator workspace for managing Hermes Agent installations on remote Macs over SSH/Tailscale.
+Small operator repo for managing a Hermes Agent on a remote Mac over SSH/Tailscale.
 
 It is designed for the workflow used with `bobeen-macbookpro-2`: check whether Hermes is online, install/verify `computer_use`, initialize Kanban, restart the gateway, and inspect Discord thread work from logs.
-
-## Layout
-
-```text
-bin/                         stable command wrappers
-packages/hermes-remote-cli/  reusable CLI package
-projects/                    one non-secret env profile per Hermes target
-repos/                       optional per-project notes or checkout inventory
-docs/                        operational references
-```
-
-Use `projects/*.env` for each remote Hermes target. Use `repos/` for project-specific notes when several app/site repos are operated through the same remote Hermes agent.
-
-The workspace also has a tiny `package.json` so more packages can be added under `packages/*` later without changing the top-level command shape.
 
 ## Quick Start
 
@@ -26,13 +12,6 @@ Agent/Claude operators should read `AGENTS.md` first. `CLAUDE.md` points Claude-
 cp config/example.env .env
 bin/hermes-remote check-ssh
 bin/hermes-remote status
-```
-
-Or select a project profile explicitly:
-
-```bash
-bin/hermes-remote --project bobeen status
-bin/hermes-remote --project bobeen is-working 1512384300689916064
 ```
 
 Default config expects this local SSH alias:
@@ -50,10 +29,6 @@ Host bobeen
 ```bash
 # Full status: gateway, computer_use, Kanban, dashboard, processes.
 bin/hermes-remote status
-
-# List project profiles and show active config.
-bin/hermes-remote projects
-bin/hermes-remote --project bobeen config
 
 # Install and wire Hermes computer_use on the remote Mac.
 bin/hermes-remote setup-computer-use

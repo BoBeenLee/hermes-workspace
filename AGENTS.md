@@ -1,18 +1,8 @@
 # Hermes Remote Ops Agent Guide
 
-This directory contains a small SSH-first operations workspace for managing one or more remote Hermes Agent targets.
+This directory contains a small SSH-first operations toolkit for managing the remote Hermes Agent running on the Hermes MacBook.
 
 Use this guide before changing files in `hermes-remote-ops/` or operating the remote Mac.
-
-## Workspace Layout
-
-- `bin/`: stable wrappers users call directly.
-- `packages/hermes-remote-cli/`: reusable CLI implementation.
-- `projects/`: non-secret `.env` profiles, one per remote Hermes target.
-- `repos/`: optional per-project notes or checkout inventory for app/site repos operated by Hermes.
-- `docs/`: workflow references.
-
-Keep shared behavior in `packages/hermes-remote-cli/`. Keep target-specific host/path settings in `projects/*.env`.
 
 ## Source Context
 
@@ -31,7 +21,7 @@ Important language from the plan:
 
 ## Current Default Target
 
-Default values live in `config/example.env` and can be overridden by a local `.env` or project profile.
+Default values live in `config/example.env` and can be overridden by a local `.env`.
 
 - SSH alias: `bobeen`
 - Remote user: `bobeenlee`
@@ -40,7 +30,7 @@ Default values live in `config/example.env` and can be overridden by a local `.e
 - Remote CuaDriver command: `/Users/bobeenlee/.local/bin/cua-driver`
 - Remote Hermes config: `/Users/bobeenlee/.hermes/config.yaml`
 
-Do not commit `.env`; it is intentionally ignored. Project profiles under `projects/*.env` may be committed only when they contain host/path metadata and no secrets.
+Do not commit `.env`; it is intentionally ignored.
 
 ## Safety Rules
 
@@ -62,42 +52,11 @@ bin/hermes-remote check-ssh
 bin/hermes-remote status
 ```
 
-For a named target:
-
-```bash
-bin/hermes-remote --project bobeen check-ssh
-bin/hermes-remote --project bobeen status
-```
-
 If SSH fails:
 
 - Check Tailscale status from the Control MacBook.
 - Try the configured SSH alias before changing config.
 - Remember that VNC/Screen Sharing can be reachable while SSH is temporarily slow or unavailable.
-
-## Adding Another Hermes Target
-
-1. Copy `projects/example.env` to `projects/<name>.env`.
-2. Fill in SSH alias, remote home, Hermes command, CuaDriver command, and config path.
-3. Verify with:
-
-```bash
-bin/hermes-remote --project <name> check-ssh
-bin/hermes-remote --project <name> status
-```
-
-Do not put provider keys or OAuth tokens in the project profile. Those belong in the remote Hermes home, not this repo.
-
-## Adding Project/Repo Notes
-
-When a remote Hermes agent works on multiple product repos, add a small note under `repos/<project-name>/README.md` that records:
-
-- remote checkout path
-- deploy/build command
-- relevant Discord channel/thread
-- owning Hermes target profile
-
-Do not vendor cloned repositories into `repos/` unless the user explicitly wants them committed here.
 
 ## Computer Use Workflow
 
@@ -189,9 +148,8 @@ For script edits:
 
 ```bash
 bash -n bin/hermes-remote
-bash -n packages/hermes-remote-cli/bin/hermes-remote
-bin/hermes-remote --project bobeen check-ssh
-bin/hermes-remote --project bobeen status
+bin/hermes-remote check-ssh
+bin/hermes-remote status
 ```
 
 For docs-only edits, at least inspect changed files and run:
@@ -204,5 +162,4 @@ git diff -- hermes-remote-ops
 
 - Keep `.env` untracked.
 - Stage only intentional files under `hermes-remote-ops/` unless the user asked for broader changes.
-- When changing structure, preserve `bin/hermes-remote` as the stable entrypoint.
 - Existing untracked files elsewhere in the repo may belong to the user; do not remove or stage them accidentally.
