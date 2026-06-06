@@ -1,6 +1,6 @@
 # Hermes Remote Ops Agent Guide
 
-This directory contains a small SSH-first operations toolkit for managing the remote Hermes Agent running on the Hermes MacBook.
+This directory contains an SSH-first operations toolkit for managing the remote Hermes Agent running on the Hermes MacBook.
 
 Use this guide before changing files in `hermes-remote-ops/` or operating the remote Mac.
 
@@ -8,9 +8,11 @@ Use this guide before changing files in `hermes-remote-ops/` or operating the re
 
 The operating model comes from:
 
-- `../docs/plans/36-macbook-remote-hermes-agent.md`
-- `../docs/hermes-agent.md`
-- `../CONTEXT.md`
+- `CONTEXT.md`
+- `docs/workspace-lifecycle.md`
+- `docs/research-workflow.md`
+- `docs/discord-thread-triage.md`
+- migrated historical plans under `docs/plans/` when they are present after repo promotion
 
 Important language from the plan:
 
@@ -18,6 +20,8 @@ Important language from the plan:
 - **Hermes MacBook**: the remote Mac that runs NousResearch `hermes-agent`.
 - **Hermes agent**: the per-user Hermes install at `~/.hermes/hermes-agent`, with config/data/logs under `~/.hermes` and command wrapper at `~/.local/bin/hermes`.
 - **Remote access path**: SSH key access from Control MacBook to Hermes MacBook. Tailscale/LAN aliases are access paths, not application state.
+- **Workspace Lifecycle module**: the interface every Hermes task follows before it is reported as `done` or `review-required`.
+- **Research Analysis module**: the interface for market research and analysis work, including brief, source ledger, notes, and report artifacts.
 
 ## Current Default Target
 
@@ -29,6 +33,7 @@ Default values live in `config/example.env` and can be overridden by a local `.e
 - Remote Hermes command: `/Users/bobeenlee/.local/bin/hermes`
 - Remote CuaDriver command: `/Users/bobeenlee/.local/bin/cua-driver`
 - Remote Hermes config: `/Users/bobeenlee/.hermes/config.yaml`
+- Canonical remote workspace: `/Users/bobeenlee/Workspaces/hermes-remote-ops`
 
 Do not commit `.env`; it is intentionally ignored.
 
@@ -41,6 +46,8 @@ Do not commit `.env`; it is intentionally ignored.
 - Use user-level Hermes/launchd commands. Do not introduce root/system-level daemons unless a user explicitly asks.
 - Do not remove remote access keys or stop the gateway unless the user asks or the rollback task requires it.
 - macOS `computer_use` permissions cannot be fully automated. `grant-computer-use` opens the flow; the user may need to approve CuaDriver in System Settings.
+- Never mark script, remote config, gateway, key/auth, or recurring automation changes as fully done without human review. Use `review-required`.
+- For research-based tasks, keep a source ledger and do not present current market, product, pricing, legal, or policy claims without web verification.
 
 ## Core Workflow
 
@@ -51,6 +58,15 @@ cd /Users/mac_al03241161/Documents/mygit/bbl-ai-lab/hermes-remote-ops
 bin/hermes-remote check-ssh
 bin/hermes-remote status
 ```
+
+Start every Hermes repo task by applying `docs/workspace-lifecycle.md`:
+
+- choose the task type
+- use the canonical workspace root
+- work in an isolated branch/worktree
+- produce the required outputs
+- run task-specific checks
+- finish as `done` or `review-required`
 
 If SSH fails:
 
@@ -116,6 +132,21 @@ Interpretation:
 - Done: `response ready` followed by `Sending response`, no worker process, Kanban `running 0`.
 - Failed or incomplete: response exists but `errors.log` or `agent.log` shows tool/provider failures such as missing `brew`, failed deploy command, provider quota, or browser navigation errors.
 
+## Market Research and Analysis
+
+Use this when Hermes is asked for market research, competitive analysis, product analysis, pricing checks, legal/policy scans, or trend reports.
+
+Required artifact layout:
+
+```text
+research/briefs/<YYYY-MM-DD>-<slug>.md
+research/sources/<YYYY-MM-DD>-<slug>.jsonl
+research/notes/<YYYY-MM-DD>-<slug>.md
+reports/<YYYY-MM-DD>-<slug>.md
+```
+
+Follow `docs/research-workflow.md`. Latest information, market trends, prices, laws, policies, product comparisons, and recommendations require web verification. Report-only work can be `done`; data collection scripts, recurring automation, or remote config changes must be `review-required`.
+
 ## Gateway Operations
 
 After config changes:
@@ -155,7 +186,8 @@ bin/hermes-remote status
 For docs-only edits, at least inspect changed files and run:
 
 ```bash
-git diff -- hermes-remote-ops
+rg -n "Workspace Lifecycle|Research Analysis|review-required|source ledger" .
+git diff -- .
 ```
 
 ## Commit Hygiene

@@ -1,8 +1,8 @@
 # Hermes Remote Ops
 
-Small operator repo for managing a Hermes Agent on a remote Mac over SSH/Tailscale.
+Operator repo for managing a Hermes Agent on a remote Mac over SSH/Tailscale.
 
-It is designed for the workflow used with `bobeen-macbookpro-2`: check whether Hermes is online, install/verify `computer_use`, initialize Kanban, restart the gateway, and inspect Discord thread work from logs.
+It is designed for the workflow used with `bobeen-macbookpro-2`: check whether Hermes is online, install/verify `computer_use`, initialize Kanban, restart the gateway, inspect Discord thread work from logs, and keep Hermes work inside a git-backed workspace lifecycle.
 
 ## Quick Start
 
@@ -12,6 +12,21 @@ Agent/Claude operators should read `AGENTS.md` first. `CLAUDE.md` points Claude-
 cp config/example.env .env
 bin/hermes-remote check-ssh
 bin/hermes-remote status
+```
+
+The canonical remote workspace for Hermes work is:
+
+```text
+/Users/bobeenlee/Workspaces/hermes-remote-ops
+```
+
+Hermes should use this config shape:
+
+```yaml
+terminal:
+  cwd: "/Users/bobeenlee/Workspaces/hermes-remote-ops"
+
+worktree: true
 ```
 
 Default config expects this local SSH alias:
@@ -54,6 +69,27 @@ bin/hermes-remote tail-thread 1512384300689916064
 
 # Run a one-shot Hermes prompt remotely.
 bin/hermes-remote run "Use computer_use to report two visible apps."
+```
+
+## Workspace Lifecycle
+
+All Hermes tasks should pass through the Workspace Lifecycle module documented in [docs/workspace-lifecycle.md](docs/workspace-lifecycle.md).
+
+Task types:
+
+- `ops-change`
+- `remote-config`
+- `incident-triage`
+- `market-research`
+- `analysis-report`
+
+Each task leaves a completion note with the branch/worktree, changed files or report path, tests/checks, source ledger when research-based, and completion mode: `done` or `review-required`.
+
+Market research and analysis tasks use the Research Analysis module in [docs/research-workflow.md](docs/research-workflow.md). Research-based work writes briefs, source ledgers, notes, and reports under:
+
+```text
+research/
+reports/
 ```
 
 ## Notes

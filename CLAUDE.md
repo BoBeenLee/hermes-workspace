@@ -10,4 +10,6 @@ bin/hermes-remote check-ssh
 bin/hermes-remote status
 ```
 
+For repo work, follow `docs/workspace-lifecycle.md`. For market research or analysis, follow `docs/research-workflow.md` and keep a source ledger.
+
 Do not commit `.env`, SSH keys, API keys, OAuth tokens, Discord tokens, or copied remote Hermes secret files.
