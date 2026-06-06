@@ -1,8 +1,8 @@
-# Hermes Remote Ops
+# Hermes Workspace
 
-Operator repo for managing a Hermes Agent on a remote Mac over SSH/Tailscale.
+Workspace and SSH-first ops hub for managing the remote Hermes Agent.
 
-It is designed for the workflow used with `bobeen-macbookpro-2`: check whether Hermes is online, install/verify `computer_use`, initialize Kanban, restart the gateway, inspect Discord thread work from logs, and keep Hermes work inside a git-backed workspace lifecycle.
+It is designed for the workflow used with `bobeen-macbookpro-2`: give the remote Hermes Agent a git-backed work management repository, preserve task and research artifacts, check whether Hermes is online, install/verify `computer_use`, initialize Kanban, restart the gateway, and inspect Discord thread work from logs.
 
 ## Quick Start
 
@@ -17,14 +17,14 @@ bin/hermes-remote status
 The canonical remote workspace for Hermes work is:
 
 ```text
-/Users/bobeenlee/Workspaces/hermes-remote-ops
+/Users/bobeenlee/Workspaces/hermes-workspace
 ```
 
 Hermes should use this config shape:
 
 ```yaml
 terminal:
-  cwd: "/Users/bobeenlee/Workspaces/hermes-remote-ops"
+  cwd: "/Users/bobeenlee/Workspaces/hermes-workspace"
 
 worktree: true
 ```
@@ -95,5 +95,5 @@ reports/
 ## Notes
 
 - The repo does not store SSH keys, provider keys, Discord tokens, or Hermes secrets.
-- Remote config changes are backed up under `~/.hermes/config.yaml.bak-remote-ops-*`.
+- Remote config changes are backed up under `~/.hermes/config.yaml.bak-*`.
 - The script assumes the remote Hermes wrapper is at `/Users/bobeenlee/.local/bin/hermes`; change `.env` for another Mac.

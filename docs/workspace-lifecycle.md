@@ -7,14 +7,14 @@ The Workspace Lifecycle module is the deep interface for Hermes work in this rep
 The remote Hermes workspace is:
 
 ```text
-/Users/bobeenlee/Workspaces/hermes-remote-ops
+/Users/bobeenlee/Workspaces/hermes-workspace
 ```
 
 Hermes should run from that repo root and use git worktree isolation:
 
 ```yaml
 terminal:
-  cwd: "/Users/bobeenlee/Workspaces/hermes-remote-ops"
+  cwd: "/Users/bobeenlee/Workspaces/hermes-workspace"
 
 worktree: true
 ```
@@ -22,7 +22,7 @@ worktree: true
 For one-shot CLI work:
 
 ```bash
-cd /Users/bobeenlee/Workspaces/hermes-remote-ops
+cd /Users/bobeenlee/Workspaces/hermes-workspace
 hermes -w
 ```
 

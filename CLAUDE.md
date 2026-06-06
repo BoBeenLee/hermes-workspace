@@ -5,7 +5,7 @@ Follow `AGENTS.md` in this directory for Hermes remote operations.
 Quick start:
 
 ```bash
-cd /Users/mac_al03241161/Documents/mygit/bbl-ai-lab/hermes-remote-ops
+cd /Users/mac_al03241161/Documents/mygit/hermes-workspace
 bin/hermes-remote check-ssh
 bin/hermes-remote status
 ```

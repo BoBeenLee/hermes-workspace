@@ -1,8 +1,8 @@
-# Hermes Remote Ops Agent Guide
+# Hermes Workspace Agent Guide
 
-This directory contains an SSH-first operations toolkit for managing the remote Hermes Agent running on the Hermes MacBook.
+This repo is the git-backed workspace and SSH-first operations hub for the remote Hermes Agent running on the Hermes MacBook.
 
-Use this guide before changing files in `hermes-remote-ops/` or operating the remote Mac.
+Use this guide before changing files in `hermes-workspace/`, creating task artifacts, or operating the remote Mac.
 
 ## Source Context
 
@@ -33,7 +33,7 @@ Default values live in `config/example.env` and can be overridden by a local `.e
 - Remote Hermes command: `/Users/bobeenlee/.local/bin/hermes`
 - Remote CuaDriver command: `/Users/bobeenlee/.local/bin/cua-driver`
 - Remote Hermes config: `/Users/bobeenlee/.hermes/config.yaml`
-- Canonical remote workspace: `/Users/bobeenlee/Workspaces/hermes-remote-ops`
+- Canonical remote workspace: `/Users/bobeenlee/Workspaces/hermes-workspace`
 
 Do not commit `.env`; it is intentionally ignored.
 
@@ -54,7 +54,7 @@ Do not commit `.env`; it is intentionally ignored.
 Start every remote operations session with:
 
 ```bash
-cd /Users/mac_al03241161/Documents/mygit/bbl-ai-lab/hermes-remote-ops
+cd /Users/mac_al03241161/Documents/mygit/hermes-workspace
 bin/hermes-remote check-ssh
 bin/hermes-remote status
 ```
@@ -193,5 +193,5 @@ git diff -- .
 ## Commit Hygiene
 
 - Keep `.env` untracked.
-- Stage only intentional files under `hermes-remote-ops/` unless the user asked for broader changes.
+- Stage only intentional files in this repo unless the user asked for broader changes.
 - Existing untracked files elsewhere in the repo may belong to the user; do not remove or stage them accidentally.
