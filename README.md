@@ -67,6 +67,17 @@ config/targets/linux-example.env
 
 Each profile defines the SSH host, remote home, OS, service manager, computer-use backend, Hermes config path, and workspace root. Local `.env` is optional and only overrides the selected profile on the current control machine.
 
+## GitHub Pages
+
+The landing page source lives under `pages/` on `main`:
+
+```text
+pages/index.html
+pages/styles/main.css
+```
+
+The published GitHub Pages branch is `gh-pages` from `/`, where the same static files are served as root `index.html` and `styles/main.css`.
+
 ## Remote Ops Commands
 
 ```bash
