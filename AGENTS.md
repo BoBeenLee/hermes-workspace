@@ -1,8 +1,11 @@
 # Hermes Workspace Agent Guide
 
-This repo is the git-backed workspace and SSH-first operations hub for the remote Hermes Agent running on the Hermes MacBook.
+This repo has two roles:
 
-Use this guide before changing files in `hermes-workspace/`, creating task artifacts, or operating the remote Mac.
+- **Control-side remote ops**: SSH-first tooling used from the Control MacBook to operate the Hermes MacBook.
+- **Hermes-side workspace**: the git-backed workspace used by the remote Hermes agent for task artifacts, reports, research, and repo-local work.
+
+Use this guide before changing files in `hermes-workspace/`, creating task artifacts, or operating the remote Mac. First decide which role you are acting in.
 
 ## Source Context
 
@@ -37,21 +40,16 @@ Default values live in `config/example.env` and can be overridden by a local `.e
 
 Do not commit `.env`; it is intentionally ignored.
 
-## Safety Rules
+## Shared Safety Rules
 
 - Never commit SSH private keys, provider API keys, OAuth tokens, Discord tokens, `.env` files, or remote Hermes secrets.
 - Treat `~/.hermes/.env`, `~/.hermes/auth.json`, and provider config output as sensitive. Summarize status without copying secrets.
-- Prefer `bin/hermes-remote` commands over ad hoc SSH because the script captures the expected paths and backup behavior.
-- Before editing remote `~/.hermes/config.yaml`, create or rely on a timestamped backup.
-- Use user-level Hermes/launchd commands. Do not introduce root/system-level daemons unless a user explicitly asks.
-- Do not remove remote access keys or stop the gateway unless the user asks or the rollback task requires it.
-- macOS `computer_use` permissions cannot be fully automated. `grant-computer-use` opens the flow; the user may need to approve CuaDriver in System Settings.
 - Never mark script, remote config, gateway, key/auth, or recurring automation changes as fully done without human review. Use `review-required`.
 - For research-based tasks, keep a source ledger and do not present current market, product, pricing, legal, or policy claims without web verification.
 
-## Core Workflow
+## Control-Side Remote Ops
 
-Start every remote operations session with:
+Use this role when operating from the Control MacBook. Start every remote operations session with:
 
 ```bash
 cd /Users/mac_al03241161/Documents/mygit/hermes-workspace
@@ -59,7 +57,23 @@ bin/hermes-remote check-ssh
 bin/hermes-remote status
 ```
 
-Start every Hermes repo task by applying `docs/workspace-lifecycle.md`:
+Remote ops rules:
+
+- Prefer `bin/hermes-remote` commands over ad hoc SSH because the script captures expected paths and backup behavior.
+- Before editing remote `~/.hermes/config.yaml`, create or rely on a timestamped backup.
+- Use user-level Hermes/launchd commands. Do not introduce root/system-level daemons unless a user explicitly asks.
+- Do not remove remote access keys or stop the gateway unless the user asks or the rollback task requires it.
+- macOS `computer_use` permissions cannot be fully automated. `grant-computer-use` opens the flow; the user may need to approve CuaDriver in System Settings.
+
+If SSH fails:
+
+- Check Tailscale status from the Control MacBook.
+- Try the configured SSH alias before changing config.
+- Remember that VNC/Screen Sharing can be reachable while SSH is temporarily slow or unavailable.
+
+## Hermes-Side Workspace Work
+
+Use this role when the remote Hermes agent is handling a task from Discord, CLI, Kanban, or another gateway surface. Start every Hermes repo task by applying `docs/workspace-lifecycle.md`:
 
 - choose the task type
 - use the canonical workspace root
@@ -68,15 +82,16 @@ Start every Hermes repo task by applying `docs/workspace-lifecycle.md`:
 - run task-specific checks
 - finish as `done` or `review-required`
 
-If SSH fails:
+Workspace rules:
 
-- Check Tailscale status from the Control MacBook.
-- Try the configured SSH alias before changing config.
-- Remember that VNC/Screen Sharing can be reachable while SSH is temporarily slow or unavailable.
+- Do not treat general chat, standalone news questions, or casual Q&A as repo work unless the user asks for a repo artifact or operation.
+- Before using `session_search`, decide whether the user is continuing prior work or asking a standalone question. Discard search results that conflict with the current user intent.
+- Stop after two repeated failures from the same external CLI/API path and report the blocker instead of trying command variants until the turn budget is exhausted.
+- Report-only research can finish as `done`; code, scripts, remote config, recurring automation, gateway operations, and key/auth changes finish as `review-required`.
 
 ## Computer Use Workflow
 
-Use this when the remote Hermes agent needs macOS desktop control.
+Use this from the Control-side remote ops role when the remote Hermes agent needs macOS desktop control.
 
 ```bash
 bin/hermes-remote setup-computer-use
@@ -96,7 +111,7 @@ Known gotcha from prior setup: non-interactive SSH may not load `~/.local/bin`. 
 
 ## Kanban Workflow
 
-Use this when the remote Hermes agent should support durable tasks.
+Use this from the Control-side remote ops role when the remote Hermes agent should support durable tasks.
 
 ```bash
 bin/hermes-remote setup-kanban
@@ -134,7 +149,7 @@ Interpretation:
 
 ## Market Research and Analysis
 
-Use this when Hermes is asked for market research, competitive analysis, product analysis, pricing checks, legal/policy scans, or trend reports.
+Use this from the Hermes-side workspace role when Hermes is asked for market research, competitive analysis, product analysis, pricing checks, legal/policy scans, or trend reports.
 
 Required artifact layout:
 

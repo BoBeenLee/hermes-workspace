@@ -6,13 +6,30 @@ It is designed for the workflow used with `bobeen-macbookpro-2`: give the remote
 
 ## Quick Start
 
-Agent/Claude operators should read `AGENTS.md` first. `CLAUDE.md` points Claude-style agents to the same guide.
+Agent/Claude operators should read `AGENTS.md` first. This repo has two roles:
+
+- **Control-side remote ops**: run `bin/hermes-remote` from the Control MacBook to inspect or operate the Hermes MacBook.
+- **Hermes-side workspace work**: let the remote Hermes agent use this repo as its default working directory for tasks, reports, and research artifacts.
+
+### Control-Side Remote Ops
 
 ```bash
 cp config/example.env .env
 bin/hermes-remote check-ssh
 bin/hermes-remote status
 ```
+
+Default config expects this local SSH alias:
+
+```sshconfig
+Host bobeen
+  HostName 100.89.89.70
+  User bobeenlee
+  IdentityFile ~/.ssh/id_ed25519_bobeenlee_nopass
+  IdentitiesOnly yes
+```
+
+### Hermes-Side Workspace
 
 The canonical remote workspace for Hermes work is:
 
@@ -29,17 +46,7 @@ terminal:
 worktree: true
 ```
 
-Default config expects this local SSH alias:
-
-```sshconfig
-Host bobeen
-  HostName 100.89.89.70
-  User bobeenlee
-  IdentityFile ~/.ssh/id_ed25519_bobeenlee_nopass
-  IdentitiesOnly yes
-```
-
-## Common Commands
+## Remote Ops Commands
 
 ```bash
 # Full status: gateway, computer_use, Kanban, dashboard, processes.
@@ -73,7 +80,7 @@ bin/hermes-remote run "Use computer_use to report two visible apps."
 
 ## Workspace Lifecycle
 
-All Hermes tasks should pass through the Workspace Lifecycle module documented in [docs/workspace-lifecycle.md](docs/workspace-lifecycle.md).
+All Hermes-side workspace tasks should pass through the Workspace Lifecycle module documented in [docs/workspace-lifecycle.md](docs/workspace-lifecycle.md).
 
 Task types:
 
