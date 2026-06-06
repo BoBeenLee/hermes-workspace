@@ -37,7 +37,7 @@ Target defaults live in `config/targets/<target>.env` and can be overridden by a
 - Default target: `bobeen-mac`
 - Default SSH alias: `bobeen`
 - Default remote user: `bobeenlee`
-- Default Tailscale IP observed in prior setup: `100.89.89.70`
+- Configure the target host/IP in local SSH config; do not commit access addresses.
 - Default remote Hermes command: `/Users/bobeenlee/.local/bin/hermes`
 - Default remote CuaDriver command: `/Users/bobeenlee/.local/bin/cua-driver`
 - Default remote Hermes config: `/Users/bobeenlee/.hermes/config.yaml`

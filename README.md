@@ -24,9 +24,9 @@ Target profiles live under `config/targets/`. The default target is `bobeen-mac`
 
 ```sshconfig
 Host bobeen
-  HostName 100.89.89.70
+  HostName <tailscale-or-lan-host>
   User bobeenlee
-  IdentityFile ~/.ssh/id_ed25519_bobeenlee_nopass
+  IdentityFile ~/.ssh/<target-key>
   IdentitiesOnly yes
 ```
 
