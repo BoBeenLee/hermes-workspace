@@ -2,10 +2,10 @@
 
 This repo has two roles:
 
-- **Control-side remote ops**: SSH-first tooling used from the Control MacBook to operate the Hermes MacBook.
+- **Control-side remote ops**: SSH-first tooling used from the Control MacBook to operate a configured Hermes target.
 - **Hermes-side workspace**: the git-backed workspace used by the remote Hermes agent for task artifacts, reports, research, and repo-local work.
 
-Use this guide before changing files in `hermes-workspace/`, creating task artifacts, or operating the remote Mac. First decide which role you are acting in.
+Use this guide before changing files in `hermes-workspace/`, creating task artifacts, or operating a remote target. First decide which role you are acting in.
 
 ## Source Context
 
@@ -20,23 +20,28 @@ The operating model comes from:
 Important language from the plan:
 
 - **Control MacBook**: the local Mac where Codex/Desktop automation runs.
-- **Hermes MacBook**: the remote Mac that runs NousResearch `hermes-agent`.
+- **Hermes target**: a configured remote host that runs NousResearch `hermes-agent`.
+- **Hermes MacBook**: the current default macOS Hermes target.
 - **Hermes agent**: the per-user Hermes install at `~/.hermes/hermes-agent`, with config/data/logs under `~/.hermes` and command wrapper at `~/.local/bin/hermes`.
-- **Remote access path**: SSH key access from Control MacBook to Hermes MacBook. Tailscale/LAN aliases are access paths, not application state.
+- **Remote access path**: SSH key access from Control MacBook to a Hermes target. Tailscale/LAN aliases are access paths, not application state.
+- **Target profile**: `config/targets/<name>.env`, the selected host/OS/path/backend contract for `bin/hermes-remote`.
+- **Remote workspace manager**: the profile-aware `bin/hermes-remote` interface for checking SSH, status, gateway, Kanban, dashboard, logs, Discord thread work, and OS-specific capabilities.
+- **Computer-use backend**: the profile field that determines desktop-control support. `cua-driver` is macOS-only; `none` means computer-use commands are unsupported for that target.
 - **Workspace Lifecycle module**: the interface every Hermes task follows before it is reported as `done` or `review-required`.
 - **Research Analysis module**: the interface for market research and analysis work, including brief, source ledger, notes, and report artifacts.
 
-## Current Default Target
+## Target Profiles
 
-Default values live in `config/example.env` and can be overridden by a local `.env`.
+Target defaults live in `config/targets/<target>.env` and can be overridden by a local `.env`.
 
-- SSH alias: `bobeen`
-- Remote user: `bobeenlee`
-- Tailscale IP observed in prior setup: `100.89.89.70`
-- Remote Hermes command: `/Users/bobeenlee/.local/bin/hermes`
-- Remote CuaDriver command: `/Users/bobeenlee/.local/bin/cua-driver`
-- Remote Hermes config: `/Users/bobeenlee/.hermes/config.yaml`
-- Canonical remote workspace: `/Users/bobeenlee/Workspaces/hermes-workspace`
+- Default target: `bobeen-mac`
+- Default SSH alias: `bobeen`
+- Default remote user: `bobeenlee`
+- Default Tailscale IP observed in prior setup: `100.89.89.70`
+- Default remote Hermes command: `/Users/bobeenlee/.local/bin/hermes`
+- Default remote CuaDriver command: `/Users/bobeenlee/.local/bin/cua-driver`
+- Default remote Hermes config: `/Users/bobeenlee/.hermes/config.yaml`
+- Default canonical remote workspace: `/Users/bobeenlee/Workspaces/hermes-workspace`
 
 Do not commit `.env`; it is intentionally ignored.
 
@@ -53,17 +58,20 @@ Use this role when operating from the Control MacBook. Start every remote operat
 
 ```bash
 cd /Users/mac_al03241161/Documents/mygit/hermes-workspace
-bin/hermes-remote check-ssh
-bin/hermes-remote status
+bin/hermes-remote --target bobeen-mac config
+bin/hermes-remote --target bobeen-mac check-ssh
+bin/hermes-remote --target bobeen-mac status
 ```
 
 Remote ops rules:
 
 - Prefer `bin/hermes-remote` commands over ad hoc SSH because the script captures expected paths and backup behavior.
+- Select targets with `--target <name>` or `HERMES_TARGET=<name>`; do not add host-specific paths directly to `bin/hermes-remote`.
 - Before editing remote `~/.hermes/config.yaml`, create or rely on a timestamped backup.
 - Use user-level Hermes/launchd commands. Do not introduce root/system-level daemons unless a user explicitly asks.
 - Do not remove remote access keys or stop the gateway unless the user asks or the rollback task requires it.
-- macOS `computer_use` permissions cannot be fully automated. `grant-computer-use` opens the flow; the user may need to approve CuaDriver in System Settings.
+- macOS `computer_use` permissions cannot be fully automated. `grant-computer-use` opens the flow for `cua-driver` targets; the user may need to approve CuaDriver in System Settings.
+- Linux targets should keep `HERMES_COMPUTER_USE_BACKEND=none` until a supported Linux desktop-control backend is added.
 
 If SSH fails:
 
@@ -91,7 +99,7 @@ Workspace rules:
 
 ## Computer Use Workflow
 
-Use this from the Control-side remote ops role when the remote Hermes agent needs macOS desktop control.
+Use this from the Control-side remote ops role when a macOS/cua-driver target needs desktop control.
 
 ```bash
 bin/hermes-remote setup-computer-use
@@ -107,7 +115,7 @@ Success criteria:
 - `hermes mcp test cua-driver` discovers tools.
 - `cua-driver get_screen_size` and `cua-driver list_windows` return data.
 
-Known gotcha from prior setup: non-interactive SSH may not load `~/.local/bin`. The toolkit patches the remote Hermes wrapper PATH so Hermes can find `cua-driver`.
+Known gotcha from prior setup: non-interactive SSH may not load `~/.local/bin`. The toolkit patches the remote Hermes wrapper PATH so Hermes can find `cua-driver`. These commands intentionally fail on Linux or `none` backend targets.
 
 ## Kanban Workflow
 
@@ -120,7 +128,7 @@ bin/hermes-remote status
 
 Success criteria:
 
-- `~/.hermes/kanban.db` exists on the remote Mac.
+- `~/.hermes/kanban.db` exists on the remote target.
 - `hermes kanban boards list` shows a current board, normally `default`.
 - `hermes kanban stats` returns counts without errors.
 - `kanban.dispatch_in_gateway: true` is present in config.
@@ -171,7 +179,7 @@ bin/hermes-remote gateway-restart
 bin/hermes-remote status
 ```
 
-Expected gateway service:
+Expected gateway service for the default macOS target:
 
 - user-level launchd
 - label `ai.hermes.gateway`
@@ -186,7 +194,7 @@ bin/hermes-remote dashboard-status
 bin/hermes-remote dashboard-start
 ```
 
-It binds to `127.0.0.1:9119` on the remote Mac by default. Do not use insecure external binding unless explicitly requested.
+It binds to `127.0.0.1:9119` on the remote target by default. Do not use insecure external binding unless explicitly requested.
 
 ## Verification Before Finishing
 
@@ -194,8 +202,8 @@ For script edits:
 
 ```bash
 bash -n bin/hermes-remote
-bin/hermes-remote check-ssh
-bin/hermes-remote status
+bin/hermes-remote --target bobeen-mac check-ssh
+bin/hermes-remote --target bobeen-mac status
 ```
 
 For docs-only edits, at least inspect changed files and run:

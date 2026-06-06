@@ -4,13 +4,15 @@ The Workspace Lifecycle module is the deep interface for Hermes work in this rep
 
 ## Canonical Workspace
 
-The remote Hermes workspace is:
+The remote Hermes workspace is defined by the selected target profile's `HERMES_WORKSPACE_ROOT`.
+
+The current default `bobeen-mac` target uses:
 
 ```text
 /Users/bobeenlee/Workspaces/hermes-workspace
 ```
 
-Hermes should run from that repo root and use git worktree isolation:
+Hermes should run from that target's repo root and use git worktree isolation. For the default macOS target:
 
 ```yaml
 terminal:
@@ -19,7 +21,7 @@ terminal:
 worktree: true
 ```
 
-For one-shot CLI work:
+For one-shot CLI work on the default macOS target:
 
 ```bash
 cd /Users/bobeenlee/Workspaces/hermes-workspace
@@ -97,8 +99,8 @@ For ops script changes:
 
 ```bash
 bash -n bin/hermes-remote
-bin/hermes-remote check-ssh
-bin/hermes-remote status
+bin/hermes-remote --target bobeen-mac check-ssh
+bin/hermes-remote --target bobeen-mac status
 ```
 
 For research tasks:

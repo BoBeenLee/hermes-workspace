@@ -1,25 +1,26 @@
 # Hermes Workspace
 
-Workspace and SSH-first ops hub for managing the remote Hermes Agent.
+Workspace and SSH-first ops hub for managing remote Hermes Agent targets.
 
-It is designed for the workflow used with `bobeen-macbookpro-2`: give the remote Hermes Agent a git-backed work management repository, preserve task and research artifacts, check whether Hermes is online, install/verify `computer_use`, initialize Kanban, restart the gateway, and inspect Discord thread work from logs.
+It gives each remote Hermes Agent a git-backed work management repository, preserves task and research artifacts, checks whether Hermes is online, initializes Kanban, restarts the gateway, and inspects Discord thread work from logs. Target profiles keep macOS-specific operations, Linux examples, and future hosts out of the command code.
 
 ## Quick Start
 
 Agent/Claude operators should read `AGENTS.md` first. This repo has two roles:
 
-- **Control-side remote ops**: run `bin/hermes-remote` from the Control MacBook to inspect or operate the Hermes MacBook.
+- **Control-side remote ops**: run `bin/hermes-remote` from the Control MacBook to inspect or operate a configured Hermes target.
 - **Hermes-side workspace work**: let the remote Hermes agent use this repo as its default working directory for tasks, reports, and research artifacts.
 
 ### Control-Side Remote Ops
 
 ```bash
 cp config/example.env .env
-bin/hermes-remote check-ssh
-bin/hermes-remote status
+bin/hermes-remote --target bobeen-mac config
+bin/hermes-remote --target bobeen-mac check-ssh
+bin/hermes-remote --target bobeen-mac status
 ```
 
-Default config expects this local SSH alias:
+Target profiles live under `config/targets/`. The default target is `bobeen-mac`, which expects this local SSH alias:
 
 ```sshconfig
 Host bobeen
@@ -31,7 +32,7 @@ Host bobeen
 
 ### Hermes-Side Workspace
 
-The canonical remote workspace for Hermes work is:
+The canonical remote workspace for the default macOS target is:
 
 ```text
 /Users/bobeenlee/Workspaces/hermes-workspace
@@ -46,17 +47,37 @@ terminal:
 worktree: true
 ```
 
+For another target, set `terminal.cwd` to that profile's `HERMES_WORKSPACE_ROOT`.
+
+## Target Profiles
+
+Use `--target <name>` or `HERMES_TARGET=<name>` to select a target profile:
+
+```bash
+bin/hermes-remote --target bobeen-mac status
+HERMES_TARGET=bobeen-mac bin/hermes-remote config
+```
+
+Profile files are ordinary shell env files:
+
+```text
+config/targets/bobeen-mac.env
+config/targets/linux-example.env
+```
+
+Each profile defines the SSH host, remote home, OS, service manager, computer-use backend, Hermes config path, and workspace root. Local `.env` is optional and only overrides the selected profile on the current control machine.
+
 ## Remote Ops Commands
 
 ```bash
-# Full status: gateway, computer_use, Kanban, dashboard, processes.
+# Full status: gateway, optional computer_use, Kanban, dashboard, processes.
 bin/hermes-remote status
 
-# Install and wire Hermes computer_use on the remote Mac.
+# Install and wire Hermes computer_use on a macOS/cua-driver target.
 bin/hermes-remote setup-computer-use
 
 # Ask macOS to grant CuaDriver Accessibility + Screen Recording.
-# This opens the permission flow on the remote Mac and waits.
+# This opens the permission flow on the remote macOS target and waits.
 bin/hermes-remote grant-computer-use
 
 # Verify CuaDriver permissions, MCP tools, and screen/window access.
@@ -103,4 +124,5 @@ reports/
 
 - The repo does not store SSH keys, provider keys, Discord tokens, or Hermes secrets.
 - Remote config changes are backed up under `~/.hermes/config.yaml.bak-*`.
-- The script assumes the remote Hermes wrapper is at `/Users/bobeenlee/.local/bin/hermes`; change `.env` for another Mac.
+- The script reads remote paths from `config/targets/<target>.env`; use `.env` only for local overrides.
+- CuaDriver-based `computer_use` commands are macOS target operations. Linux targets should use `HERMES_COMPUTER_USE_BACKEND=none` unless a supported backend is added.

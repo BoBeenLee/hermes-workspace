@@ -2,20 +2,61 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TARGET_DIR="$ROOT_DIR/config/targets"
+
+HERMES_TARGET="${HERMES_TARGET:-bobeen-mac}"
+args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target)
+      if [[ -z "${2:-}" ]]; then
+        echo "--target requires a value" >&2
+        exit 2
+      fi
+      HERMES_TARGET="$2"
+      shift 2
+      ;;
+    --target=*)
+      HERMES_TARGET="${1#--target=}"
+      shift
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${args[@]}"
+
+TARGET_PROFILE="$TARGET_DIR/$HERMES_TARGET.env"
+if [[ ! -f "$TARGET_PROFILE" ]]; then
+  echo "Unknown Hermes target profile: $HERMES_TARGET" >&2
+  echo "Expected profile at: $TARGET_PROFILE" >&2
+  exit 2
+fi
+
+SELECTED_HERMES_TARGET="$HERMES_TARGET"
+# shellcheck disable=SC1090
+source "$TARGET_PROFILE"
 
 if [[ -f "$ROOT_DIR/.env" ]]; then
   # shellcheck disable=SC1091
   source "$ROOT_DIR/.env"
-elif [[ -f "$ROOT_DIR/config/example.env" ]]; then
-  # shellcheck disable=SC1091
-  source "$ROOT_DIR/config/example.env"
 fi
+HERMES_TARGET="$SELECTED_HERMES_TARGET"
 
-: "${HERMES_REMOTE_HOST:=bobeen}"
-: "${HERMES_REMOTE_HOME:=/Users/bobeenlee}"
+: "${HERMES_REMOTE_HOST:?HERMES_REMOTE_HOST is required by target profile}"
+: "${HERMES_REMOTE_HOME:?HERMES_REMOTE_HOME is required by target profile}"
+: "${HERMES_REMOTE_USER:=}"
+: "${HERMES_REMOTE_OS:=macos}"
+: "${HERMES_SERVICE_MANAGER:=auto}"
+: "${HERMES_COMPUTER_USE_BACKEND:=none}"
 : "${HERMES_BIN:=$HERMES_REMOTE_HOME/.local/bin/hermes}"
-: "${CUA_BIN:=$HERMES_REMOTE_HOME/.local/bin/cua-driver}"
+: "${CUA_BIN=$HERMES_REMOTE_HOME/.local/bin/cua-driver}"
 : "${HERMES_CONFIG:=$HERMES_REMOTE_HOME/.hermes/config.yaml}"
+: "${HERMES_WORKSPACE_ROOT:=$HERMES_REMOTE_HOME/Workspaces/hermes-workspace}"
+: "${HERMES_WORKSPACE_REPO:=git@github.com:BoBeenLee/hermes-workspace.git}"
+: "${HERMES_WORKSPACE_BRANCH:=main}"
 : "${SSH_CONNECT_TIMEOUT:=8}"
 
 ssh_remote() {
@@ -23,23 +64,51 @@ ssh_remote() {
 }
 
 remote_bash() {
-  ssh_remote "HERMES_REMOTE_HOME='$HERMES_REMOTE_HOME' HERMES_BIN='$HERMES_BIN' CUA_BIN='$CUA_BIN' HERMES_CONFIG='$HERMES_CONFIG' bash -s"
+  ssh_remote "HERMES_TARGET='$HERMES_TARGET' HERMES_REMOTE_HOME='$HERMES_REMOTE_HOME' HERMES_REMOTE_OS='$HERMES_REMOTE_OS' HERMES_SERVICE_MANAGER='$HERMES_SERVICE_MANAGER' HERMES_COMPUTER_USE_BACKEND='$HERMES_COMPUTER_USE_BACKEND' HERMES_BIN='$HERMES_BIN' CUA_BIN='$CUA_BIN' HERMES_CONFIG='$HERMES_CONFIG' HERMES_WORKSPACE_ROOT='$HERMES_WORKSPACE_ROOT' HERMES_WORKSPACE_REPO='$HERMES_WORKSPACE_REPO' HERMES_WORKSPACE_BRANCH='$HERMES_WORKSPACE_BRANCH' bash -s"
+}
+
+require_computer_use_backend() {
+  if [[ "$HERMES_REMOTE_OS" != "macos" || "$HERMES_COMPUTER_USE_BACKEND" != "cua-driver" ]]; then
+    echo "Unsupported command for target '$HERMES_TARGET': computer_use backend is '$HERMES_COMPUTER_USE_BACKEND' on '$HERMES_REMOTE_OS'." >&2
+    echo "This command requires macos with HERMES_COMPUTER_USE_BACKEND=cua-driver." >&2
+    exit 2
+  fi
+}
+
+show_config() {
+  cat <<CONFIG
+HERMES_TARGET=$HERMES_TARGET
+HERMES_REMOTE_HOST=$HERMES_REMOTE_HOST
+HERMES_REMOTE_USER=$HERMES_REMOTE_USER
+HERMES_REMOTE_HOME=$HERMES_REMOTE_HOME
+HERMES_REMOTE_OS=$HERMES_REMOTE_OS
+HERMES_SERVICE_MANAGER=$HERMES_SERVICE_MANAGER
+HERMES_COMPUTER_USE_BACKEND=$HERMES_COMPUTER_USE_BACKEND
+HERMES_BIN=$HERMES_BIN
+CUA_BIN=$CUA_BIN
+HERMES_CONFIG=$HERMES_CONFIG
+HERMES_WORKSPACE_ROOT=$HERMES_WORKSPACE_ROOT
+HERMES_WORKSPACE_REPO=$HERMES_WORKSPACE_REPO
+HERMES_WORKSPACE_BRANCH=$HERMES_WORKSPACE_BRANCH
+SSH_CONNECT_TIMEOUT=$SSH_CONNECT_TIMEOUT
+CONFIG
 }
 
 usage() {
   cat <<'USAGE'
 Usage:
-  bin/hermes-remote <command> [args]
+  bin/hermes-remote [--target <name>] <command> [args]
 
 Commands:
+  config                    Print the resolved target profile.
   check-ssh                 Verify SSH connectivity and core paths.
-  status                    Show Hermes, gateway, computer_use, Kanban, dashboard, and process state.
-  setup-computer-use        Install cua-driver and wire Hermes config/toolset.
-  grant-computer-use        Open CuaDriver permission grant flow on the remote Mac.
-  verify-computer-use       Verify permissions, MCP, screen size, and window access.
+  status                    Show Hermes, gateway, optional computer_use, Kanban, dashboard, and process state.
+  setup-computer-use        Install cua-driver and wire Hermes config/toolset (macOS/cua-driver targets only).
+  grant-computer-use        Open CuaDriver permission grant flow (macOS/cua-driver targets only).
+  verify-computer-use       Verify permissions, MCP, screen size, and window access (macOS/cua-driver targets only).
   setup-kanban              Initialize Kanban and enable gateway dispatcher config.
   gateway-restart           Restart the Hermes gateway service.
-  dashboard-start           Start dashboard on the remote Mac at 127.0.0.1:9119.
+  dashboard-start           Start dashboard on the remote target at 127.0.0.1:9119.
   dashboard-status          Show dashboard status.
   is-working <thread_id>    Decide whether a Discord thread still has active Hermes work.
   tail-thread <thread_id>   Print recent gateway/agent log lines for a Discord thread.
@@ -47,42 +116,63 @@ Commands:
   logs                      Print recent gateway, agent, and error logs.
 
 Config:
-  Copy config/example.env to .env and edit host/paths.
+  Target profiles live under config/targets/<name>.env.
+  Use --target <name> or HERMES_TARGET=<name>. Local .env overrides the selected profile.
 USAGE
 }
 
 check_ssh() {
-  ssh_remote "set -e; hostname; whoami; date; test -x '$HERMES_BIN' && '$HERMES_BIN' --version || true; test -x '$CUA_BIN' && '$CUA_BIN' --version || true"
+  remote_bash <<'REMOTE'
+set -e
+hostname
+whoami
+date
+test -x "$HERMES_BIN" && "$HERMES_BIN" --version || true
+if [[ "$HERMES_COMPUTER_USE_BACKEND" == "cua-driver" ]]; then
+  test -x "$CUA_BIN" && "$CUA_BIN" --version || true
+fi
+REMOTE
 }
 
 status() {
-  ssh_remote "set +e
+  remote_bash <<'REMOTE'
+set +e
 echo '== host =='
-hostname; whoami; date
+hostname
+whoami
+date
+echo "target: $HERMES_TARGET"
+echo "os: $HERMES_REMOTE_OS"
+echo "service manager: $HERMES_SERVICE_MANAGER"
+echo "computer_use backend: $HERMES_COMPUTER_USE_BACKEND"
 echo
 echo '== hermes status =='
-'$HERMES_BIN' status
+"$HERMES_BIN" status
 echo
 echo '== gateway =='
-'$HERMES_BIN' gateway status
-echo
-echo '== computer_use =='
-'$HERMES_BIN' computer-use status
-echo
-echo '== cua permissions =='
-'$CUA_BIN' permissions status
+"$HERMES_BIN" gateway status
+if [[ "$HERMES_COMPUTER_USE_BACKEND" == "cua-driver" ]]; then
+  echo
+  echo '== computer_use =='
+  "$HERMES_BIN" computer-use status
+  echo
+  echo '== cua permissions =='
+  "$CUA_BIN" permissions status
+fi
 echo
 echo '== kanban =='
-'$HERMES_BIN' kanban stats
+"$HERMES_BIN" kanban stats
 echo
 echo '== dashboard =='
-'$HERMES_BIN' dashboard --status
+"$HERMES_BIN" dashboard --status
 echo
 echo '== processes =='
-/bin/ps -axo pid,etime,stat,command | /usr/bin/grep -E 'hermes|gateway|cua-driver' | /usr/bin/grep -v grep"
+(ps -axo pid,etime,stat,command 2>/dev/null || ps -eo pid,etime,stat,command 2>/dev/null) | grep -E 'hermes|gateway|cua-driver' | grep -v grep
+REMOTE
 }
 
 setup_computer_use() {
+  require_computer_use_backend
   ssh_remote "'$HERMES_BIN' computer-use install || true"
 
   remote_bash <<'REMOTE'
@@ -166,10 +256,12 @@ REMOTE
 }
 
 grant_computer_use() {
+  require_computer_use_backend
   ssh_remote "'$CUA_BIN' permissions grant"
 }
 
 verify_computer_use() {
+  require_computer_use_backend
   ssh_remote "set +e
 open -n -g -a CuaDriver --args serve
 sleep 2
@@ -286,7 +378,11 @@ run_prompt() {
     echo "prompt required" >&2
     exit 2
   fi
-  ssh_remote "'$HERMES_BIN' -t computer_use -z $(printf '%q' "$prompt")"
+  if [[ "$HERMES_COMPUTER_USE_BACKEND" == "cua-driver" ]]; then
+    ssh_remote "'$HERMES_BIN' -t computer_use -z $(printf '%q' "$prompt")"
+  else
+    ssh_remote "'$HERMES_BIN' -z $(printf '%q' "$prompt")"
+  fi
 }
 
 logs() {
@@ -297,6 +393,7 @@ cmd="${1:-}"
 shift || true
 
 case "$cmd" in
+  config) show_config "$@" ;;
   check-ssh) check_ssh "$@" ;;
   status) status "$@" ;;
   setup-computer-use) setup_computer_use "$@" ;;
