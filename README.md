@@ -6,6 +6,8 @@ It is designed for the workflow used with `bobeen-macbookpro-2`: check whether H
 
 ## Quick Start
 
+Agent/Claude operators should read `AGENTS.md` first. `CLAUDE.md` points Claude-style agents to the same guide.
+
 ```bash
 cp config/example.env .env
 bin/hermes-remote check-ssh
