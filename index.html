@@ -1,236 +1,523 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hermes Workspace</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hermes Workspace - Operational Dashboard</title>
   <link rel="stylesheet" href="styles/main.css">
+  <meta name="description" content="Operational Dashboard for Hermes Workspace. Manage remote operations, monitor Antigravity worker flows, view outputs, and verify task completion criteria.">
 </head>
 <body>
-  <!-- Hero Section -->
-  <header class="hero">
-    <div class="hero-content">
-      <h1>Hermes Workspace</h1>
-      <p class="subtitle">Remote Hermes Agent가 작업을 계획하고, 실행하고, 결과물을 남기는 git-backed workspace</p>
-      <div class="cta-buttons">
-        <a href="#how-to-ask" class="btn primary">작업 요청 예시 보기</a>
-        <a href="#outputs" class="btn secondary">결과물 확인 방법 보기</a>
+
+  <!-- Top Sticky Header -->
+  <header class="dashboard-header" id="header">
+    <div class="container header-container">
+      <div class="brand">
+        <div class="brand-logo">
+          <!-- Inline Winged Helmet SVG (Hermes Symbol) -->
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 14l9-5-9-5-9 5 9 5zm0 0l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14zm-4 6v-7.5l4-2.222"></path>
+          </svg>
+        </div>
+        <span class="brand-text">HERMES // WORKSPACE</span>
+      </div>
+
+      <nav>
+        <ul class="nav-links">
+          <li class="nav-link"><a href="#overview" id="nav-link-overview">Overview</a></li>
+          <li class="nav-link"><a href="#pipeline" id="nav-link-pipeline">Worker Flow</a></li>
+          <li class="nav-link"><a href="#console" id="nav-link-console">Console</a></li>
+          <li class="nav-link"><a href="#explorer" id="nav-link-explorer">Artifact Explorer</a></li>
+          <li class="nav-link"><a href="#safety" id="nav-link-safety">Safety Gate</a></li>
+        </ul>
+      </nav>
+
+      <div class="status-badge" id="global-status-badge">
+        <span class="status-dot animate-pulse"></span>
+        <span id="active-target-badge">bobeen-mac</span>: GATEWAY ACTIVE
       </div>
     </div>
   </header>
 
-  <!-- What Hermes Can Do -->
-  <section class="capabilities">
-    <h2>What Hermes Can Do</h2>
-    <div class="card-grid">
-      <div class="card">
-        <h3>ops-change</h3>
-        <p>원격 시스템 설정 변경, config 수정, 스크립트 실행 등 운영 작업</p>
+  <!-- Control & Target Switcher Bar -->
+  <div class="control-bar">
+    <div class="container control-bar-content">
+      <div class="target-selector">
+        <span>Target Profile:</span>
+        <button class="profile-badge-btn active" data-profile="bobeen-mac" id="btn-profile-mac">bobeen-mac</button>
+        <button class="profile-badge-btn" data-profile="linux-target" id="btn-profile-linux">linux-target (mock)</button>
       </div>
-      <div class="card">
-        <h3>remote-config</h3>
-        <p>원격 Mac의 Hermes 설정, launchd 서비스, MCP 서버 관리</p>
-      </div>
-      <div class="card">
-        <h3>incident-triage</h3>
-        <p>Discord 스레드 분석, gateway 로그 확인, 문제 진단 및 해결</p>
-      </div>
-      <div class="card">
-        <h3>market-research</h3>
-        <p>웹 검색, 시장 조사, 가격 비교, 정책/법률 검증</p>
-      </div>
-      <div class="card">
-        <h3>analysis-report</h3>
-        <p>데이터 분석, 코드 리뷰, research brief 작성 및 보고서 생성</p>
+      <div class="active-profile-indicator">
+        <span>Active Specs:</span>
+        <strong id="active-target-info">MACOS | ENABLED (cua-driver)</strong>
       </div>
     </div>
-  </section>
+  </div>
 
-  <!-- How To Ask -->
-  <section class="how-to-ask" id="how-to-ask">
-    <h2>How To Ask</h2>
-    <div class="prompt-structure">
-      <h3>좋은 요청 프롬프트 구조</h3>
-      <pre class="prompt-example good">
-<code>role: [Control-side remote ops | Hermes-side workspace 작업]
-task type: [ops-change | remote-config | incident-triage | market-research | analysis-report]
-작업 내용: [구체적인 요청사항]
-결과물 경로: [tasks/ | reports/ | research/]
-완료 기준: [done | review-required]</code>
-      </pre>
-    </div>
-
-    <div class="prompt-examples">
-      <h3>나쁜 요청 / 애매한 요청 예시</h3>
-      <div class="bad-examples">
-        <div class="bad-example">
-          <strong>❌ "뭐 해줄까?"</strong>
-          <span>너무 일반적이고 목적이 불분명함</span>
-        </div>
-        <div class="bad-example">
-          <strong>❌ "급해, 빨리 해줘"</strong>
-          <span>급함 속성만 있고 작업 범위 없음</span>
-        </div>
-        <div class="bad-example">
-          <strong>❌ "여기요 여기요"</strong>
-          <span>무엇을 원하는지 모호함</span>
+  <!-- Hero Section / Context Overview -->
+  <section class="hero-section" id="overview">
+    <div class="container hero-layout">
+      <div class="hero-main">
+        <h1>Hermes Operational Dashboard</h1>
+        <p class="subtitle">
+          Welcome to the git-backed task workspace for the remote Hermes Agent. This control panel coordinates SSH-first operations from the Control MacBook to configured Hermes targets, orchestrates Antigravity workers, and verifies task outputs before execution.
+        </p>
+        <div class="hero-cta">
+          <a href="#console" class="btn-primary" id="hero-btn-console">Launch Interactive Console</a>
+          <a href="#pipeline" class="btn-secondary" id="hero-btn-flow">View Worker Pipeline</a>
         </div>
       </div>
-    </div>
 
-    <div class="prompt-cards">
-      <h3>프롬프트 카드 5개</h3>
-      <div class="cards">
-        <div class="prompt-card">
-          <code>hermes-remote check-ssh && hermes-remote status</code>
-          <p>원격 접속 상태 확인</p>
+      <div class="kpi-grid">
+        <div class="kpi-card" id="kpi-card-gateway">
+          <div>
+            <span class="kpi-label">Gateway Service</span>
+            <div class="kpi-val text-color-green">ONLINE</div>
+          </div>
+          <div class="kpi-footer">port: 9090 / launchd</div>
         </div>
-        <div class="prompt-card">
-          <code>bin/hermes-remote gateway-restart && log 확인</code>
-          <p>gateway 재시작 후 로그 확인</p>
+        <div class="kpi-card" id="kpi-card-os">
+          <div>
+            <span class="kpi-label">Target OS</span>
+            <div class="kpi-val" id="kpi-os">MACOS</div>
+          </div>
+          <div class="kpi-footer" id="kpi-ssh-host">host: bobeen</div>
         </div>
-        <div class="prompt-card">
-          <code>market-research로 2026년 AI 모델 가격 비교해줘</code>
-          <p>최신 시장 가격 조사 요청</p>
+        <div class="kpi-card" id="kpi-card-cu">
+          <div>
+            <span class="kpi-label">Computer Use</span>
+            <div class="kpi-val text-color-cyan" id="kpi-cu">ENABLED</div>
+          </div>
+          <div class="kpi-footer">backend: cua-driver</div>
         </div>
-        <div class="prompt-card">
-          <code>incident-triage: Discord 스레드 1512760172660129933 진단해줘</code>
-          <p>특정 스레드 문제 분석 요청</p>
-        </div>
-        <div class="prompt-card">
-          <code>reports/2026-06-06-hermes-workspace-landing 정리해서 commit 해줘</code>
-          <p>작업 결과물 정리 및 커밋 요청</p>
+        <div class="kpi-card" id="kpi-card-workspace">
+          <div>
+            <span class="kpi-label">Isolated Workspace</span>
+            <div class="kpi-val text-color-purple">ACTIVE</div>
+          </div>
+          <div class="kpi-footer" id="kpi-root">~/.../hermes-workspace</div>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- Workflow -->
-  <section class="workflow" id="workflow">
-    <h2>Workflow</h2>
-    <div class="steps">
-      <div class="step">
-        <span class="step-num">1</span>
-        <span>요청 수신 (Discord/CLI)</span>
+  <!-- Section: Antigravity Worker Pipeline & Delegated Implementation -->
+  <section class="dashboard-section" id="pipeline">
+    <div class="container">
+      <div class="section-title-area">
+        <h2>Antigravity Worker Pipeline</h2>
+        <p>Interactive step-by-step workflow of delegated execution, isolation, and safety verification</p>
       </div>
-      <div class="step-arrow">→</div>
-      <div class="step">
-        <span class="step-num">2</span>
-        <span>task type 판단</span>
-      </div>
-      <div class="step-arrow">→</div>
-      <div class="step">
-        <span class="step-num">3</span>
-        <span>branch/worktree 생성</span>
-      </div>
-      <div class="step-arrow">→</div>
-      <div class="step">
-        <span class="step-num">4</span>
-        <span>작업 수행</span>
-      </div>
-      <div class="step-arrow">→</div>
-      <div class="step">
-        <span class="step-num">5</span>
-        <span>테스트/검증</span>
-      </div>
-      <div class="step-arrow">→</div>
-      <div class="step">
-        <span class="step-num">6</span>
-        <span>결과 보고</span>
-      </div>
-      <div class="step-arrow">→</div>
-      <div class="step final">
-        <span class="step-final done">done</span>
-        <span class="step-final review">review-required</span>
+
+      <div class="pipeline-layout">
+        <!-- Interactive Steps Flow -->
+        <div class="pipeline-flow">
+          <!-- Step 1 -->
+          <div class="pipeline-step-card" data-step="trigger" id="step-trigger">
+            <div class="pipeline-step-num">1</div>
+            <div class="pipeline-step-info">
+              <h3 class="pipeline-step-title">Trigger Request</h3>
+              <p class="pipeline-step-desc">Inbound prompt received via Discord Webhook or CLI gateway.</p>
+            </div>
+            <div class="pipeline-step-icon">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"></path></svg>
+            </div>
+          </div>
+          
+          <!-- Step 2 -->
+          <div class="pipeline-step-card" data-step="triage" id="step-triage">
+            <div class="pipeline-step-num">2</div>
+            <div class="pipeline-step-info">
+              <h3 class="pipeline-step-title">Profile Triage</h3>
+              <p class="pipeline-step-desc">Remote Workspace Manager verifies SSH target profile specs.</p>
+            </div>
+            <div class="pipeline-step-icon">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            </div>
+          </div>
+
+          <!-- Step 3 -->
+          <div class="pipeline-step-card" data-step="isolation" id="step-isolation">
+            <div class="pipeline-step-num">3</div>
+            <div class="pipeline-step-info">
+              <h3 class="pipeline-step-title">Workspace Isolation</h3>
+              <p class="pipeline-step-desc">Spawns isolated git worktree branch for secure implementation.</p>
+            </div>
+            <div class="pipeline-step-icon">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"></path></svg>
+            </div>
+          </div>
+
+          <!-- Step 4 -->
+          <div class="pipeline-step-card" data-step="execution" id="step-execution">
+            <div class="pipeline-step-num">4</div>
+            <div class="pipeline-step-info">
+              <h3 class="pipeline-step-title">Worker Execution</h3>
+              <p class="pipeline-step-desc">Antigravity worker acts under Hermes supervision (no secrets exposure).</p>
+            </div>
+            <div class="pipeline-step-icon">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+            </div>
+          </div>
+
+          <!-- Step 5 -->
+          <div class="pipeline-step-card" data-step="verification" id="step-verification">
+            <div class="pipeline-step-num">5</div>
+            <div class="pipeline-step-info">
+              <h3 class="pipeline-step-title">Local Verification</h3>
+              <p class="pipeline-step-desc">Runs repo-local verification checks. Strict auto-approval bounds.</p>
+            </div>
+            <div class="pipeline-step-icon">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+            </div>
+          </div>
+
+          <!-- Step 6 -->
+          <div class="pipeline-step-card" data-step="gate" id="step-gate">
+            <div class="pipeline-step-num">6</div>
+            <div class="pipeline-step-info">
+              <h3 class="pipeline-step-title">Completion Mode Gate</h3>
+              <p class="pipeline-step-desc">Classifies result as completed (done) or review-required.</p>
+            </div>
+            <div class="pipeline-step-icon">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+            </div>
+          </div>
+        </div>
+
+        <!-- Details Panel -->
+        <div class="pipeline-detail-panel" id="pipeline-detail-panel">
+          <div id="pipeline-detail-content">
+            <!-- Dynamically populated by JS -->
+          </div>
+        </div>
       </div>
     </div>
   </section>
 
-  <!-- Outputs -->
-  <section class="outputs" id="outputs">
-    <h2>Outputs</h2>
-    <table class="output-table">
-      <thead>
-        <tr>
-          <th>경로</th>
-          <th>설명</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><code>tasks/</code></td>
-          <td>작업 스크립트 및 코드 아티팩트</td>
-        </tr>
-        <tr>
-          <td><code>reports/</code></td>
-          <td>작업 결과 보고서</td>
-        </tr>
-        <tr>
-          <td><code>research/briefs/</code></td>
-          <td>시장 조사/분석 brief 문서</td>
-        </tr>
-        <tr>
-          <td><code>research/sources/</code></td>
-          <td>소스 원본 JSONL 원장 (source ledger)</td>
-        </tr>
-        <tr>
-          <td><code>research/notes/</code></td>
-          <td>조사/분석 중 메모</td>
-        </tr>
-        <tr>
-          <td><code>artifacts/</code></td>
-          <td>임시 파일 및 첨부 자료</td>
-        </tr>
-      </tbody>
-    </table>
-  </section>
-
-  <!-- Review Required -->
-  <section class="review-required" id="review-required">
-    <h2>Review Required</h2>
-    <p>다음 유형의 작업은 반드시 검토 후 merge 필요:</p>
-    <ul class="review-list">
-      <li>코드 변경</li>
-      <li>원격 config 변경</li>
-      <li>gateway restart</li>
-      <li>key/auth/secret 관련 작업</li>
-      <li>recurring automation (cron job)</li>
-    </ul>
-  </section>
-
-  <!-- Market Research Mode -->
-  <section class="market-research-mode" id="market-research-mode">
-    <h2>Market Research Mode</h2>
-    <div class="research-rules">
-      <div class="rule">
-        <strong>web verification 필요</strong>
-        <p>웹 검색을 통한 최신 정보 검증 필수</p>
+  <!-- Section: Interactive Command Console -->
+  <section class="dashboard-section" id="console">
+    <div class="container">
+      <div class="section-title-area">
+        <h2>Interactive CLI Control Center</h2>
+        <p>Trigger and simulate remote operations on the target host from the Control MacBook</p>
       </div>
-      <div class="rule">
-        <strong>source ledger 남기기</strong>
-        <p><code>research/sources/YYYY-MM-DD-slug.jsonl</code> 에 출처 기록</p>
-      </div>
-      <div class="rule">
-        <strong>report-only는 done 가능</strong>
-        <p>보고서만 작성하는 경우 검토 없이 완료 가능</p>
+
+      <div class="console-layout">
+        <!-- Command Selection Sidebar -->
+        <div class="console-sidebar">
+          <span class="console-sidebar-title">Available Operations</span>
+          
+          <div class="console-btn-list">
+            <button class="console-btn active" data-command="status" data-exec="bin/hermes-remote status" id="btn-cmd-status">
+              <span>status</span>
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+            </button>
+            <span class="console-btn-desc">Full diagnostics check for gateway, Kanban, and computer-use</span>
+
+            <button class="console-btn" data-command="check-ssh" data-exec="bin/hermes-remote check-ssh" id="btn-cmd-check-ssh">
+              <span>check-ssh</span>
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071a10.5 10.5 0 0114.14 0M1.414 6.586a15.5 15.5 0 0121.172 0"></path></svg>
+            </button>
+            <span class="console-btn-desc">Verify SSH connectivity and remote agent path</span>
+
+            <button class="console-btn" data-command="config" data-exec="bin/hermes-remote config" id="btn-cmd-config">
+              <span>config</span>
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path></svg>
+            </button>
+            <span class="console-btn-desc">Print resolved target profile environment configuration</span>
+
+            <button class="console-btn" data-command="gateway-restart" data-exec="bin/hermes-remote gateway-restart" id="btn-cmd-restart">
+              <span>gateway-restart</span>
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 7.89H16V3"></path></svg>
+            </button>
+            <span class="console-btn-desc">Restart remote gateway launchd daemon (requires review)</span>
+
+            <button class="console-btn" data-command="verify-computer-use" data-exec="bin/hermes-remote verify-computer-use" id="btn-cmd-cu-verify">
+              <span>verify-computer-use</span>
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+            </button>
+            <span class="console-btn-desc">Verify Accessibility/Screen Recording for CuaDriver</span>
+
+            <button class="console-btn" data-command="is-working" data-exec="bin/hermes-remote is-working 1512760172660129933" id="btn-cmd-triage">
+              <span>is-working &lt;thread_id&gt;</span>
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+            </button>
+            <span class="console-btn-desc">Triage status and active processes of a Discord thread</span>
+
+            <button class="console-btn" data-command="logs" data-exec="bin/hermes-remote logs" id="btn-cmd-logs">
+              <span>logs</span>
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            </button>
+            <span class="console-btn-desc">Tail logs of remote gateway and active agents</span>
+          </div>
+        </div>
+
+        <!-- Terminal Output View -->
+        <div class="terminal-window">
+          <div class="terminal-header">
+            <div class="terminal-dots">
+              <span class="terminal-dot red"></span>
+              <span class="terminal-dot yellow"></span>
+              <span class="terminal-dot green"></span>
+            </div>
+            <div class="terminal-title">zsh - hermes-remote console</div>
+            <div></div>
+          </div>
+          <div class="terminal-body" id="terminal-body">
+            <div id="terminal-lines">
+              <!-- Dynamically handled by JS -->
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
 
-  <!-- Final Report Example -->
-  <section class="final-report" id="final-report-example">
-    <h2>Final Report Example</h2>
-    <div class="report-content">
-      <p><strong>branch/worktree:</strong> workspace-landing</p>
-      <p><strong>changed files:</strong> pages/index.html, pages/styles/main.css</p>
-      <p><strong>result path:</strong> pages/index.html</p>
-      <p><strong>tests/checks:</strong> git diff 검증, 정적 HTML 구문 확인</p>
-      <p><strong>completion mode:</strong> review-required (landing page 변경)</p>
+  <!-- Section: Workspace Output Artifact Paths -->
+  <section class="dashboard-section" id="explorer">
+    <div class="container">
+      <div class="section-title-area">
+        <h2>Output Artifact Explorer</h2>
+        <p>Browse workspace directory layouts and inspect rules for generated deliverables</p>
+      </div>
+
+      <div class="explorer-layout">
+        <!-- Folder Tree Sidebar -->
+        <div class="explorer-tree">
+          <span class="explorer-tree-title">Workspace Directories</span>
+          <ul class="explorer-list">
+            <li class="folder-item active" data-folder="tasks" id="folder-tasks">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+              <span>tasks/</span>
+            </li>
+            <li class="folder-item" data-folder="reports" id="folder-reports">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+              <span>reports/</span>
+            </li>
+            <li class="folder-item" data-folder="briefs" id="folder-briefs">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+              <span>research/briefs/</span>
+            </li>
+            <li class="folder-item" data-folder="sources" id="folder-sources">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+              <span>research/sources/</span>
+            </li>
+            <li class="folder-item" data-folder="notes" id="folder-notes">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+              <span>research/notes/</span>
+            </li>
+            <li class="folder-item" data-folder="artifacts" id="folder-artifacts">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+              <span>artifacts/</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Directory Details Details Panel -->
+        <div class="explorer-details-panel" id="explorer-details">
+          <!-- Dynamically populated by JS -->
+        </div>
+      </div>
     </div>
   </section>
 
-  <footer>
-    <p>Hermes Workspace Landing Page | hermes-workspace repo</p>
+  <!-- Section: Review Required & Safety Checklist -->
+  <section class="dashboard-section" id="safety">
+    <div class="container">
+      <div class="section-title-area">
+        <h2>Safety Gate & Review Criteria</h2>
+        <p>Verify constraints protecting configuration settings, credentials, and production services</p>
+      </div>
+
+      <div class="safety-layout">
+        <!-- Safety Warnings / Forbidden Artifacts -->
+        <div class="safety-warning-card">
+          <div class="safety-warning-header">
+            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+            <h3 class="safety-warning-title">Zero-Exposure Secret Policy</h3>
+          </div>
+          <p class="safety-warning-desc">
+            To prevent security leaks, the Hermes operating model absolutely forbids logging, writing, printing, staging, or committing secret credentials. Check local profiles, and reference status without copying values.
+          </p>
+
+          <div class="safety-grid">
+            <div class="safety-item">
+              <span class="safety-item-title text-color-red">
+                <span class="status-dot bg-red-500"></span> SSH Keys & Auth
+              </span>
+              <p class="safety-item-desc">Never copy private SSH keys or path configurations under ~/.ssh/.</p>
+            </div>
+            <div class="safety-item">
+              <span class="safety-item-title text-color-red">
+                <span class="status-dot bg-red-500"></span> Environment Secrets
+              </span>
+              <p class="safety-item-desc">API keys, Discord tokens, and .env contents must remain local.</p>
+            </div>
+            <div class="safety-item">
+              <span class="safety-item-title text-color-red">
+                <span class="status-dot bg-red-500"></span> auth.json configs
+              </span>
+              <p class="safety-item-desc">Local credentials and API token JSON files are untracked.</p>
+            </div>
+            <div class="safety-item">
+              <span class="safety-item-title text-color-red">
+                <span class="status-dot bg-red-500"></span> Provider Tokens
+              </span>
+              <p class="safety-item-desc">Do not copy raw output files containing provider connection strings.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Interactive Checklist of Review Required Gates -->
+        <div class="checklist-card">
+          <h3 class="checklist-title">
+            <span>Review-Required Criteria</span>
+            <span class="text-xs text-color-orange uppercase font-mono border border-orange-500-20 px-2 py-0.5 rounded">Gated Actions</span>
+          </h3>
+          
+          <div class="checklist-list">
+            <div class="checklist-item checked">
+              <div class="checklist-checkbox">
+                <svg fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"></path></svg>
+              </div>
+              <div class="checklist-item-text">
+                <strong>Code & Script Modifications</strong>
+                <p>Edits to shell scripts (bin/hermes-remote), tools, or application code.</p>
+              </div>
+            </div>
+
+            <div class="checklist-item checked">
+              <div class="checklist-checkbox">
+                <svg fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"></path></svg>
+              </div>
+              <div class="checklist-item-text">
+                <strong>Remote System Configurations</strong>
+                <p>Edits to launchd services, systemd, or ~/.hermes/config.yaml profiles.</p>
+              </div>
+            </div>
+
+            <div class="checklist-item checked">
+              <div class="checklist-checkbox">
+                <svg fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"></path></svg>
+              </div>
+              <div class="checklist-item-text">
+                <strong>Gateway State Restarts</strong>
+                <p>Starting/stopping the background Gateway dispatcher service or changing ports.</p>
+              </div>
+            </div>
+
+            <div class="checklist-item checked">
+              <div class="checklist-checkbox">
+                <svg fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"></path></svg>
+              </div>
+              <div class="checklist-item-text">
+                <strong>Key / Credentials Updates</strong>
+                <p>Proposing permission grants, auth configurations, or API credential updates.</p>
+              </div>
+            </div>
+
+            <div class="checklist-item checked">
+              <div class="checklist-checkbox">
+                <svg fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"></path></svg>
+              </div>
+              <div class="checklist-item-text">
+                <strong>Recurring Analysis Automation</strong>
+                <p>Defining recurring Cron jobs or automatic dispatch intervals in Kanban dispatcher.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section: How to Inspect & Verify Results -->
+  <section class="dashboard-section">
+    <div class="container">
+      <div class="section-title-area">
+        <h2>How to Inspect Results</h2>
+        <p>Standard instructions and commands to verify workspace changes and promote tasks</p>
+      </div>
+
+      <div class="verification-layout">
+        <!-- Step instructions -->
+        <div class="verify-steps">
+          <div class="verify-step">
+            <span class="verify-step-num">1</span>
+            <div class="verify-step-text">
+              <h4 class="verify-step-title">Check Isolated Git Diff</h4>
+              <p class="verify-step-desc">Inspect exactly what changed in the current isolated worktree to prevent extraneous staging.</p>
+            </div>
+          </div>
+          <div class="verify-step">
+            <span class="verify-step-num">2</span>
+            <div class="verify-step-text">
+              <h4 class="verify-step-title">Run Script Syntax Tests</h4>
+              <p class="verify-step-desc">Check bash scripts using syntax linting before launching remote operations.</p>
+            </div>
+          </div>
+          <div class="verify-step">
+            <span class="verify-step-num">3</span>
+            <div class="verify-step-text">
+              <h4 class="verify-step-title">Validate Research Outputs</h4>
+              <p class="verify-step-desc">Ensure brief files, source ledgers (.jsonl), notes, and reports are present in their corresponding paths.</p>
+            </div>
+          </div>
+          <div class="verify-step">
+            <span class="verify-step-num">4</span>
+            <div class="verify-step-text">
+              <h4 class="verify-step-title">Check SSH Target Status</h4>
+              <p class="verify-step-desc">Confirm target connectivity using the remote manager script commands.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Code Block view -->
+        <div class="code-mockup-panel">
+          <div class="code-mockup-header">
+            <span class="code-mockup-title">verification_workflow.sh</span>
+            <span class="text-xs text-color-cyan uppercase font-mono">Terminal Presets</span>
+          </div>
+          <div class="code-mockup-body">
+            <pre class="code-mockup-pre"><code><span class="text-color-purple"># 1. Verify changes in the isolated workspace</span>
+git status --short
+git diff --stat
+
+<span class="text-color-purple"># 2. Syntax check operations script</span>
+bash -n bin/hermes-remote
+
+<span class="text-color-purple"># 3. Check connectivity & gateway status on remote target</span>
+bin/hermes-remote --target bobeen-mac check-ssh
+bin/hermes-remote --target bobeen-mac status
+
+<span class="text-color-purple"># 4. Verify research files existence</span>
+test -f research/briefs/&lt;YYYY-MM-DD&gt;-&lt;slug&gt;.md
+test -f research/sources/&lt;YYYY-MM-DD&gt;-&lt;slug&gt;.jsonl
+test -f reports/&lt;YYYY-MM-DD&gt;-&lt;slug&gt;.md</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Dashboard Footer -->
+  <footer class="dashboard-footer">
+    <div class="container footer-content">
+      <div class="footer-brand">
+        <!-- Inline Winged Helmet SVG (Hermes Symbol) -->
+        <svg class="w-5 h-5 text-color-cyan" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width:20px;height:20px;">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 14l9-5-9-5-9 5 9 5zm0 0l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14zm-4 6v-7.5l4-2.222"></path>
+        </svg>
+        <span>HERMES OPERATIONAL DASHBOARD</span>
+      </div>
+      <div class="footer-copy">
+        &copy; 2026 Hermes Workspace. Supervised under NousResearch guidelines.
+      </div>
+    </div>
   </footer>
+
+  <!-- Scripts -->
+  <script src="scripts/main.js"></script>
 </body>
 </html>
