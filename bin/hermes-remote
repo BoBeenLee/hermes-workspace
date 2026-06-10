@@ -72,11 +72,11 @@ Commands:
   check-ssh                 Verify SSH connectivity and core paths.
   status                    Show Hermes, gateway, computer_use, Kanban, dashboard, and process state.
   setup-computer-use        Install cua-driver and wire Hermes config/toolset.
-  grant-computer-use        Open CuaDriver permission grant flow on the remote Mac.
+  grant-computer-use        Open CuaDriver permission grant flow on the remote macOS host.
   verify-computer-use       Verify permissions, MCP, screen size, and window access.
   setup-kanban              Initialize Kanban and enable gateway dispatcher config.
   antigravity-check         Verify Antigravity CLI, tmux, workspace, and config state.
-  setup-antigravity         Install or locate Antigravity CLI on the remote Mac.
+  setup-antigravity         Install or locate Antigravity CLI on the remote Hermes host.
   antigravity-auth          Print SSH auth steps for Antigravity CLI.
   antigravity-run <task>    Start an isolated tmux Antigravity implementation session.
   antigravity-status <id>   Show tmux, log, git, and artifact state for a session.
@@ -85,7 +85,7 @@ Commands:
   setup-antigravity-worker  Register Antigravity as a Hermes MCP worker.
   verify-antigravity-worker Verify Hermes can discover and call the worker.
   gateway-restart           Restart the Hermes gateway service.
-  dashboard-start           Start dashboard on the remote Mac at 127.0.0.1:9119.
+  dashboard-start           Start dashboard on the remote Hermes host at 127.0.0.1:9119.
   dashboard-status          Show dashboard status.
   is-working <thread_id>    Decide whether a Discord thread still has active Hermes work.
   tail-thread <thread_id>   Print recent gateway/agent log lines for a Discord thread.
@@ -393,7 +393,7 @@ cat <<AUTH
 
 Authentication requires a human browser step over SSH:
 
-1. SSH to the Hermes MacBook:
+1. SSH to the active Hermes host:
    ssh $HERMES_REMOTE_HOST
 
 2. Open the canonical workspace:
@@ -424,7 +424,7 @@ if test -z "$AGY_BIN"; then
   exit 1
 fi
 if ! command -v "$TMUX_BIN" >/dev/null 2>&1; then
-  echo "tmux missing on remote Mac. Install tmux before using antigravity-run." >&2
+  echo "tmux missing on remote Hermes host. Install tmux before using antigravity-run." >&2
   exit 1
 fi
 if ! git -C "$HERMES_REMOTE_WORKSPACE" rev-parse --show-toplevel >/dev/null 2>&1; then

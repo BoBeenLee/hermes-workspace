@@ -1,6 +1,6 @@
 # Hermes Workspace Agent Guide
 
-SSH-first toolkit for operating the remote Hermes Agent on the Hermes MacBook. Read this before changing files here or operating the remote Mac.
+SSH-first toolkit for operating a remote Hermes Agent host. Read this before changing files here or operating a remote macOS or Linux host.
 
 ## Source Context
 
@@ -15,19 +15,28 @@ The operating model comes from:
 
 Important terms:
 
-- **Control MacBook**: the local Mac where Codex/Desktop automation runs.
-- **Hermes MacBook**: the remote Mac that runs NousResearch `hermes-agent`.
-- **DGX Spark**: the user's NVIDIA DGX Spark / GIGABYTE AI TOP ATOM Linux workstation. It is separate from the Hermes MacBook; use `docs/dgx-spark-remote-access.md` for SSH, dashboard, RDP/xrdp, and browser setup.
+- **Control host**: the local machine where Codex/Desktop automation runs.
+- **Hermes host**: the remote macOS or Linux user account that runs NousResearch `hermes-agent`.
+- **Default macOS target**: the current Hermes host profile in `config/targets/bobeen-mac.env`, used for the existing MacBook setup.
+- **DGX Spark**: the user's NVIDIA DGX Spark / GIGABYTE AI TOP ATOM Linux workstation. It is separate from the Hermes host profile unless explicitly configured as one; use `docs/dgx-spark-remote-access.md` for SSH, dashboard, RDP/xrdp, and browser setup.
 - **Hermes agent**: the per-user Hermes install at `~/.hermes/hermes-agent`, with config/data/logs under `~/.hermes` and command wrapper at `~/.local/bin/hermes`.
-- **Remote access path**: SSH key access from Control MacBook to Hermes MacBook. Tailscale/LAN aliases are access paths, not application state.
+- **Remote access path**: SSH key access from the control host to a Hermes host. Tailscale/LAN aliases are access paths, not application state.
 - **Workspace Lifecycle module**: the interface every Hermes task follows before it is reported as `done` or `review-required`.
 - **Research Analysis module**: the interface for market research and analysis work, including brief, source ledger, notes, and report artifacts.
 - **Discord HIL Gate**: the human-in-the-loop clarification checkpoint Hermes uses before acting on ambiguous or risky Discord requests.
 - **Approval Summary**: the final Discord message Hermes posts after clarification, summarizing the intended work for explicit human approval.
 
+## Target Model
+
+Hermes operations are SSH-first and target-profile driven. Host-specific values belong in `.env` or `config/targets/<target>.env`, while the workflow should stay portable across macOS and Linux.
+
+The original configuration names a specific MacBook because it was the first production Hermes host and needed a reliable runbook for SSH, launchd, CuaDriver, gateway logs, and the canonical workspace path. Keep those concrete values as the current default target, but write new workflow guidance in terms of a generic Hermes host unless a step is macOS-only or Linux-only.
+
+Defaults live in `config/example.env`; local overrides live in ignored `.env`. Target examples live under `config/targets/`, with OS notes in `docs/targets/`.
+
 ## Current Default Target
 
-Defaults live in `config/example.env`; local overrides live in ignored `.env`.
+The current default target is the macOS profile for the existing Hermes host:
 
 - SSH alias: `bobeen`
 - Remote user: `bobeenlee`
@@ -56,16 +65,16 @@ Do not commit `.env`.
 Start every remote operations session with:
 
 ```bash
-cd /Users/mac_al03241161/Documents/mygit/hermes-workspace
+cd /Users/mac_al03241161/Documents/mygit/bbl-ai-lab/hermes-workspace
 bin/hermes-remote check-ssh
 bin/hermes-remote status
 ```
 
-Start every Hermes repo task with `docs/workspace-lifecycle.md`: choose task type, use canonical workspace, isolate branch/worktree, produce required outputs, run checks, finish `done` or `review-required`.
+Start every Hermes repo task with `docs/workspace-lifecycle.md`: choose task type, use the target profile's canonical workspace, isolate branch/worktree, produce required outputs, run checks, finish `done` or `review-required`.
 
 If SSH fails:
 
-- Check Tailscale status from the Control MacBook.
+- Check Tailscale status from the control host.
 - Try the configured SSH alias before changing config.
 - Remember that VNC/Screen Sharing can be reachable while SSH is temporarily slow or unavailable.
 
@@ -159,7 +168,7 @@ bin/hermes-remote dashboard-status
 bin/hermes-remote dashboard-start
 ```
 
-It binds to `127.0.0.1:9119` on the remote Mac by default. Do not use insecure external binding unless explicitly requested.
+It binds to `127.0.0.1:9119` on the remote host by default. Do not use insecure external binding unless explicitly requested.
 
 ## DGX Spark Operations
 

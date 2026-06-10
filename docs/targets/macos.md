@@ -5,7 +5,8 @@ Use a macOS target profile when the remote Hermes agent runs on a user-level mac
 The current default profile is:
 
 ```bash
-bin/hermes-remote --target bobeen-mac config
+cp config/targets/bobeen-mac.env .env
+bin/hermes-remote status
 ```
 
 Required profile fields:

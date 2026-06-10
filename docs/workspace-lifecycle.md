@@ -4,13 +4,13 @@ The Workspace Lifecycle module is the deep interface for Hermes work in this rep
 
 ## Canonical Workspace
 
-The remote Hermes workspace is:
+Use the canonical workspace from the active target profile. For the current default macOS target it is:
 
 ```text
 /Users/bobeenlee/Workspaces/hermes-workspace
 ```
 
-Hermes should run from that repo root and use git worktree isolation:
+Hermes should run from the target profile's repo root and use git worktree isolation:
 
 ```yaml
 terminal:
@@ -25,6 +25,8 @@ For one-shot CLI work:
 cd /Users/bobeenlee/Workspaces/hermes-workspace
 hermes -w
 ```
+
+For Linux targets, use the same lifecycle with the Linux profile's `HERMES_REMOTE_WORKSPACE`, commonly `/home/<user>/Workspaces/hermes-workspace`. Keep OS-specific paths in `.env` or `config/targets/<target>.env`; do not bake them into lifecycle rules.
 
 ## Discord HIL Gate
 

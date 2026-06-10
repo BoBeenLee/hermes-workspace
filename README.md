@@ -1,8 +1,10 @@
 # Hermes Workspace
 
-Operator repo for managing a Hermes Agent on a remote Mac over SSH/Tailscale.
+Operator repo for managing a Hermes Agent on a remote macOS or Linux host over SSH/Tailscale.
 
-It supports the `bobeen-macbookpro-2` flow: check Hermes, install/verify `computer_use`, initialize Kanban, restart gateway, inspect Discord thread work, and keep tasks inside a git-backed workspace lifecycle.
+It currently defaults to the `bobeen-mac` macOS profile, which records the first production Hermes host. That specific profile exists so operators can reliably check Hermes, install/verify `computer_use`, initialize Kanban, restart gateway, inspect Discord thread work, and keep tasks inside a git-backed workspace lifecycle without rediscovering host paths.
+
+The general model is target-profile based: macOS hosts may use launchd and CuaDriver desktop control, while Linux hosts use the same SSH and workspace lifecycle without macOS desktop control until a Linux backend is configured.
 
 It also records the DGX Spark / AI TOP ATOM remote access path for `bobeenlee`, including SSH, DGX Dashboard tunneling, RDP/xrdp setup, and Chromium-on-arm64 notes. See [docs/dgx-spark-remote-access.md](docs/dgx-spark-remote-access.md).
 
@@ -23,6 +25,8 @@ The canonical remote workspace for Hermes work is:
 ```text
 /Users/bobeenlee/Workspaces/hermes-workspace
 ```
+
+For another target, use that profile's `HERMES_REMOTE_WORKSPACE` instead, such as `/home/<user>/Workspaces/hermes-workspace` on Linux.
 
 Hermes should use this config shape:
 
@@ -96,4 +100,4 @@ reports/
 
 - The repo does not store SSH keys, provider keys, Discord tokens, or Hermes secrets.
 - Remote config changes are backed up under `~/.hermes/config.yaml.bak-remote-ops-*`.
-- The script assumes the remote Hermes wrapper is at `/Users/bobeenlee/.local/bin/hermes`; change `.env` for another Mac.
+- The script reads target values from `.env` or `config/example.env`; copy from `config/targets/bobeen-mac.env` or `config/targets/linux-example.env` when setting up another host.

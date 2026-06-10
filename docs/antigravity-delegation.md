@@ -1,10 +1,10 @@
 # Antigravity Delegation
 
-Antigravity delegated implementation lets Hermes call Antigravity CLI as an implementation worker on the Hermes MacBook. Hermes remains the supervisor and verifier.
+Antigravity delegated implementation lets Hermes call Antigravity CLI as an implementation worker on the active Hermes host. Hermes remains the supervisor and verifier.
 
 ## Operating Model
 
-- Hermes starts from the canonical remote workspace: `/Users/bobeenlee/Workspaces/hermes-workspace`.
+- Hermes starts from the active target profile's canonical remote workspace. The current default macOS target uses `/Users/bobeenlee/Workspaces/hermes-workspace`.
 - `bin/hermes-remote antigravity-run` creates an isolated git worktree and branch.
 - v2 registers `antigravity-worker` as a Hermes MCP stdio server.
 - The MCP worker creates an isolated git worktree and branch, then runs Antigravity CLI as a repo-local implementation worker.
@@ -41,7 +41,7 @@ Hermes MCP tools exposed by `antigravity-worker`:
 
 ## Setup And Auth
 
-`setup-antigravity` installs or locates the `agy` binary on the remote Mac. `antigravity-auth` prints the SSH browser-code authentication steps. Authentication is a human step because Antigravity may print an authorization URL that must be opened in a local browser.
+`setup-antigravity` installs or locates the `agy` binary on the remote Hermes host. `antigravity-auth` prints the SSH browser-code authentication steps. Authentication is a human step because Antigravity may print an authorization URL that must be opened in a local browser.
 
 Do not copy provider tokens, `~/.hermes/auth.json`, SSH keys, `.env`, or other secret files into logs or reports.
 

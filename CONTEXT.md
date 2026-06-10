@@ -3,30 +3,34 @@
 ## Language
 
 **Hermes workspace**:
-The operating model and canonical repo for managing the Hermes MacBook from a Control MacBook over an approved SSH/Tailscale path. It includes diagnosis, gateway operations, computer_use setup, Kanban setup, incident triage, and workspace lifecycle work.
+The operating model and canonical repo for managing a remote Hermes host from a control host over an approved SSH/Tailscale path. It includes diagnosis, gateway operations, computer_use setup where supported, Kanban setup, incident triage, and workspace lifecycle work.
 _Avoid_: generic automation repo, one-off SSH scripts
 
-**Control MacBook**:
-The local Mac where Codex/Desktop automation runs. It is the operator entry point for SSH, docs, and repo changes.
+**Control host**:
+The local machine where Codex/Desktop automation runs. It is the operator entry point for SSH, docs, and repo changes.
 _Avoid_: local laptop, Claude Mac
 
-**Hermes MacBook**:
-The remote Mac that runs NousResearch `hermes-agent` for the user account.
-_Avoid_: target machine, other Mac
+**Hermes host**:
+The remote macOS or Linux user account that runs NousResearch `hermes-agent`.
+_Avoid_: vague target machine, assuming every Hermes host is the current MacBook
+
+**Default macOS target**:
+The current concrete Hermes host profile in `config/targets/bobeen-mac.env` and `config/example.env`. It preserves the known MacBook SSH alias, user, launchd service behavior, CuaDriver paths, and workspace path so operators can act without rediscovering production details.
+_Avoid_: treating the default target as the only supported operating model
 
 **DGX Spark**:
-The user's NVIDIA DGX Spark / GIGABYTE AI TOP ATOM Linux workstation reachable on the LAN for SSH, DGX Dashboard, and remote desktop work. It is not the Hermes MacBook. Current observed access path is `bobeenlee@172.30.1.87` / `aitopatom-36a9.local`.
-_Avoid_: assuming DGX operations use the Hermes MacBook tooling, treating the onboarding web UI as a permanent service
+The user's NVIDIA DGX Spark / GIGABYTE AI TOP ATOM Linux workstation reachable on the LAN for SSH, DGX Dashboard, and remote desktop work. It is not automatically a Hermes host. Current observed access path is `bobeenlee@172.30.1.87` / `aitopatom-36a9.local`.
+_Avoid_: assuming DGX operations use the default Hermes target tooling, treating the onboarding web UI as a permanent service
 
 **DGX Dashboard**:
-The NVIDIA dashboard service on the DGX Spark. It was observed bound to `127.0.0.1:11000` on the device and should be reached from the Control MacBook through an SSH tunnel unless the user explicitly asks for external binding.
+The NVIDIA dashboard service on the DGX Spark. It was observed bound to `127.0.0.1:11000` on the device and should be reached from the control host through an SSH tunnel unless the user explicitly asks for external binding.
 _Avoid_: exposing dashboard externally by default, confusing with Hermes dashboard
 
 **Hermes agent**:
 The per-user Hermes install at `~/.hermes/hermes-agent`, with config/data/logs under `~/.hermes` and command wrapper at `~/.local/bin/hermes`.
 
 **Remote access path**:
-The SSH route from Control MacBook to Hermes MacBook. LAN hostnames and Tailscale aliases are access paths, not application state.
+The SSH route from a control host to a Hermes host. LAN hostnames and Tailscale aliases are access paths, not application state.
 
 **Workspace Lifecycle module**:
 The repo-level interface that every Hermes task follows: choose a task type, start in the canonical workspace root, work in an isolated worktree, produce required outputs, run checks, and finish as `done` or `review-required`.
