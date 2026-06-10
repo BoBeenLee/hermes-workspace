@@ -17,7 +17,7 @@ HERMES_COMPUTER_USE_BACKEND=cua-driver
 HERMES_REMOTE_HOME=/Users/<user>
 HERMES_BIN=/Users/<user>/.local/bin/hermes
 HERMES_CONFIG=/Users/<user>/.hermes/config.yaml
-HERMES_WORKSPACE_ROOT=/Users/<user>/Workspaces/hermes-workspace
+HERMES_REMOTE_WORKSPACE=/Users/<user>/Workspaces/hermes-workspace
 ```
 
 Supported operations:

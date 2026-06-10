@@ -2,113 +2,90 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET_DIR="$ROOT_DIR/config/targets"
-
-HERMES_TARGET="${HERMES_TARGET:-bobeen-mac}"
-args=()
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --target)
-      if [[ -z "${2:-}" ]]; then
-        echo "--target requires a value" >&2
-        exit 2
-      fi
-      HERMES_TARGET="$2"
-      shift 2
-      ;;
-    --target=*)
-      HERMES_TARGET="${1#--target=}"
-      shift
-      ;;
-    *)
-      args+=("$1")
-      shift
-      ;;
-  esac
-done
-set -- "${args[@]}"
-
-TARGET_PROFILE="$TARGET_DIR/$HERMES_TARGET.env"
-if [[ ! -f "$TARGET_PROFILE" ]]; then
-  echo "Unknown Hermes target profile: $HERMES_TARGET" >&2
-  echo "Expected profile at: $TARGET_PROFILE" >&2
-  exit 2
-fi
-
-SELECTED_HERMES_TARGET="$HERMES_TARGET"
-# shellcheck disable=SC1090
-source "$TARGET_PROFILE"
 
 if [[ -f "$ROOT_DIR/.env" ]]; then
   # shellcheck disable=SC1091
   source "$ROOT_DIR/.env"
+elif [[ -f "$ROOT_DIR/config/example.env" ]]; then
+  # shellcheck disable=SC1091
+  source "$ROOT_DIR/config/example.env"
 fi
-HERMES_TARGET="$SELECTED_HERMES_TARGET"
 
-: "${HERMES_REMOTE_HOST:?HERMES_REMOTE_HOST is required by target profile}"
-: "${HERMES_REMOTE_HOME:?HERMES_REMOTE_HOME is required by target profile}"
-: "${HERMES_REMOTE_USER:=}"
-: "${HERMES_REMOTE_OS:=macos}"
-: "${HERMES_SERVICE_MANAGER:=auto}"
-: "${HERMES_COMPUTER_USE_BACKEND:=none}"
+: "${HERMES_REMOTE_HOST:=bobeen}"
+: "${HERMES_REMOTE_HOME:=/Users/bobeenlee}"
 : "${HERMES_BIN:=$HERMES_REMOTE_HOME/.local/bin/hermes}"
-: "${CUA_BIN=$HERMES_REMOTE_HOME/.local/bin/cua-driver}"
+: "${CUA_BIN:=$HERMES_REMOTE_HOME/.local/bin/cua-driver}"
 : "${HERMES_CONFIG:=$HERMES_REMOTE_HOME/.hermes/config.yaml}"
-: "${HERMES_WORKSPACE_ROOT:=$HERMES_REMOTE_HOME/Workspaces/hermes-workspace}"
-: "${HERMES_WORKSPACE_REPO:=git@github.com:BoBeenLee/hermes-workspace.git}"
-: "${HERMES_WORKSPACE_BRANCH:=main}"
+: "${HERMES_REMOTE_WORKSPACE:=$HERMES_REMOTE_HOME/Workspaces/hermes-workspace}"
+: "${ANTIGRAVITY_BIN:=$HERMES_REMOTE_HOME/.local/bin/agy}"
+: "${ANTIGRAVITY_ARTIFACT_ROOT:=$HERMES_REMOTE_WORKSPACE/artifacts/antigravity}"
+: "${TMUX_BIN:=tmux}"
+: "${HERMES_NODE_BIN:=$HERMES_REMOTE_HOME/.hermes/node/bin/node}"
+: "${HERMES_REMOTE_PATH:=$HERMES_REMOTE_HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
 : "${SSH_CONNECT_TIMEOUT:=8}"
 
 ssh_remote() {
   ssh -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "$HERMES_REMOTE_HOST" "$@"
 }
 
-remote_bash() {
-  ssh_remote "HERMES_TARGET='$HERMES_TARGET' HERMES_REMOTE_HOME='$HERMES_REMOTE_HOME' HERMES_REMOTE_OS='$HERMES_REMOTE_OS' HERMES_SERVICE_MANAGER='$HERMES_SERVICE_MANAGER' HERMES_COMPUTER_USE_BACKEND='$HERMES_COMPUTER_USE_BACKEND' HERMES_BIN='$HERMES_BIN' CUA_BIN='$CUA_BIN' HERMES_CONFIG='$HERMES_CONFIG' HERMES_WORKSPACE_ROOT='$HERMES_WORKSPACE_ROOT' HERMES_WORKSPACE_REPO='$HERMES_WORKSPACE_REPO' HERMES_WORKSPACE_BRANCH='$HERMES_WORKSPACE_BRANCH' bash -s"
+scp_remote() {
+  scp -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "$@"
 }
 
-require_computer_use_backend() {
-  if [[ "$HERMES_REMOTE_OS" != "macos" || "$HERMES_COMPUTER_USE_BACKEND" != "cua-driver" ]]; then
-    echo "Unsupported command for target '$HERMES_TARGET': computer_use backend is '$HERMES_COMPUTER_USE_BACKEND' on '$HERMES_REMOTE_OS'." >&2
-    echo "This command requires macos with HERMES_COMPUTER_USE_BACKEND=cua-driver." >&2
+remote_bash() {
+  ssh_remote "PATH='$HERMES_REMOTE_PATH' HERMES_REMOTE_HOST='$HERMES_REMOTE_HOST' HERMES_REMOTE_HOME='$HERMES_REMOTE_HOME' HERMES_BIN='$HERMES_BIN' CUA_BIN='$CUA_BIN' HERMES_CONFIG='$HERMES_CONFIG' HERMES_REMOTE_WORKSPACE='$HERMES_REMOTE_WORKSPACE' ANTIGRAVITY_BIN='$ANTIGRAVITY_BIN' ANTIGRAVITY_ARTIFACT_ROOT='$ANTIGRAVITY_ARTIFACT_ROOT' TMUX_BIN='$TMUX_BIN' HERMES_NODE_BIN='$HERMES_NODE_BIN' bash -s"
+}
+
+require_arg() {
+  local name="$1"
+  local value="${2:-}"
+  if [[ -z "$value" ]]; then
+    echo "$name required" >&2
     exit 2
   fi
 }
 
-show_config() {
-  cat <<CONFIG
-HERMES_TARGET=$HERMES_TARGET
-HERMES_REMOTE_HOST=$HERMES_REMOTE_HOST
-HERMES_REMOTE_USER=$HERMES_REMOTE_USER
-HERMES_REMOTE_HOME=$HERMES_REMOTE_HOME
-HERMES_REMOTE_OS=$HERMES_REMOTE_OS
-HERMES_SERVICE_MANAGER=$HERMES_SERVICE_MANAGER
-HERMES_COMPUTER_USE_BACKEND=$HERMES_COMPUTER_USE_BACKEND
-HERMES_BIN=$HERMES_BIN
-CUA_BIN=$CUA_BIN
-HERMES_CONFIG=$HERMES_CONFIG
-HERMES_WORKSPACE_ROOT=$HERMES_WORKSPACE_ROOT
-HERMES_WORKSPACE_REPO=$HERMES_WORKSPACE_REPO
-HERMES_WORKSPACE_BRANCH=$HERMES_WORKSPACE_BRANCH
-SSH_CONNECT_TIMEOUT=$SSH_CONNECT_TIMEOUT
-CONFIG
+quote_value() {
+  printf '%q' "$1"
+}
+
+antigravity_task_bash() {
+  local task="$1"
+  local quoted_task
+  quoted_task="$(quote_value "$task")"
+  ssh_remote "PATH='$HERMES_REMOTE_PATH' HERMES_REMOTE_HOME='$HERMES_REMOTE_HOME' HERMES_REMOTE_WORKSPACE='$HERMES_REMOTE_WORKSPACE' ANTIGRAVITY_BIN='$ANTIGRAVITY_BIN' ANTIGRAVITY_ARTIFACT_ROOT='$ANTIGRAVITY_ARTIFACT_ROOT' TMUX_BIN='$TMUX_BIN' ANTIGRAVITY_TASK=$quoted_task bash -s"
+}
+
+antigravity_session_bash() {
+  local session="$1"
+  local quoted_session
+  quoted_session="$(quote_value "$session")"
+  ssh_remote "PATH='$HERMES_REMOTE_PATH' HERMES_REMOTE_WORKSPACE='$HERMES_REMOTE_WORKSPACE' ANTIGRAVITY_ARTIFACT_ROOT='$ANTIGRAVITY_ARTIFACT_ROOT' TMUX_BIN='$TMUX_BIN' ANTIGRAVITY_SESSION=$quoted_session bash -s"
 }
 
 usage() {
   cat <<'USAGE'
 Usage:
-  bin/hermes-remote [--target <name>] <command> [args]
+  bin/hermes-remote <command> [args]
 
 Commands:
-  config                    Print the resolved target profile.
   check-ssh                 Verify SSH connectivity and core paths.
-  status                    Show Hermes, gateway, optional computer_use, Kanban, dashboard, and process state.
-  setup-computer-use        Install cua-driver and wire Hermes config/toolset (macOS/cua-driver targets only).
-  grant-computer-use        Open CuaDriver permission grant flow (macOS/cua-driver targets only).
-  verify-computer-use       Verify permissions, MCP, screen size, and window access (macOS/cua-driver targets only).
+  status                    Show Hermes, gateway, computer_use, Kanban, dashboard, and process state.
+  setup-computer-use        Install cua-driver and wire Hermes config/toolset.
+  grant-computer-use        Open CuaDriver permission grant flow on the remote Mac.
+  verify-computer-use       Verify permissions, MCP, screen size, and window access.
   setup-kanban              Initialize Kanban and enable gateway dispatcher config.
+  antigravity-check         Verify Antigravity CLI, tmux, workspace, and config state.
+  setup-antigravity         Install or locate Antigravity CLI on the remote Mac.
+  antigravity-auth          Print SSH auth steps for Antigravity CLI.
+  antigravity-run <task>    Start an isolated tmux Antigravity implementation session.
+  antigravity-status <id>   Show tmux, log, git, and artifact state for a session.
+  antigravity-stop <id>     Stop a running Antigravity tmux session.
+  antigravity-collect <id>  Capture logs, diff, checks, and review-required note.
+  setup-antigravity-worker  Register Antigravity as a Hermes MCP worker.
+  verify-antigravity-worker Verify Hermes can discover and call the worker.
   gateway-restart           Restart the Hermes gateway service.
-  dashboard-start           Start dashboard on the remote target at 127.0.0.1:9119.
+  dashboard-start           Start dashboard on the remote Mac at 127.0.0.1:9119.
   dashboard-status          Show dashboard status.
   is-working <thread_id>    Decide whether a Discord thread still has active Hermes work.
   tail-thread <thread_id>   Print recent gateway/agent log lines for a Discord thread.
@@ -116,63 +93,42 @@ Commands:
   logs                      Print recent gateway, agent, and error logs.
 
 Config:
-  Target profiles live under config/targets/<name>.env.
-  Use --target <name> or HERMES_TARGET=<name>. Local .env overrides the selected profile.
+  Copy config/example.env to .env and edit host/paths.
 USAGE
 }
 
 check_ssh() {
-  remote_bash <<'REMOTE'
-set -e
-hostname
-whoami
-date
-test -x "$HERMES_BIN" && "$HERMES_BIN" --version || true
-if [[ "$HERMES_COMPUTER_USE_BACKEND" == "cua-driver" ]]; then
-  test -x "$CUA_BIN" && "$CUA_BIN" --version || true
-fi
-REMOTE
+  ssh_remote "set -e; hostname; whoami; date; test -x '$HERMES_BIN' && '$HERMES_BIN' --version || true; test -x '$CUA_BIN' && '$CUA_BIN' --version || true"
 }
 
 status() {
-  remote_bash <<'REMOTE'
-set +e
+  ssh_remote "set +e
 echo '== host =='
-hostname
-whoami
-date
-echo "target: $HERMES_TARGET"
-echo "os: $HERMES_REMOTE_OS"
-echo "service manager: $HERMES_SERVICE_MANAGER"
-echo "computer_use backend: $HERMES_COMPUTER_USE_BACKEND"
+hostname; whoami; date
 echo
 echo '== hermes status =='
-"$HERMES_BIN" status
+'$HERMES_BIN' status
 echo
 echo '== gateway =='
-"$HERMES_BIN" gateway status
-if [[ "$HERMES_COMPUTER_USE_BACKEND" == "cua-driver" ]]; then
-  echo
-  echo '== computer_use =='
-  "$HERMES_BIN" computer-use status
-  echo
-  echo '== cua permissions =='
-  "$CUA_BIN" permissions status
-fi
+'$HERMES_BIN' gateway status
+echo
+echo '== computer_use =='
+'$HERMES_BIN' computer-use status
+echo
+echo '== cua permissions =='
+'$CUA_BIN' permissions status
 echo
 echo '== kanban =='
-"$HERMES_BIN" kanban stats
+'$HERMES_BIN' kanban stats
 echo
 echo '== dashboard =='
-"$HERMES_BIN" dashboard --status
+'$HERMES_BIN' dashboard --status
 echo
 echo '== processes =='
-(ps -axo pid,etime,stat,command 2>/dev/null || ps -eo pid,etime,stat,command 2>/dev/null) | grep -E 'hermes|gateway|cua-driver' | grep -v grep
-REMOTE
+/bin/ps -axo pid,etime,stat,command | /usr/bin/grep -E 'hermes|gateway|cua-driver' | /usr/bin/grep -v grep"
 }
 
 setup_computer_use() {
-  require_computer_use_backend
   ssh_remote "'$HERMES_BIN' computer-use install || true"
 
   remote_bash <<'REMOTE'
@@ -256,12 +212,10 @@ REMOTE
 }
 
 grant_computer_use() {
-  require_computer_use_backend
   ssh_remote "'$CUA_BIN' permissions grant"
 }
 
 verify_computer_use() {
-  require_computer_use_backend
   ssh_remote "set +e
 open -n -g -a CuaDriver --args serve
 sleep 2
@@ -330,6 +284,424 @@ REMOTE
   ssh_remote "'$HERMES_BIN' kanban boards list && '$HERMES_BIN' kanban stats && '$HERMES_BIN' kanban diagnostics"
 }
 
+antigravity_check() {
+  remote_bash <<'REMOTE'
+set +e
+echo '== host =='
+hostname; whoami; date
+echo
+echo '== workspace =='
+echo "$HERMES_REMOTE_WORKSPACE"
+test -d "$HERMES_REMOTE_WORKSPACE" && echo "workspace-present" || echo "workspace-missing"
+if test -d "$HERMES_REMOTE_WORKSPACE/.git" || git -C "$HERMES_REMOTE_WORKSPACE" rev-parse --git-dir >/dev/null 2>&1; then
+  git -C "$HERMES_REMOTE_WORKSPACE" status --short
+else
+  echo "git-status-unavailable"
+fi
+echo
+echo '== tmux =='
+if command -v "$TMUX_BIN" >/dev/null 2>&1; then
+  command -v "$TMUX_BIN"
+  "$TMUX_BIN" -V 2>/dev/null || true
+else
+  echo "tmux-missing"
+fi
+echo
+echo '== antigravity =='
+if command -v agy >/dev/null 2>&1; then
+  command -v agy
+  agy --version 2>/dev/null || true
+elif test -x "$ANTIGRAVITY_BIN"; then
+  echo "$ANTIGRAVITY_BIN"
+  "$ANTIGRAVITY_BIN" --version 2>/dev/null || true
+else
+  echo "agy-missing"
+fi
+echo
+echo '== config files =='
+test -f "$HERMES_REMOTE_HOME/.gemini/antigravity-cli/settings.json" && echo "settings-present" || echo "settings-missing"
+test -f "$HERMES_REMOTE_HOME/.gemini/antigravity/mcp_config.json" && echo "mcp-config-present" || echo "mcp-config-missing"
+echo
+echo '== artifact root =='
+echo "$ANTIGRAVITY_ARTIFACT_ROOT"
+test -d "$ANTIGRAVITY_ARTIFACT_ROOT" && echo "artifact-root-present" || echo "artifact-root-missing"
+REMOTE
+}
+
+setup_antigravity() {
+  remote_bash <<'REMOTE'
+set -euo pipefail
+mkdir -p "$HERMES_REMOTE_HOME/.local/bin"
+if command -v agy >/dev/null 2>&1; then
+  echo "Antigravity CLI already available: $(command -v agy)"
+  agy --version 2>/dev/null || true
+  exit 0
+fi
+if test -x "$ANTIGRAVITY_BIN"; then
+  echo "Antigravity CLI already available: $ANTIGRAVITY_BIN"
+  "$ANTIGRAVITY_BIN" --version 2>/dev/null || true
+  exit 0
+fi
+if ! command -v curl >/dev/null 2>&1; then
+  echo "curl is required to install Antigravity CLI." >&2
+  exit 1
+fi
+echo "Installing Antigravity CLI with the official installer."
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+if command -v agy >/dev/null 2>&1; then
+  echo "Antigravity CLI installed: $(command -v agy)"
+  agy --version 2>/dev/null || true
+elif test -x "$ANTIGRAVITY_BIN"; then
+  echo "Antigravity CLI installed: $ANTIGRAVITY_BIN"
+  "$ANTIGRAVITY_BIN" --version 2>/dev/null || true
+else
+  echo "Installer finished, but agy was not found on PATH or at $ANTIGRAVITY_BIN." >&2
+  exit 1
+fi
+echo "Next: run bin/hermes-remote antigravity-auth for the SSH browser-code login flow."
+if command -v "$TMUX_BIN" >/dev/null 2>&1; then
+  echo "tmux available: $("$TMUX_BIN" -V)"
+else
+  echo "tmux missing: install tmux before running antigravity-run."
+fi
+if git -C "$HERMES_REMOTE_WORKSPACE" rev-parse --show-toplevel >/dev/null 2>&1; then
+  echo "workspace ready: $HERMES_REMOTE_WORKSPACE"
+else
+  echo "workspace missing or not a git repo: $HERMES_REMOTE_WORKSPACE"
+fi
+REMOTE
+}
+
+antigravity_auth() {
+  remote_bash <<'REMOTE'
+set +e
+AGY_BIN="$(command -v agy 2>/dev/null || true)"
+if test -z "$AGY_BIN" && test -x "$ANTIGRAVITY_BIN"; then
+  AGY_BIN="$ANTIGRAVITY_BIN"
+fi
+if test -z "$AGY_BIN"; then
+  echo "Antigravity CLI is not installed. Run: bin/hermes-remote setup-antigravity"
+  exit 1
+fi
+echo "Antigravity CLI: $AGY_BIN"
+if test -f "$HERMES_REMOTE_HOME/.gemini/antigravity-cli/settings.json"; then
+  echo "settings-present"
+else
+  echo "settings-missing"
+fi
+cat <<AUTH
+
+Authentication requires a human browser step over SSH:
+
+1. SSH to the Hermes MacBook:
+   ssh $HERMES_REMOTE_HOST
+
+2. Open the canonical workspace:
+   cd "$HERMES_REMOTE_WORKSPACE"
+
+3. Launch Antigravity CLI:
+   "$AGY_BIN"
+
+4. If Antigravity prints an authorization URL, open it locally, sign in,
+   then paste the returned authorization code into the SSH prompt.
+
+Do not paste provider tokens or copy ~/.hermes/auth.json. This setup is review-required.
+AUTH
+REMOTE
+}
+
+antigravity_run() {
+  local task="$*"
+  require_arg "task prompt" "$task"
+  antigravity_task_bash "$task" <<'REMOTE'
+set -euo pipefail
+AGY_BIN="$(command -v agy 2>/dev/null || true)"
+if test -z "$AGY_BIN" && test -x "$ANTIGRAVITY_BIN"; then
+  AGY_BIN="$ANTIGRAVITY_BIN"
+fi
+if test -z "$AGY_BIN"; then
+  echo "Antigravity CLI missing. Run: bin/hermes-remote setup-antigravity" >&2
+  exit 1
+fi
+if ! command -v "$TMUX_BIN" >/dev/null 2>&1; then
+  echo "tmux missing on remote Mac. Install tmux before using antigravity-run." >&2
+  exit 1
+fi
+if ! git -C "$HERMES_REMOTE_WORKSPACE" rev-parse --show-toplevel >/dev/null 2>&1; then
+  echo "Workspace is not a git repository: $HERMES_REMOTE_WORKSPACE" >&2
+  exit 1
+fi
+
+timestamp="$(date +%Y%m%d-%H%M%S)"
+slug="$(python3 - "$ANTIGRAVITY_TASK" <<'PY'
+import re
+import sys
+text = sys.argv[1].lower()
+slug = re.sub(r"[^a-z0-9]+", "-", text).strip("-")[:40]
+print(slug or "task")
+PY
+)"
+session="antigravity-${timestamp}-${slug}"
+worktree_root="$(dirname "$HERMES_REMOTE_WORKSPACE")/antigravity-worktrees"
+worktree="$worktree_root/$session"
+artifact_dir="$ANTIGRAVITY_ARTIFACT_ROOT/$session"
+branch="codex/antigravity/${timestamp}-${slug}"
+mkdir -p "$worktree_root" "$artifact_dir"
+
+git -C "$HERMES_REMOTE_WORKSPACE" worktree add -b "$branch" "$worktree" HEAD
+cat > "$artifact_dir/task.txt" <<TASK
+$ANTIGRAVITY_TASK
+TASK
+cat > "$artifact_dir/session.env" <<ENV
+session=$session
+branch=$branch
+worktree=$worktree
+artifact_dir=$artifact_dir
+completion_mode=review-required
+ENV
+cat > "$artifact_dir/supervisor-instructions.md" <<'POLICY'
+# Hermes Supervisor Policy
+
+- Antigravity is the implementation worker.
+- Hermes must verify git diff and checks independently.
+- Keep changes inside this isolated worktree.
+- Do not read or print .env, SSH keys, ~/.hermes/auth.json, provider tokens, or copied secret files.
+- Destructive commands and remote config/auth changes require human review.
+- Completion mode is review-required.
+POLICY
+
+"$TMUX_BIN" new-session -d -s "$session" -c "$worktree" "$AGY_BIN --dangerously-skip-permissions"
+"$TMUX_BIN" pipe-pane -t "$session" -o "cat >> '$artifact_dir/tmux-pane.log'"
+sleep 1
+"$TMUX_BIN" send-keys -t "$session" "You are Antigravity CLI acting as an implementation worker under Hermes supervision. Work only in this isolated worktree: $worktree. Do not access secrets. Use automatic approvals only for repo-local implementation and verification commands. Task: $ANTIGRAVITY_TASK. When done, summarize changed files and checks. Completion mode must remain review-required." C-m
+
+echo "session=$session"
+echo "branch=$branch"
+echo "worktree=$worktree"
+echo "artifact_dir=$artifact_dir"
+echo "status=started"
+REMOTE
+}
+
+antigravity_status() {
+  local session="${1:-}"
+  require_arg "session id" "$session"
+  antigravity_session_bash "$session" <<'REMOTE'
+set +e
+artifact_dir="$ANTIGRAVITY_ARTIFACT_ROOT/$ANTIGRAVITY_SESSION"
+echo '== tmux =='
+"$TMUX_BIN" has-session -t "$ANTIGRAVITY_SESSION" 2>/dev/null && echo "running" || echo "not-running"
+"$TMUX_BIN" list-sessions 2>/dev/null | grep -F "$ANTIGRAVITY_SESSION" || true
+echo
+echo '== artifact =='
+echo "$artifact_dir"
+test -d "$artifact_dir" && find "$artifact_dir" -maxdepth 1 -type f -print | sort || echo "artifact-missing"
+echo
+echo '== session env =='
+test -f "$artifact_dir/session.env" && cat "$artifact_dir/session.env" || true
+worktree="$(sed -n 's/^worktree=//p' "$artifact_dir/session.env" 2>/dev/null | head -1)"
+echo
+echo '== git status =='
+if test -n "$worktree" && test -d "$worktree"; then
+  git -C "$worktree" status --short
+else
+  echo "worktree-unavailable"
+fi
+echo
+echo '== log tail =='
+test -f "$artifact_dir/tmux-pane.log" && tail -80 "$artifact_dir/tmux-pane.log" || echo "log-missing"
+REMOTE
+}
+
+antigravity_stop() {
+  local session="${1:-}"
+  require_arg "session id" "$session"
+  antigravity_session_bash "$session" <<'REMOTE'
+set +e
+if "$TMUX_BIN" has-session -t "$ANTIGRAVITY_SESSION" 2>/dev/null; then
+  "$TMUX_BIN" send-keys -t "$ANTIGRAVITY_SESSION" Escape
+  sleep 1
+  "$TMUX_BIN" kill-session -t "$ANTIGRAVITY_SESSION"
+  echo "stopped=$ANTIGRAVITY_SESSION"
+else
+  echo "not-running=$ANTIGRAVITY_SESSION"
+fi
+REMOTE
+}
+
+antigravity_collect() {
+  local session="${1:-}"
+  require_arg "session id" "$session"
+  antigravity_session_bash "$session" <<'REMOTE'
+set +e
+artifact_dir="$ANTIGRAVITY_ARTIFACT_ROOT/$ANTIGRAVITY_SESSION"
+if ! test -d "$artifact_dir"; then
+  echo "artifact missing: $artifact_dir" >&2
+  exit 1
+fi
+write_completion_note() {
+  cat > "$artifact_dir/completion-note.md" <<NOTE
+# Antigravity Delegated Implementation Completion
+
+- task type: delegated-implementation
+- Antigravity session id: $ANTIGRAVITY_SESSION
+- branch: ${branch:-unknown}
+- worktree path: ${worktree:-unknown}
+- changed files or report path: see $artifact_dir/git-summary.txt
+- tests/checks run: verify manually from Antigravity log and rerun required checks
+- captured log path: $artifact_dir/tmux-pane.log
+- completion mode: review-required
+
+Hermes must verify the git diff and checks independently before merge or operational application.
+NOTE
+}
+if "$TMUX_BIN" has-session -t "$ANTIGRAVITY_SESSION" 2>/dev/null; then
+  "$TMUX_BIN" capture-pane -p -t "$ANTIGRAVITY_SESSION" -S -3000 > "$artifact_dir/tmux-capture.txt"
+fi
+worktree="$(sed -n 's/^worktree=//p' "$artifact_dir/session.env" 2>/dev/null | head -1)"
+branch="$(sed -n 's/^branch=//p' "$artifact_dir/session.env" 2>/dev/null | head -1)"
+{
+  echo '== git status =='
+  if test -n "$worktree" && test -d "$worktree"; then
+    git -C "$worktree" status --short
+    echo
+    echo '== git diff --stat =='
+    git -C "$worktree" diff --stat
+    echo
+    echo '== git diff --name-only =='
+    git -C "$worktree" diff --name-only
+  else
+    echo "worktree-unavailable"
+  fi
+} > "$artifact_dir/git-summary.txt"
+if test -n "$worktree" && test -d "$worktree"; then
+  git -C "$worktree" diff > "$artifact_dir/worktree.diff"
+fi
+write_completion_note
+echo '== completion note =='
+cat "$artifact_dir/completion-note.md"
+echo
+echo '== git summary =='
+cat "$artifact_dir/git-summary.txt"
+echo
+echo "artifact_dir=$artifact_dir"
+REMOTE
+}
+
+setup_antigravity_worker() {
+  local mcp_script="$ROOT_DIR/scripts/antigravity-worker-mcp.mjs"
+  local skill_file="$ROOT_DIR/skills/antigravity-delegated-implementation.SKILL.md"
+
+  if [[ ! -f "$mcp_script" ]]; then
+    echo "missing MCP script: $mcp_script" >&2
+    exit 1
+  fi
+  if [[ ! -f "$skill_file" ]]; then
+    echo "missing skill file: $skill_file" >&2
+    exit 1
+  fi
+
+  remote_bash <<'REMOTE'
+set -euo pipefail
+mkdir -p "$HERMES_REMOTE_WORKSPACE/scripts" "$HERMES_REMOTE_WORKSPACE/skills" "$HERMES_REMOTE_HOME/.hermes/skills/devops/antigravity-delegated-implementation"
+if [[ -f "$HERMES_CONFIG" ]]; then
+  cp "$HERMES_CONFIG" "$HERMES_CONFIG.bak-remote-ops-antigravity-worker-$(date +%Y%m%d%H%M%S)"
+fi
+REMOTE
+
+  scp_remote "$mcp_script" "$HERMES_REMOTE_HOST:$HERMES_REMOTE_WORKSPACE/scripts/antigravity-worker-mcp.mjs"
+  scp_remote "$skill_file" "$HERMES_REMOTE_HOST:$HERMES_REMOTE_WORKSPACE/skills/antigravity-delegated-implementation.SKILL.md"
+  scp_remote "$skill_file" "$HERMES_REMOTE_HOST:$HERMES_REMOTE_HOME/.hermes/skills/devops/antigravity-delegated-implementation/SKILL.md"
+
+  remote_bash <<'REMOTE'
+set -euo pipefail
+chmod +x "$HERMES_REMOTE_WORKSPACE/scripts/antigravity-worker-mcp.mjs"
+if [[ ! -x "$HERMES_NODE_BIN" ]]; then
+  echo "Hermes node binary missing: $HERMES_NODE_BIN" >&2
+  exit 1
+fi
+"$HERMES_BIN" mcp remove antigravity-worker >/dev/null 2>&1 || true
+printf '\n' | "$HERMES_BIN" mcp add antigravity-worker --command "$HERMES_NODE_BIN" --args "$HERMES_REMOTE_WORKSPACE/scripts/antigravity-worker-mcp.mjs"
+"$HERMES_BIN" tools enable antigravity-worker:antigravity_check antigravity-worker:antigravity_start_task antigravity-worker:antigravity_status antigravity-worker:antigravity_stop antigravity-worker:antigravity_collect >/dev/null 2>&1 || true
+"$HERMES_BIN" skills check >/dev/null 2>&1 || true
+echo "registered=antigravity-worker"
+echo "mcp_script=$HERMES_REMOTE_WORKSPACE/scripts/antigravity-worker-mcp.mjs"
+echo "repo_skill=$HERMES_REMOTE_WORKSPACE/skills/antigravity-delegated-implementation.SKILL.md"
+echo "installed_skill=$HERMES_REMOTE_HOME/.hermes/skills/devops/antigravity-delegated-implementation/SKILL.md"
+echo "completion_mode=review-required"
+REMOTE
+}
+
+verify_antigravity_worker() {
+  remote_bash <<'REMOTE'
+set +e
+echo '== antigravity readiness =='
+cd "$HERMES_REMOTE_WORKSPACE" || exit 1
+"$HERMES_NODE_BIN" --check "$HERMES_REMOTE_WORKSPACE/scripts/antigravity-worker-mcp.mjs"
+echo
+echo '== mcp test =='
+"$HERMES_BIN" mcp test antigravity-worker
+echo
+echo '== tools summary =='
+"$HERMES_BIN" tools --summary list
+echo
+echo '== direct delegated task smoke =='
+smoke_output="$(
+  printf '%s\n' \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"antigravity_start_task","arguments":{"task":"No-edit MCP verification smoke. Only run pwd and git status --short, then reply with MCP_VERIFY_OK."}}}' |
+    "$HERMES_NODE_BIN" "$HERMES_REMOTE_WORKSPACE/scripts/antigravity-worker-mcp.mjs"
+)"
+echo "$smoke_output"
+session="$(printf '%s\n' "$smoke_output" | python3 -c '
+import json
+import re
+import sys
+text = sys.stdin.read()
+for line in text.splitlines():
+    try:
+        msg = json.loads(line)
+        payload = msg.get("result", {}).get("content", [{}])[0].get("text", "")
+        data = json.loads(payload)
+        if data.get("session"):
+            print(data["session"])
+            raise SystemExit
+    except Exception:
+        continue
+match = re.search(r"antigravity-[0-9]{8}-[0-9]{6}-[a-z0-9-]+", text)
+if match:
+    print(match.group(0))
+')"
+if [[ -z "$session" ]]; then
+  echo "smoke session missing" >&2
+  exit 1
+fi
+for _ in 1 2 3 4 5 6; do
+  sleep 10
+  status_output="$(
+    printf '%s\n' \
+      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"antigravity_status\",\"arguments\":{\"session\":\"$session\"}}}" |
+      "$HERMES_NODE_BIN" "$HERMES_REMOTE_WORKSPACE/scripts/antigravity-worker-mcp.mjs"
+  )"
+  echo "$status_output"
+  if printf '%s\n' "$status_output" | grep -Eq '(\\"finished\\": true|"finished": true)'; then
+    break
+  fi
+done
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"antigravity_collect\",\"arguments\":{\"session\":\"$session\"}}}" |
+  "$HERMES_NODE_BIN" "$HERMES_REMOTE_WORKSPACE/scripts/antigravity-worker-mcp.mjs"
+echo
+echo '== hermes skill availability smoke =='
+"$HERMES_BIN" -s antigravity-delegated-implementation -z "Confirm in one sentence that the antigravity-delegated-implementation skill is available and that delegated implementation completion mode is review-required. Do not start a worker."
+echo
+echo '== tmux sessions =='
+"$TMUX_BIN" list-sessions 2>/dev/null || echo "no-tmux-sessions"
+REMOTE
+}
+
 gateway_restart() {
   ssh_remote "'$HERMES_BIN' gateway restart && '$HERMES_BIN' gateway status"
 }
@@ -378,11 +750,7 @@ run_prompt() {
     echo "prompt required" >&2
     exit 2
   fi
-  if [[ "$HERMES_COMPUTER_USE_BACKEND" == "cua-driver" ]]; then
-    ssh_remote "'$HERMES_BIN' -t computer_use -z $(printf '%q' "$prompt")"
-  else
-    ssh_remote "'$HERMES_BIN' -z $(printf '%q' "$prompt")"
-  fi
+  ssh_remote "'$HERMES_BIN' -t computer_use -z $(printf '%q' "$prompt")"
 }
 
 logs() {
@@ -393,13 +761,21 @@ cmd="${1:-}"
 shift || true
 
 case "$cmd" in
-  config) show_config "$@" ;;
   check-ssh) check_ssh "$@" ;;
   status) status "$@" ;;
   setup-computer-use) setup_computer_use "$@" ;;
   grant-computer-use) grant_computer_use "$@" ;;
   verify-computer-use) verify_computer_use "$@" ;;
   setup-kanban) setup_kanban "$@" ;;
+  antigravity-check) antigravity_check "$@" ;;
+  setup-antigravity) setup_antigravity "$@" ;;
+  antigravity-auth) antigravity_auth "$@" ;;
+  antigravity-run) antigravity_run "$@" ;;
+  antigravity-status) antigravity_status "$@" ;;
+  antigravity-stop) antigravity_stop "$@" ;;
+  antigravity-collect) antigravity_collect "$@" ;;
+  setup-antigravity-worker) setup_antigravity_worker "$@" ;;
+  verify-antigravity-worker) verify_antigravity_worker "$@" ;;
   gateway-restart) gateway_restart "$@" ;;
   dashboard-start) dashboard_start "$@" ;;
   dashboard-status) dashboard_status "$@" ;;

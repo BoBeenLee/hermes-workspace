@@ -1,38 +1,24 @@
 # Hermes Workspace
 
-Workspace and SSH-first ops hub for managing remote Hermes Agent targets.
+Operator repo for managing a Hermes Agent on a remote Mac over SSH/Tailscale.
 
-It gives each remote Hermes Agent a git-backed work management repository, preserves task and research artifacts, checks whether Hermes is online, initializes Kanban, restarts the gateway, and inspects Discord thread work from logs. Target profiles keep macOS-specific operations, Linux examples, and future hosts out of the command code.
+It supports the `bobeen-macbookpro-2` flow: check Hermes, install/verify `computer_use`, initialize Kanban, restart gateway, inspect Discord thread work, and keep tasks inside a git-backed workspace lifecycle.
+
+It also records the DGX Spark / AI TOP ATOM remote access path for `bobeenlee`, including SSH, DGX Dashboard tunneling, RDP/xrdp setup, and Chromium-on-arm64 notes. See [docs/dgx-spark-remote-access.md](docs/dgx-spark-remote-access.md).
+
+Discord requests that are ambiguous or risky pass through a human-in-the-loop clarification gate before execution. Hermes uses the external mattpocock `grill-me` skill for one-question-at-a-time clarification, then waits for an Approval Summary to be approved in the Discord thread.
 
 ## Quick Start
 
-Agent/Claude operators should read `AGENTS.md` first. This repo has two roles:
-
-- **Control-side remote ops**: run `bin/hermes-remote` from the Control MacBook to inspect or operate a configured Hermes target.
-- **Hermes-side workspace work**: let the remote Hermes agent use this repo as its default working directory for tasks, reports, and research artifacts.
-
-### Control-Side Remote Ops
+Agent/Claude operators should read `AGENTS.md` first. `CLAUDE.md` points Claude-style agents to the same guide.
 
 ```bash
 cp config/example.env .env
-bin/hermes-remote --target bobeen-mac config
-bin/hermes-remote --target bobeen-mac check-ssh
-bin/hermes-remote --target bobeen-mac status
+bin/hermes-remote check-ssh
+bin/hermes-remote status
 ```
 
-Target profiles live under `config/targets/`. The default target is `bobeen-mac`, which expects this local SSH alias:
-
-```sshconfig
-Host bobeen
-  HostName <tailscale-or-lan-host>
-  User bobeenlee
-  IdentityFile ~/.ssh/<target-key>
-  IdentitiesOnly yes
-```
-
-### Hermes-Side Workspace
-
-The canonical remote workspace for the default macOS target is:
+The canonical remote workspace for Hermes work is:
 
 ```text
 /Users/bobeenlee/Workspaces/hermes-workspace
@@ -47,72 +33,38 @@ terminal:
 worktree: true
 ```
 
-For another target, set `terminal.cwd` to that profile's `HERMES_WORKSPACE_ROOT`.
+Default config expects this local SSH alias:
 
-## Target Profiles
+```sshconfig
+Host bobeen
+  HostName 100.89.89.70
+  User bobeenlee
+  IdentityFile ~/.ssh/id_ed25519_bobeenlee_nopass
+  IdentitiesOnly yes
+```
 
-Use `--target <name>` or `HERMES_TARGET=<name>` to select a target profile:
+## Common Commands
 
 ```bash
-bin/hermes-remote --target bobeen-mac status
-HERMES_TARGET=bobeen-mac bin/hermes-remote config
-```
-
-Profile files are ordinary shell env files:
-
-```text
-config/targets/bobeen-mac.env
-config/targets/linux-example.env
-```
-
-Each profile defines the SSH host, remote home, OS, service manager, computer-use backend, Hermes config path, and workspace root. Local `.env` is optional and only overrides the selected profile on the current control machine.
-
-## GitHub Pages
-
-The landing page source lives under `pages/` on `main`:
-
-```text
-pages/index.html
-pages/styles/main.css
-```
-
-The published GitHub Pages branch is `gh-pages` from `/`, where the same static files are served as root `index.html` and `styles/main.css`.
-
-## Remote Ops Commands
-
-```bash
-# Full status: gateway, optional computer_use, Kanban, dashboard, processes.
 bin/hermes-remote status
-
-# Install and wire Hermes computer_use on a macOS/cua-driver target.
 bin/hermes-remote setup-computer-use
-
-# Ask macOS to grant CuaDriver Accessibility + Screen Recording.
-# This opens the permission flow on the remote macOS target and waits.
 bin/hermes-remote grant-computer-use
-
-# Verify CuaDriver permissions, MCP tools, and screen/window access.
 bin/hermes-remote verify-computer-use
-
-# Initialize/check Kanban.
 bin/hermes-remote setup-kanban
-
-# Restart Hermes gateway after config changes.
+bin/hermes-remote antigravity-check
 bin/hermes-remote gateway-restart
-
-# Check whether a Discord thread is currently active.
 bin/hermes-remote is-working 1512384300689916064
-
-# Tail recent gateway/agent lines for a Discord thread ID.
 bin/hermes-remote tail-thread 1512384300689916064
-
-# Run a one-shot Hermes prompt remotely.
 bin/hermes-remote run "Use computer_use to report two visible apps."
 ```
 
+See `bin/hermes-remote help` for full CLI surface. Antigravity setup, auth, run, MCP worker, and collect commands are documented in [docs/antigravity-delegation.md](docs/antigravity-delegation.md).
+
+DGX Spark access is documented separately in [docs/dgx-spark-remote-access.md](docs/dgx-spark-remote-access.md). Start there when the user asks about `aitopatom-36a9`, `172.30.1.87`, DGX Dashboard, RDP, xrdp, or Chromium on the DGX Spark.
+
 ## Workspace Lifecycle
 
-All Hermes-side workspace tasks should pass through the Workspace Lifecycle module documented in [docs/workspace-lifecycle.md](docs/workspace-lifecycle.md).
+All Hermes tasks should pass through the Workspace Lifecycle module documented in [docs/workspace-lifecycle.md](docs/workspace-lifecycle.md).
 
 Task types:
 
@@ -121,8 +73,17 @@ Task types:
 - `incident-triage`
 - `market-research`
 - `analysis-report`
+- `delegated-implementation`
 
 Each task leaves a completion note with the branch/worktree, changed files or report path, tests/checks, source ledger when research-based, and completion mode: `done` or `review-required`.
+
+Antigravity delegated implementation uses [docs/antigravity-delegation.md](docs/antigravity-delegation.md). Hermes stays supervisor; completion is `review-required`.
+
+Discord HIL clarification is documented in [docs/discord-thread-triage.md](docs/discord-thread-triage.md). The remote Hermes profile should have `grill-me` installed from `mattpocock/skills`:
+
+```bash
+npx -y skills@latest add https://github.com/mattpocock/skills --skill grill-me --yes --global
+```
 
 Market research and analysis tasks use the Research Analysis module in [docs/research-workflow.md](docs/research-workflow.md). Research-based work writes briefs, source ledgers, notes, and reports under:
 
@@ -134,6 +95,5 @@ reports/
 ## Notes
 
 - The repo does not store SSH keys, provider keys, Discord tokens, or Hermes secrets.
-- Remote config changes are backed up under `~/.hermes/config.yaml.bak-*`.
-- The script reads remote paths from `config/targets/<target>.env`; use `.env` only for local overrides.
-- CuaDriver-based `computer_use` commands are macOS target operations. Linux targets should use `HERMES_COMPUTER_USE_BACKEND=none` unless a supported backend is added.
+- Remote config changes are backed up under `~/.hermes/config.yaml.bak-remote-ops-*`.
+- The script assumes the remote Hermes wrapper is at `/Users/bobeenlee/.local/bin/hermes`; change `.env` for another Mac.

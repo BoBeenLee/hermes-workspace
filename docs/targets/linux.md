@@ -17,7 +17,7 @@ HERMES_COMPUTER_USE_BACKEND=none
 HERMES_REMOTE_HOME=/home/<user>
 HERMES_BIN=/home/<user>/.local/bin/hermes
 HERMES_CONFIG=/home/<user>/.hermes/config.yaml
-HERMES_WORKSPACE_ROOT=/home/<user>/Workspaces/hermes-workspace
+HERMES_REMOTE_WORKSPACE=/home/<user>/Workspaces/hermes-workspace
 ```
 
 Supported operations:
