@@ -23,6 +23,10 @@ fi
 : "${HERMES_NODE_BIN:=$HERMES_REMOTE_HOME/.hermes/node/bin/node}"
 : "${HERMES_REMOTE_PATH:=$HERMES_REMOTE_HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
 : "${SSH_CONNECT_TIMEOUT:=8}"
+: "${HERMES_LLM_PROVIDER:=}"
+: "${HERMES_LLM_BASE_URL:=}"
+: "${HERMES_LLM_MODEL:=}"
+: "${HERMES_LLM_CONTEXT_LENGTH:=65536}"
 
 ssh_remote() {
   ssh -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "$HERMES_REMOTE_HOST" "$@"
@@ -33,7 +37,7 @@ scp_remote() {
 }
 
 remote_bash() {
-  ssh_remote "PATH='$HERMES_REMOTE_PATH' HERMES_REMOTE_HOST='$HERMES_REMOTE_HOST' HERMES_REMOTE_HOME='$HERMES_REMOTE_HOME' HERMES_BIN='$HERMES_BIN' CUA_BIN='$CUA_BIN' HERMES_CONFIG='$HERMES_CONFIG' HERMES_REMOTE_WORKSPACE='$HERMES_REMOTE_WORKSPACE' ANTIGRAVITY_BIN='$ANTIGRAVITY_BIN' ANTIGRAVITY_ARTIFACT_ROOT='$ANTIGRAVITY_ARTIFACT_ROOT' TMUX_BIN='$TMUX_BIN' HERMES_NODE_BIN='$HERMES_NODE_BIN' bash -s"
+  ssh_remote "PATH='$HERMES_REMOTE_PATH' HERMES_REMOTE_HOST='$HERMES_REMOTE_HOST' HERMES_REMOTE_HOME='$HERMES_REMOTE_HOME' HERMES_BIN='$HERMES_BIN' CUA_BIN='$CUA_BIN' HERMES_CONFIG='$HERMES_CONFIG' HERMES_REMOTE_WORKSPACE='$HERMES_REMOTE_WORKSPACE' ANTIGRAVITY_BIN='$ANTIGRAVITY_BIN' ANTIGRAVITY_ARTIFACT_ROOT='$ANTIGRAVITY_ARTIFACT_ROOT' TMUX_BIN='$TMUX_BIN' HERMES_NODE_BIN='$HERMES_NODE_BIN' HERMES_LLM_PROVIDER='$HERMES_LLM_PROVIDER' HERMES_LLM_BASE_URL='$HERMES_LLM_BASE_URL' HERMES_LLM_MODEL='$HERMES_LLM_MODEL' HERMES_LLM_CONTEXT_LENGTH='$HERMES_LLM_CONTEXT_LENGTH' bash -s"
 }
 
 require_arg() {
@@ -47,6 +51,10 @@ require_arg() {
 
 quote_value() {
   printf '%q' "$1"
+}
+
+redact_url() {
+  printf '%s' "$1" | sed -E 's#(https?://)[^/@]+@#\1***@#; s#\?.*##'
 }
 
 antigravity_task_bash() {
@@ -75,6 +83,8 @@ Commands:
   grant-computer-use        Open CuaDriver permission grant flow on the remote macOS host.
   verify-computer-use       Verify permissions, MCP, screen size, and window access.
   setup-kanban              Initialize Kanban and enable gateway dispatcher config.
+  model-status              Show secret-safe Hermes model/provider hints and config signals.
+  check-llm-endpoint <url>  Check an OpenAI-compatible /v1 endpoint from the control host.
   antigravity-check         Verify Antigravity CLI, tmux, workspace, and config state.
   setup-antigravity         Install or locate Antigravity CLI on the remote Hermes host.
   antigravity-auth          Print SSH auth steps for Antigravity CLI.
@@ -282,6 +292,85 @@ config.write_text("\n".join(lines) + "\n")
 PY
 REMOTE
   ssh_remote "'$HERMES_BIN' kanban boards list && '$HERMES_BIN' kanban stats && '$HERMES_BIN' kanban diagnostics"
+}
+
+model_status() {
+  remote_bash <<'REMOTE'
+set +e
+redact_url() {
+  printf '%s' "$1" | sed -E 's#(https?://)[^/@]+@#\1***@#; s#\?.*##'
+}
+echo '== provider hints =='
+echo "HERMES_LLM_PROVIDER=${HERMES_LLM_PROVIDER:-unset}"
+if test -n "${HERMES_LLM_BASE_URL:-}"; then
+  echo "HERMES_LLM_BASE_URL=$(redact_url "$HERMES_LLM_BASE_URL")"
+else
+  echo "HERMES_LLM_BASE_URL=unset"
+fi
+echo "HERMES_LLM_MODEL=${HERMES_LLM_MODEL:-unset}"
+echo "HERMES_LLM_CONTEXT_LENGTH=${HERMES_LLM_CONTEXT_LENGTH:-unset}"
+echo
+echo '== hermes model commands =='
+"$HERMES_BIN" model --help 2>&1 | head -80
+echo
+echo '== config provider signals =='
+if test -f "$HERMES_CONFIG"; then
+  python3 - "$HERMES_CONFIG" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+config = Path(sys.argv[1])
+text = config.read_text(errors="replace")
+patterns = [
+    ("custom_endpoint", r"custom[_-]?endpoint"),
+    ("openai_compat", r"openai|chat[_-]?completions|responses"),
+    ("ollama", r"ollama"),
+    ("vllm", r"vllm"),
+    ("sglang", r"sglang"),
+    ("localhost", r"127\.0\.0\.1|localhost"),
+    ("context_64k", r"65536|64000|64_000"),
+]
+for label, pattern in patterns:
+    print(f"{label}={'present' if re.search(pattern, text, re.I) else 'absent'}")
+
+urls = sorted(set(re.findall(r"https?://[^'\"\\s]+", text)))
+if urls:
+    def redact(url):
+        url = re.sub(r"(https?://)[^/@]+@", r"\1***@", url)
+        return url.split("?", 1)[0]
+    print("urls_present=" + ",".join(redact(url) for url in urls[:8]))
+else:
+    print("urls_present=none")
+PY
+else
+  echo "config_missing=$HERMES_CONFIG"
+fi
+echo
+echo '== endpoint hint check =='
+if test -n "${HERMES_LLM_BASE_URL:-}"; then
+  url="${HERMES_LLM_BASE_URL%/}/models"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS --max-time 5 "$url" | head -40 || echo "endpoint_unreachable=$(redact_url "$url")"
+  else
+    echo "curl-missing"
+  fi
+else
+  echo "HERMES_LLM_BASE_URL unset; use check-llm-endpoint <base-url> for ad hoc checks."
+fi
+REMOTE
+}
+
+check_llm_endpoint() {
+  local base_url="${1:-${HERMES_LLM_BASE_URL:-}}"
+  require_arg "base url" "$base_url"
+  local models_url="${base_url%/}/models"
+  echo "== endpoint =="
+  redact_url "$models_url"
+  echo
+  echo
+  echo "== /models =="
+  curl -fsS --max-time 8 "$models_url"
 }
 
 antigravity_check() {
@@ -767,6 +856,8 @@ case "$cmd" in
   grant-computer-use) grant_computer_use "$@" ;;
   verify-computer-use) verify_computer_use "$@" ;;
   setup-kanban) setup_kanban "$@" ;;
+  model-status) model_status "$@" ;;
+  check-llm-endpoint) check_llm_endpoint "$@" ;;
   antigravity-check) antigravity_check "$@" ;;
   setup-antigravity) setup_antigravity "$@" ;;
   antigravity-auth) antigravity_auth "$@" ;;

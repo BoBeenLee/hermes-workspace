@@ -4,7 +4,7 @@ Operator repo for managing a Hermes Agent on a remote macOS or Linux host over S
 
 It currently defaults to the `bobeen-mac` macOS profile, which records the first production Hermes host. That specific profile exists so operators can reliably check Hermes, install/verify `computer_use`, initialize Kanban, restart gateway, inspect Discord thread work, and keep tasks inside a git-backed workspace lifecycle without rediscovering host paths.
 
-The general model is target-profile based: macOS hosts may use launchd and CuaDriver desktop control, while Linux hosts use the same SSH and workspace lifecycle without macOS desktop control until a Linux backend is configured.
+The general model is target-profile based: macOS hosts may use launchd and CuaDriver desktop control, while Linux hosts use the same SSH and workspace lifecycle without macOS desktop control until a Linux backend is configured. Local or self-hosted model providers are handled through OpenAI-compatible endpoints; see [docs/local-llm-providers.md](docs/local-llm-providers.md).
 
 It also records the DGX Spark / AI TOP ATOM remote access path for `bobeenlee`, including SSH, DGX Dashboard tunneling, RDP/xrdp setup, and Chromium-on-arm64 notes. See [docs/dgx-spark-remote-access.md](docs/dgx-spark-remote-access.md).
 
@@ -55,6 +55,8 @@ bin/hermes-remote setup-computer-use
 bin/hermes-remote grant-computer-use
 bin/hermes-remote verify-computer-use
 bin/hermes-remote setup-kanban
+bin/hermes-remote model-status
+bin/hermes-remote check-llm-endpoint http://127.0.0.1:8000/v1
 bin/hermes-remote antigravity-check
 bin/hermes-remote gateway-restart
 bin/hermes-remote is-working 1512384300689916064
@@ -95,6 +97,8 @@ Market research and analysis tasks use the Research Analysis module in [docs/res
 research/
 reports/
 ```
+
+Local LLM provider operations use [docs/local-llm-providers.md](docs/local-llm-providers.md). Use it when connecting Hermes to Ollama, vLLM, SGLang, or a DGX Spark model server. Provider config changes are remote config work and should finish as `review-required`.
 
 ## Notes
 

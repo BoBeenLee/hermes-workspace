@@ -112,6 +112,41 @@ http://127.0.0.1:8188
 
 Do not expose `llama-server`, ComfyUI, or the DGX Dashboard directly with `tailscale serve` unless the user explicitly asks.
 
+## Hermes Provider Path
+
+Use `docs/local-llm-providers.md` when the DGX Spark model service should back a Hermes Agent provider.
+
+Preferred pattern:
+
+```text
+Hermes host -> SSH tunnel -> DGX loopback model server -> /v1 endpoint
+```
+
+Keep the model server bound to DGX loopback, then create a tunnel from the machine where Hermes can reach the forwarded port. If Hermes runs on the control host, this is enough:
+
+```bash
+ssh -N \
+  -L 8000:127.0.0.1:8000 \
+  bobeenlee@172.30.1.87
+```
+
+Then register the Hermes custom endpoint:
+
+```text
+http://127.0.0.1:8000/v1
+```
+
+If Hermes runs on another remote Hermes host, create the tunnel from that Hermes host or forward to a port reachable from that host. Do not assume a tunnel opened on the control host is visible inside a separate remote Hermes host.
+
+Verify before changing Hermes provider config:
+
+```bash
+curl -sS http://127.0.0.1:8000/v1/models
+bin/hermes-remote check-llm-endpoint http://127.0.0.1:8000/v1
+```
+
+Provider changes are `remote-config` work and should finish as `review-required`.
+
 ## Local AI Services
 
 `llama-server` is configured as a manual user service. It should not start automatically at boot:

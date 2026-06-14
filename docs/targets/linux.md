@@ -20,6 +20,15 @@ HERMES_CONFIG=/home/<user>/.hermes/config.yaml
 HERMES_REMOTE_WORKSPACE=/home/<user>/Workspaces/hermes-workspace
 ```
 
+Optional local LLM provider hints:
+
+```env
+HERMES_LLM_PROVIDER=vllm
+HERMES_LLM_BASE_URL=http://127.0.0.1:8000/v1
+HERMES_LLM_MODEL=<served-model-name>
+HERMES_LLM_CONTEXT_LENGTH=65536
+```
+
 Supported operations:
 
 - SSH connectivity and status checks.

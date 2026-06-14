@@ -10,6 +10,7 @@ The operating model comes from:
 - `docs/workspace-lifecycle.md`
 - `docs/research-workflow.md`
 - `docs/discord-thread-triage.md`
+- `docs/local-llm-providers.md`
 - `docs/dgx-spark-remote-access.md` for DGX Spark / AI TOP ATOM remote access
 - migrated historical plans under `docs/plans/` when they are present after repo promotion
 
@@ -20,6 +21,7 @@ Important terms:
 - **Default macOS target**: the current Hermes host profile in `config/targets/bobeen-mac.env`, used for the existing MacBook setup.
 - **DGX Spark**: the user's NVIDIA DGX Spark / GIGABYTE AI TOP ATOM Linux workstation. It is separate from the Hermes host profile unless explicitly configured as one; use `docs/dgx-spark-remote-access.md` for SSH, dashboard, RDP/xrdp, and browser setup.
 - **Hermes agent**: the per-user Hermes install at `~/.hermes/hermes-agent`, with config/data/logs under `~/.hermes` and command wrapper at `~/.local/bin/hermes`.
+- **Local LLM provider**: a Hermes model provider backed by a local or self-hosted OpenAI-compatible endpoint, such as Ollama, vLLM, SGLang, or a DGX Spark model service.
 - **Remote access path**: SSH key access from the control host to a Hermes host. Tailscale/LAN aliases are access paths, not application state.
 - **Workspace Lifecycle module**: the interface every Hermes task follows before it is reported as `done` or `review-required`.
 - **Research Analysis module**: the interface for market research and analysis work, including brief, source ledger, notes, and report artifacts.
@@ -52,6 +54,7 @@ Do not commit `.env`.
 
 - Never commit SSH private keys, provider API keys, OAuth tokens, Discord tokens, `.env` files, or remote Hermes secrets.
 - Treat `~/.hermes/.env`, `~/.hermes/auth.json`, and provider config output as sensitive. Summarize status without copying secrets.
+- Keep local model services bound to loopback by default. Prefer SSH tunnels for DGX Spark or cross-host model access; do not expose Ollama, vLLM, SGLang, or llama-server externally unless the user explicitly asks.
 - Prefer `bin/hermes-remote` commands over ad hoc SSH because the script captures the expected paths and backup behavior.
 - Before editing remote `~/.hermes/config.yaml`, create or rely on a timestamped backup.
 - Use user-level Hermes/launchd commands. Do not introduce root/system-level daemons unless a user explicitly asks.
@@ -101,6 +104,17 @@ bin/hermes-remote status
 ```
 
 Success: `~/.hermes/kanban.db` exists, board list shows current board, stats work, config has `kanban.dispatch_in_gateway: true`, gateway logs show `kanban dispatcher: embedded in gateway`.
+
+## Local LLM Provider Workflow
+
+Use `docs/local-llm-providers.md` when Hermes needs Ollama, vLLM, SGLang, DGX Spark, or another OpenAI-compatible local endpoint.
+
+```bash
+bin/hermes-remote model-status
+bin/hermes-remote check-llm-endpoint http://127.0.0.1:8000/v1
+```
+
+Hermes provider changes are remote config work. Verify endpoint reachability, exact model name, API compatibility mode, context length of at least `65536` when required, and tool/reasoning parser settings for vLLM or SGLang. Finish provider setup or changes as `review-required`.
 
 ## Discord Thread Triage
 
