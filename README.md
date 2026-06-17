@@ -85,7 +85,7 @@ Each task leaves a completion note with the branch/worktree, changed files or re
 
 Antigravity delegated implementation uses [docs/antigravity-delegation.md](docs/antigravity-delegation.md). Hermes stays supervisor; completion is `review-required`.
 
-Discord HIL clarification is documented in [docs/discord-thread-triage.md](docs/discord-thread-triage.md). The remote Hermes profile should have `grill-me` installed from `mattpocock/skills`:
+Discord HIL clarification is documented in [docs/discord-thread-triage.md](docs/discord-thread-triage.md), with repo-local Discord tool usage captured in [skills/discord.SKILL.md](skills/discord.SKILL.md). The remote Hermes profile should have `grill-me` installed from `mattpocock/skills`:
 
 ```bash
 npx -y skills@latest add https://github.com/mattpocock/skills --skill grill-me --yes --global
