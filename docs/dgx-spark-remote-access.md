@@ -149,13 +149,20 @@ Provider changes are `remote-config` work and should finish as `review-required`
 
 ## Local AI Services
 
-`llama-server` is configured as a manual user service. It should not start automatically at boot:
+`llama-server` is configured as a single selected-model user service. Only one local LLM is served at a time on `127.0.0.1:8080`; model selection is handled by `dgx-ai-control`.
 
 ```bash
-systemctl --user is-enabled llama-gemma.service
-systemctl --user start llama-gemma.service
-systemctl --user stop llama-gemma.service
+dgx-ai-control models
+dgx-ai-control current-model
+dgx-ai-control select-model gemma4
+dgx-ai-control select-model nex-n2-mini
+systemctl --user status llama-local.service
 ```
+
+Current model registry:
+
+- `gemma4`: `/home/bobeenlee/models/gemma/gemma-4-12b-it-qat-q4_0.gguf`, context `32768`
+- `nex-n2-mini`: `/home/bobeenlee/models/nex-n2-mini/Nex-N2-mini-UD-Q4_K_XL.gguf`, context `262144`
 
 ComfyUI is configured as an enabled user service and should start automatically after boot because lingering is enabled for `bobeenlee`:
 
@@ -187,7 +194,7 @@ Installed paths:
 /home/bobeenlee/.local/share/applications/dgx-ai-control.desktop
 ```
 
-The app can start, stop, restart, and toggle boot auto-start for `llama-gemma.service` and `comfyui.service`. It uses only `systemctl --user`, stores no sudo password, and does not expose any network ports.
+The app can select the active local LLM model, restart the single `llama-local.service` slot, and start, stop, restart, or toggle boot auto-start for `llama-local.service` and `comfyui.service`. It uses only `systemctl --user`, stores no sudo password, and does not expose any network ports.
 
 ## DGX Dashboard
 
