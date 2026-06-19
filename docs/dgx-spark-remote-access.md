@@ -163,6 +163,7 @@ Current model registry:
 
 - `gemma4`: `/home/bobeenlee/models/gemma/gemma-4-12b-it-qat-q4_0.gguf`, context `32768`
 - `nex-n2-mini`: `/home/bobeenlee/models/nex-n2-mini/Nex-N2-mini-UD-Q4_K_XL.gguf`, context `262144`
+- `qwen3.6-35b-a3b-nvfp4`: `knoopx/Qwen3.6-35B-A3B-NVFP4-GGUF:Qwen3.6-35B-A3B-NVFP4.gguf`, context `262144`; added as a llama.cpp Hugging Face GGUF source for NVIDIA's `nvidia/Qwen3.6-35B-A3B-NVFP4` checkpoint
 
 ComfyUI is configured as an enabled user service and should start automatically after boot because lingering is enabled for `bobeenlee`:
 
