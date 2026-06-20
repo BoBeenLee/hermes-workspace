@@ -5,3 +5,4 @@ secrets/
 tmp/
 .hermes/
 .worktrees/
+artifacts/macos/
