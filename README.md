@@ -10,6 +10,8 @@ It also records the DGX Spark / AI TOP ATOM remote access path for `bobeenlee`, 
 
 Discord requests that are ambiguous or risky pass through a human-in-the-loop clarification gate before execution. Hermes uses the external mattpocock `grill-me` skill for one-question-at-a-time clarification, then waits for an Approval Summary to be approved in the Discord thread.
 
+Historical Hermes bootstrap material migrated from `bbl-ai-lab` lives in [docs/hermes-agent.md](docs/hermes-agent.md), [docs/plans/36-macbook-remote-hermes-agent.md](docs/plans/36-macbook-remote-hermes-agent.md), and [scripts/hermes/](scripts/hermes/). Prefer `bin/hermes-remote` for current operations, and keep the migrated scripts as legacy helpers or migration sources unless they are deliberately promoted into the main CLI.
+
 ## Quick Start
 
 Agent/Claude operators should read `AGENTS.md` first. `CLAUDE.md` points Claude-style agents to the same guide.
@@ -65,6 +67,14 @@ bin/hermes-remote run "Use computer_use to report two visible apps."
 ```
 
 See `bin/hermes-remote help` for full CLI surface. Antigravity setup, auth, run, MCP worker, and collect commands are documented in [docs/antigravity-delegation.md](docs/antigravity-delegation.md).
+
+Legacy bootstrap and browser-provider helpers are available under `scripts/hermes/`:
+
+```bash
+scripts/hermes/doctor.sh
+scripts/hermes/install.sh --dry-run
+scripts/hermes/camofox_ask_three.py --prompt "Reply briefly."
+```
 
 DGX Spark access is documented separately in [docs/dgx-spark-remote-access.md](docs/dgx-spark-remote-access.md). Start there when the user asks about `aitopatom-36a9`, `172.30.1.87`, DGX Dashboard, RDP, xrdp, or Chromium on the DGX Spark.
 

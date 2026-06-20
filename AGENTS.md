@@ -12,6 +12,7 @@ The operating model comes from:
 - `docs/discord-thread-triage.md`
 - `docs/local-llm-providers.md`
 - `docs/dgx-spark-remote-access.md` for DGX Spark / AI TOP ATOM remote access
+- `docs/hermes-agent.md` for the migrated first MacBook bootstrap runbook
 - migrated historical plans under `docs/plans/` when they are present after repo promotion
 
 Important terms:
@@ -56,6 +57,7 @@ Do not commit `.env`.
 - Treat `~/.hermes/.env`, `~/.hermes/auth.json`, and provider config output as sensitive. Summarize status without copying secrets.
 - Keep local model services bound to loopback by default. Prefer SSH tunnels for DGX Spark or cross-host model access; do not expose Ollama, vLLM, SGLang, or llama-server externally unless the user explicitly asks.
 - Prefer `bin/hermes-remote` commands over ad hoc SSH because the script captures the expected paths and backup behavior.
+- Keep migrated helper scripts under `scripts/hermes/` unless promoting them into `bin/hermes-remote` with equivalent docs and checks.
 - Before editing remote `~/.hermes/config.yaml`, create or rely on a timestamped backup.
 - Use user-level Hermes/launchd commands. Do not introduce root/system-level daemons unless a user explicitly asks.
 - Do not remove remote access keys or stop the gateway unless the user asks or the rollback task requires it.
