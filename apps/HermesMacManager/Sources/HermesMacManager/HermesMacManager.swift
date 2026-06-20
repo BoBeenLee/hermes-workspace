@@ -7,6 +7,7 @@ private enum HermesPaths {
     static let hermes = "\(home)/.local/bin/hermes"
     static let logs = "\(home)/.hermes/logs"
     static let workspace = "\(home)/Workspaces/hermes-workspace"
+    static let mlxModel = "\(home)/Workspaces/local-llm/models/qwen3.6-35b-a3b-mlx"
     static let path = "\(home)/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 }
 
@@ -30,7 +31,7 @@ private final class CommandModel: ObservableObject {
     @Published var output = "Ready."
     @Published var status = "Idle"
     @Published var isRunning = false
-    @Published var endpoint = "http://127.0.0.1:8000/v1"
+    @Published var endpoint = "http://127.0.0.1:8080/v1"
     @Published var hermesRunning = false
     @Published var localLLMRunning = false
     @Published var hermesStateText = "Unknown"
@@ -169,7 +170,7 @@ private final class CommandModel: ObservableObject {
         "\(HermesPaths.hermes)" gateway status 2>&1 | grep -Eq 'Status:[[:space:]]+.*running|PID' && hermes_running=1
 
         local_llm_running=0
-        pgrep -fl 'ollama|vllm|sglang|llama-server' >/dev/null 2>&1 && local_llm_running=1
+        pgrep -fl 'mlx_lm.server|mlx-lm|mlx_lm' >/dev/null 2>&1 && local_llm_running=1
         curl -fsS --max-time 3 "${endpoint%/}/models" >/tmp/hermes-mac-manager-endpoint.json 2>/tmp/hermes-mac-manager-endpoint.err && local_llm_running=1
 
         echo "__HERMES_RUNNING=$hermes_running"
@@ -189,8 +190,8 @@ private final class CommandModel: ObservableObject {
         "\(HermesPaths.hermes)" status 2>&1 | sed -n '1,95p'
 
         echo
-        echo "== local llm processes =="
-        /bin/ps -axo pid,etime,stat,command | /usr/bin/grep -Ei 'ollama|vllm|sglang|llama-server' | /usr/bin/grep -v grep || echo "none"
+        echo "== mlx local llm processes =="
+        /bin/ps -axo pid,etime,stat,command | /usr/bin/grep -Ei 'mlx_lm.server|mlx-lm|mlx_lm' | /usr/bin/grep -v grep || echo "none"
 
         echo
         echo "== endpoint: ${endpoint%/}/models =="
@@ -205,8 +206,8 @@ private final class CommandModel: ObservableObject {
 
         echo
         echo
-        echo "== common local endpoints =="
-        for base in "http://127.0.0.1:11434/v1" "http://127.0.0.1:8000/v1"; do
+        echo "== local mlx endpoint =="
+        for base in "http://127.0.0.1:8080/v1"; do
           printf "%s " "$base"
           curl -fsS --max-time 3 "${base}/models" >/tmp/hermes-mac-manager-models.json 2>/tmp/hermes-mac-manager-models.err
           if [ "$?" = "0" ]; then
@@ -229,19 +230,22 @@ private final class CommandModel: ObservableObject {
         set -e
         export PATH="\(HermesPaths.path)"
         mkdir -p "\(HermesPaths.logs)"
-        if command -v ollama >/dev/null 2>&1; then
-          if pgrep -fl 'ollama serve' >/dev/null 2>&1; then
-            echo "ollama serve already running"
+        if command -v mlx_lm.server >/dev/null 2>&1; then
+          if pgrep -fl 'mlx_lm.server' >/dev/null 2>&1; then
+            echo "mlx_lm.server already running"
           else
-            nohup ollama serve > "\(HermesPaths.logs)/ollama.log" 2>&1 &
+            nohup mlx_lm.server \
+              --model "\(HermesPaths.mlxModel)" \
+              --host 127.0.0.1 \
+              --port 8080 \
+              --max-tokens 4096 \
+              --chat-template-args '{"enable_thinking":false}' \
+              > "\(HermesPaths.logs)/mlx-lm-server.log" 2>&1 &
             sleep 2
           fi
-          curl -fsS --max-time 5 http://127.0.0.1:11434/v1/models
-        elif open -gja Ollama; then
-          echo "Opened Ollama.app"
-          sleep 2
+          curl -fsS --max-time 5 http://127.0.0.1:8080/v1/models
         else
-          echo "Ollama is not installed on this Mac."
+          echo "mlx_lm.server is not installed on this Mac."
           exit 1
         fi
         """
@@ -250,10 +254,9 @@ private final class CommandModel: ObservableObject {
     private static func stopLocalLLMScript() -> String {
         """
         set +e
-        pkill -f 'ollama serve'
-        osascript -e 'quit app "Ollama"' >/dev/null 2>&1
+        pkill -f 'mlx_lm.server'
         sleep 1
-        /bin/ps -axo pid,etime,stat,command | /usr/bin/grep -Ei 'ollama' | /usr/bin/grep -v grep || echo "ollama stopped"
+        /bin/ps -axo pid,etime,stat,command | /usr/bin/grep -Ei 'mlx_lm.server|mlx-lm|mlx_lm' | /usr/bin/grep -v grep || echo "mlx local llm stopped"
         """
     }
 
