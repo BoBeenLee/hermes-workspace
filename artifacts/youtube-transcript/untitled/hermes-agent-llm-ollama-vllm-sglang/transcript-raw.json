@@ -1,0 +1,1802 @@
+[
+  {
+    "text": "Hermes!",
+    "start": 0,
+    "duration": 1
+  },
+  {
+    "text": "요즘 OpenClaw 대안으로",
+    "start": 1,
+    "duration": 1
+  },
+  {
+    "text": "난리난 에이전트입니다",
+    "start": 2,
+    "duration": 1
+  },
+  {
+    "text": "한번 사용을 해보고 싶은데",
+    "start": 3,
+    "duration": 1
+  },
+  {
+    "text": "가이드문서가 불친절하다 보니",
+    "start": 4,
+    "duration": 2
+  },
+  {
+    "text": "로컬 LLM을 연동하려다",
+    "start": 6,
+    "duration": 1
+  },
+  {
+    "text": "막막하셨던 분들",
+    "start": 7,
+    "duration": 1
+  },
+  {
+    "text": "정말 많으시죠?",
+    "start": 8,
+    "duration": 1
+  },
+  {
+    "text": "그런 분들을 위해",
+    "start": 9,
+    "duration": 1
+  },
+  {
+    "text": "개인들이 가장 많이 사용하는",
+    "start": 10,
+    "duration": 1
+  },
+  {
+    "text": "Ollama를",
+    "start": 11,
+    "duration": 1
+  },
+  {
+    "text": "Hermes에 연동하는 방법을 보여드릴 거고요",
+    "start": 12,
+    "duration": 2
+  },
+  {
+    "text": "추가로!",
+    "start": 14,
+    "duration": 1
+  },
+  {
+    "text": "Ollama보다",
+    "start": 15,
+    "duration": 1
+  },
+  {
+    "text": "성능이 우수하다고 소개해드렸던",
+    "start": 16,
+    "duration": 2
+  },
+  {
+    "text": "vLLM과",
+    "start": 18,
+    "duration": 1
+  },
+  {
+    "text": "SGLang까지",
+    "start": 19,
+    "duration": 1
+  },
+  {
+    "text": "같이 보여드릴 겁니다",
+    "start": 20,
+    "duration": 1
+  },
+  {
+    "text": "이 두 가지도 같이 알아주시는 게 좋아요",
+    "start": 21,
+    "duration": 2
+  },
+  {
+    "text": "왜냐하면",
+    "start": 23,
+    "duration": 1
+  },
+  {
+    "text": "하드웨어 교체 없이도",
+    "start": 24,
+    "duration": 1
+  },
+  {
+    "text": "추론 속도를 향상시킬 수가 있기 때문이죠",
+    "start": 25,
+    "duration": 2
+  },
+  {
+    "text": "결과적으로 이를 통해",
+    "start": 27,
+    "duration": 1
+  },
+  {
+    "text": "여러분의 Hermes Agent가",
+    "start": 28,
+    "duration": 2
+  },
+  {
+    "text": "단순히",
+    "start": 30,
+    "duration": 1
+  },
+  {
+    "text": "로컬 LLM을 연동하는 것으로 끝나는 것이 아니라",
+    "start": 31,
+    "duration": 2
+  },
+  {
+    "text": "서빙 엔진의 선택의 폭을 넓혀서",
+    "start": 33,
+    "duration": 2
+  },
+  {
+    "text": "퍼포먼스까지도 높여줄 수 있도록",
+    "start": 35,
+    "duration": 2
+  },
+  {
+    "text": "이번 영상에서 자세히 알려드리겠습니다",
+    "start": 37,
+    "duration": 2
+  },
+  {
+    "text": "일단 저는 Ollama와 Hermes가",
+    "start": 39,
+    "duration": 2
+  },
+  {
+    "text": "기존에 구축해 있다는 가정 하에",
+    "start": 41,
+    "duration": 2
+  },
+  {
+    "text": "연동하는 부분만 보여드릴 거고요",
+    "start": 43,
+    "duration": 3
+  },
+  {
+    "text": "왜냐하면",
+    "start": 46,
+    "duration": 1
+  },
+  {
+    "text": "Ollama 설치법은",
+    "start": 47,
+    "duration": 1
+  },
+  {
+    "text": "이미 잘 알려져 있는 상황이고",
+    "start": 48,
+    "duration": 1
+  },
+  {
+    "text": "Hermes 설치법은",
+    "start": 49,
+    "duration": 1
+  },
+  {
+    "text": "고작 명령은 한 줄이라서",
+    "start": 50,
+    "duration": 2
+  },
+  {
+    "text": "간단히 이렇게 보여드리고",
+    "start": 52,
+    "duration": 2
+  },
+  {
+    "text": "빠르게 넘기겠습니다",
+    "start": 54,
+    "duration": 2
+  },
+  {
+    "text": "참고로",
+    "start": 56,
+    "duration": 1
+  },
+  {
+    "text": "저는 Hermes를",
+    "start": 57,
+    "duration": 1
+  },
+  {
+    "text": "WSL에 설치를 해둔 상태이기 때문에",
+    "start": 58,
+    "duration": 2
+  },
+  {
+    "text": "Hermes 관련 설정은",
+    "start": 60,
+    "duration": 1
+  },
+  {
+    "text": "모두 리눅스 환경에서 진행한다는 점",
+    "start": 61,
+    "duration": 2
+  },
+  {
+    "text": "알아두셨으면 좋겠습니다",
+    "start": 63,
+    "duration": 1
+  },
+  {
+    "text": "시작하려는 이 시점에",
+    "start": 64,
+    "duration": 2
+  },
+  {
+    "text": "'hermes' 를 쳤을 때",
+    "start": 66,
+    "duration": 3
+  },
+  {
+    "text": "이러한 채팅 화면이 나와야 되고요",
+    "start": 69,
+    "duration": 2
+  },
+  {
+    "text": "지금은 아무것도 연동이 안 돼 있어서",
+    "start": 71,
+    "duration": 4
+  },
+  {
+    "text": "(채팅을) 치면 이렇게 에러만 나는 상황입니다",
+    "start": 75,
+    "duration": 2
+  },
+  {
+    "text": "일단 나와주시고",
+    "start": 77,
+    "duration": 3
+  },
+  {
+    "text": "먼저 Ollama를 연동하기 위해서",
+    "start": 80,
+    "duration": 2
+  },
+  {
+    "text": "명령어를 칩시다",
+    "start": 82,
+    "duration": 3
+  },
+  {
+    "text": "그럼 우리에게 익숙한 Provider들이 보이는데요",
+    "start": 85,
+    "duration": 5
+  },
+  {
+    "text": "여기 Ollama Cloude가 있긴 하지만",
+    "start": 90,
+    "duration": 3
+  },
+  {
+    "text": "이건 다른 거고요",
+    "start": 93,
+    "duration": 1
+  },
+  {
+    "text": "우리는 로컬에 깔린 Ollama를 사용할 거니까",
+    "start": 94,
+    "duration": 3
+  },
+  {
+    "text": "계속 내리다 보면",
+    "start": 97,
+    "duration": 2
+  },
+  {
+    "text": "없어요",
+    "start": 99,
+    "duration": 1
+  },
+  {
+    "text": "그래서 Custom endpoint를 추가해야 합니다",
+    "start": 100,
+    "duration": 3
+  },
+  {
+    "text": "Custom endpoint는",
+    "start": 103,
+    "duration": 1
+  },
+  {
+    "text": "여기 아래쪽에 있고요",
+    "start": 104,
+    "duration": 2
+  },
+  {
+    "text": "추후에 Ollama 전용 Provider가",
+    "start": 106,
+    "duration": 2
+  },
+  {
+    "text": "추가될 것이라 예상을 하는데",
+    "start": 108,
+    "duration": 2
+  },
+  {
+    "text": "지금은 없으니까",
+    "start": 110,
+    "duration": 1
+  },
+  {
+    "text": "이렇게 진행을 해야 하고요",
+    "start": 111,
+    "duration": 2
+  },
+  {
+    "text": "선택을 하시고",
+    "start": 113,
+    "duration": 1
+  },
+  {
+    "text": "자 여기 Base URL은",
+    "start": 114,
+    "duration": 2
+  },
+  {
+    "text": "화면에 보이는",
+    "start": 116,
+    "duration": 1
+  },
+  {
+    "text": "Ollama 기본 Base URL을",
+    "start": 117,
+    "duration": 1
+  },
+  {
+    "text": "입력하시면 됩니다",
+    "start": 118,
+    "duration": 2
+  },
+  {
+    "text": "근데 여기서 주의사항!",
+    "start": 120,
+    "duration": 1
+  },
+  {
+    "text": "Hermes와 Ollama가",
+    "start": 121,
+    "duration": 1
+  },
+  {
+    "text": "WSL에 서로 같이 깔려 있다면",
+    "start": 122,
+    "duration": 3
+  },
+  {
+    "text": "루프백(127.0.0.1) 주소를 넣어도 상관이 없지만",
+    "start": 125,
+    "duration": 2
+  },
+  {
+    "text": "제 환경처럼 WSL에 Hermes가 있고",
+    "start": 127,
+    "duration": 3
+  },
+  {
+    "text": "윈도우에 Ollama가 있다면",
+    "start": 130,
+    "duration": 2
+  },
+  {
+    "text": "Ollama에 추가적인 설정이 필요합니다",
+    "start": 132,
+    "duration": 2
+  },
+  {
+    "text": "이거 설정하는 법부터 먼저 보여드릴게요",
+    "start": 134,
+    "duration": 2
+  },
+  {
+    "text": "먼저 Ollama는 기본적으로",
+    "start": 136,
+    "duration": 2
+  },
+  {
+    "text": "호스트가 루프백(127.0.0.1) 주소로 되어 있는데",
+    "start": 138,
+    "duration": 2
+  },
+  {
+    "text": "이러면 WSL에서 Ollama로 접근을 못합니다",
+    "start": 140,
+    "duration": 4
+  },
+  {
+    "text": "그래서",
+    "start": 144,
+    "duration": 1
+  },
+  {
+    "text": "Ollama가 외부 접속 바인딩이 가능하도록",
+    "start": 145,
+    "duration": 1
+  },
+  {
+    "text": "환경 변수에",
+    "start": 146,
+    "duration": 1
+  },
+  {
+    "text": "이렇게 추가를 해주셔야 하고요",
+    "start": 147,
+    "duration": 2
+  },
+  {
+    "text": "그 다음에 IP 주소를 알아야겠죠?",
+    "start": 149,
+    "duration": 2
+  },
+  {
+    "text": "CMD를 쳐서",
+    "start": 151,
+    "duration": 1
+  },
+  {
+    "text": "현재 PC의 IP 주소를 확인한 다음",
+    "start": 152,
+    "duration": 5
+  },
+  {
+    "text": "이 IP 주소 값을",
+    "start": 157,
+    "duration": 3
+  },
+  {
+    "text": "Base URL의 호스트 주소로 넣으시면 됩니다",
+    "start": 160,
+    "duration": 6
+  },
+  {
+    "text": "그 다음 포트는",
+    "start": 166,
+    "duration": 1
+  },
+  {
+    "text": "Ollama 기본 포트 값인",
+    "start": 167,
+    "duration": 2
+  },
+  {
+    "text": "11434",
+    "start": 169,
+    "duration": 3
+  },
+  {
+    "text": "를 넣어주시면 되고요",
+    "start": 172,
+    "duration": 1
+  },
+  {
+    "text": "뒤쪽에는 /v1 을 붙이시면 됩니다",
+    "start": 173,
+    "duration": 3
+  },
+  {
+    "text": "그 다음 API Key",
+    "start": 176,
+    "duration": 1
+  },
+  {
+    "text": "이건 따로 넣을 게 없으니까",
+    "start": 177,
+    "duration": 1
+  },
+  {
+    "text": "그냥 엔터 누르세요",
+    "start": 178,
+    "duration": 2
+  },
+  {
+    "text": "그 다음 Select API compatibility mode가 나오는데요",
+    "start": 180,
+    "duration": 3
+  },
+  {
+    "text": "요거 잘 선택을 하셔야 합니다",
+    "start": 183,
+    "duration": 2
+  },
+  {
+    "text": "이게 뭐냐면",
+    "start": 185,
+    "duration": 1
+  },
+  {
+    "text": "Ollama가 우리에게 던질 API 데이터 포맷이 무엇이냐",
+    "start": 186,
+    "duration": 4
+  },
+  {
+    "text": "를 설정하는 것인데요",
+    "start": 190,
+    "duration": 1
+  },
+  {
+    "text": "이거 잘못 선택하면",
+    "start": 191,
+    "duration": 1
+  },
+  {
+    "text": "통신 안 됩니다",
+    "start": 192,
+    "duration": 1
+  },
+  {
+    "text": "그래서 집중하시고요",
+    "start": 193,
+    "duration": 1
+  },
+  {
+    "text": "먼저 여기 보이는",
+    "start": 194,
+    "duration": 1
+  },
+  {
+    "text": "네 가지 선택지들에 대해",
+    "start": 195,
+    "duration": 1
+  },
+  {
+    "text": "먼저 설명을 드리자면",
+    "start": 196,
+    "duration": 2
+  },
+  {
+    "text": "1번은 말 그대로",
+    "start": 198,
+    "duration": 1
+  },
+  {
+    "text": "Hermes가 URL 패턴을 분석을 해서",
+    "start": 199,
+    "duration": 3
+  },
+  {
+    "text": "알맞은 API 데이터 포맷을",
+    "start": 202,
+    "duration": 2
+  },
+  {
+    "text": "자동으로 찾아주는 방식입니다",
+    "start": 204,
+    "duration": 2
+  },
+  {
+    "text": "그리고 2번은",
+    "start": 206,
+    "duration": 1
+  },
+  {
+    "text": "OpenAI 표준 Chat Completions 포맷인데요",
+    "start": 207,
+    "duration": 3
+  },
+  {
+    "text": "이거는 대부분의 LLM 서빙 엔진들이",
+    "start": 210,
+    "duration": 3
+  },
+  {
+    "text": "지원하는 포맷이죠",
+    "start": 213,
+    "duration": 1
+  },
+  {
+    "text": "3번은",
+    "start": 214,
+    "duration": 1
+  },
+  {
+    "text": "OpenAI Response API (포맷)입니다",
+    "start": 215,
+    "duration": 2
+  },
+  {
+    "text": "GPT 모델이 주로 사용하고요",
+    "start": 217,
+    "duration": 3
+  },
+  {
+    "text": "4번은 Anthropic API",
+    "start": 220,
+    "duration": 2
+  },
+  {
+    "text": "그러니까 Claude 모델을 연동할 때 사용합니다",
+    "start": 222,
+    "duration": 3
+  },
+  {
+    "text": "일단 저는 1번을 선택하겠습니다",
+    "start": 225,
+    "duration": 2
+  },
+  {
+    "text": "왜냐면",
+    "start": 227,
+    "duration": 1
+  },
+  {
+    "text": "대부분 호환이 잘 되더라고요",
+    "start": 228,
+    "duration": 2
+  },
+  {
+    "text": "그래서 만약에",
+    "start": 230,
+    "duration": 1
+  },
+  {
+    "text": "다른 서빙 엔진을 연동을 할 때",
+    "start": 231,
+    "duration": 2
+  },
+  {
+    "text": "뭘 선택할지 잘 모르시겠다는 분들은",
+    "start": 233,
+    "duration": 2
+  },
+  {
+    "text": "1번을 선택해도 나쁘지 않을 것 같습니다",
+    "start": 235,
+    "duration": 3
+  },
+  {
+    "text": "그 다음 모델 이름",
+    "start": 238,
+    "duration": 1
+  },
+  {
+    "text": "Ollama 프로세스가 켜져 있다면",
+    "start": 239,
+    "duration": 2
+  },
+  {
+    "text": "이렇게 Ollama에 등록된 모델들도 같이 보여집니다",
+    "start": 241,
+    "duration": 4
+  },
+  {
+    "text": "혹시나 없으신 분들은",
+    "start": 245,
+    "duration": 1
+  },
+  {
+    "text": "Ollama에 표시되는 모델 이름을",
+    "start": 246,
+    "duration": 2
+  },
+  {
+    "text": "직접 입력하시면 되고요",
+    "start": 248,
+    "duration": 2
+  },
+  {
+    "text": "저는 Qwen3.5-4B 모델을 사용할 것이므로",
+    "start": 250,
+    "duration": 4
+  },
+  {
+    "text": "이렇게 넣겠습니다",
+    "start": 254,
+    "duration": 1
+  },
+  {
+    "text": "요거는",
+    "start": 255,
+    "duration": 1
+  },
+  {
+    "text": "모델의 최대 컨텍스트 크기를 정하는 건데",
+    "start": 256,
+    "duration": 2
+  },
+  {
+    "text": "그냥 엔터를 누르면",
+    "start": 258,
+    "duration": 1
+  },
+  {
+    "text": "알아서 자동 감지를 해서 설정을 해줍니다",
+    "start": 259,
+    "duration": 2
+  },
+  {
+    "text": "참고로 Hermes는",
+    "start": 261,
+    "duration": 1
+  },
+  {
+    "text": "크기를 64,000 이상을 요구하고 있거든요?",
+    "start": 262,
+    "duration": 2
+  },
+  {
+    "text": "그래서 만약에 부족하다고 뜨면",
+    "start": 264,
+    "duration": 2
+  },
+  {
+    "text": "64,000 이상으로",
+    "start": 266,
+    "duration": 2
+  },
+  {
+    "text": "여기서 직접 지정해주시면 됩니다",
+    "start": 268,
+    "duration": 1
+  },
+  {
+    "text": "일단 저는",
+    "start": 269,
+    "duration": 1
+  },
+  {
+    "text": "자동 감지로 하겠습니다",
+    "start": 270,
+    "duration": 2
+  },
+  {
+    "text": "Display name은",
+    "start": 272,
+    "duration": 2
+  },
+  {
+    "text": "해당 Provider의 별칭을 지정하는 것이고",
+    "start": 274,
+    "duration": 3
+  },
+  {
+    "text": "저는 'ollama' 라고 입력을 하겠습니다",
+    "start": 277,
+    "duration": 4
+  },
+  {
+    "text": "이제 Ollama를 연동할",
+    "start": 281,
+    "duration": 2
+  },
+  {
+    "text": "Provider 등록은 완료가 된 상태고요",
+    "start": 283,
+    "duration": 2
+  },
+  {
+    "text": "등록이 완료되었으니",
+    "start": 285,
+    "duration": 1
+  },
+  {
+    "text": "이제 사용을 해봐야겠죠?",
+    "start": 286,
+    "duration": 2
+  },
+  {
+    "text": "방금 선택한 Provider를 선택을 하시려면",
+    "start": 288,
+    "duration": 2
+  },
+  {
+    "text": "다시 이 명령어를 쳐서",
+    "start": 290,
+    "duration": 3
+  },
+  {
+    "text": "아까 추가했던 Ollama Provider를 선택하시면 됩니다",
+    "start": 293,
+    "duration": 4
+  },
+  {
+    "text": "여기서 LLM도",
+    "start": 297,
+    "duration": 1
+  },
+  {
+    "text": "다시 선택할 수 있네요",
+    "start": 298,
+    "duration": 1
+  },
+  {
+    "text": "아까 똑같이 Qwen3.5-4B을 선택을 하겠습니다",
+    "start": 299,
+    "duration": 5
+  },
+  {
+    "text": "그러면 Ollama Provider가",
+    "start": 304,
+    "duration": 1
+  },
+  {
+    "text": "Hermes에서 default로 선택이 된 것이고요",
+    "start": 305,
+    "duration": 3
+  },
+  {
+    "text": "이제 채팅을 시작할 수 있습니다",
+    "start": 308,
+    "duration": 2
+  },
+  {
+    "text": "채팅에 들어가셔서",
+    "start": 310,
+    "duration": 2
+  },
+  {
+    "text": "아무거나 쳐봅시다",
+    "start": 312,
+    "duration": 6
+  },
+  {
+    "text": "잘 돌아가네요",
+    "start": 318,
+    "duration": 2
+  },
+  {
+    "text": "이렇게 Ollama 연동은 완료되었고요",
+    "start": 320,
+    "duration": 2
+  },
+  {
+    "text": "근데 만약에",
+    "start": 322,
+    "duration": 1
+  },
+  {
+    "text": "어? 제가 잘못 입력한 것 같은데",
+    "start": 323,
+    "duration": 1
+  },
+  {
+    "text": "부분적으로 수정하고 싶으면",
+    "start": 324,
+    "duration": 1
+  },
+  {
+    "text": "어떻게 해야 하나요?",
+    "start": 325,
+    "duration": 1
+  },
+  {
+    "text": "Hermes 설정 파일을",
+    "start": 326,
+    "duration": 2
+  },
+  {
+    "text": "직접 수정해야 합니다",
+    "start": 328,
+    "duration": 1
+  },
+  {
+    "text": "개인적으로 좀 불편한 기능이라 생각이 드는데",
+    "start": 329,
+    "duration": 4
+  },
+  {
+    "text": "먼저",
+    "start": 333,
+    "duration": 1
+  },
+  {
+    "text": "정석적인 방법을 보여드리면",
+    "start": 334,
+    "duration": 1
+  },
+  {
+    "text": "해당 명령어를 치시면 됩니다",
+    "start": 335,
+    "duration": 4
+  },
+  {
+    "text": "그러면",
+    "start": 339,
+    "duration": 1
+  },
+  {
+    "text": "에디터 모드로 넘어가지는데",
+    "start": 340,
+    "duration": 1
+  },
+  {
+    "text": "여기서 문제는",
+    "start": 341,
+    "duration": 1
+  },
+  {
+    "text": "리눅스의 nano 사용법을",
+    "start": 342,
+    "duration": 2
+  },
+  {
+    "text": "추가로 알아야 한다는 것입니다",
+    "start": 344,
+    "duration": 2
+  },
+  {
+    "text": "만약에 머리가 복잡하시다면",
+    "start": 346,
+    "duration": 2
+  },
+  {
+    "text": "제가 추천하는 쉬운 방법은",
+    "start": 348,
+    "duration": 2
+  },
+  {
+    "text": "그냥 상남자 같이 지워버리고",
+    "start": 350,
+    "duration": 2
+  },
+  {
+    "text": "다시 재생성을 하는 것입니다",
+    "start": 352,
+    "duration": 1
+  },
+  {
+    "text": "어떻게요?",
+    "start": 353,
+    "duration": 1
+  },
+  {
+    "text": "먼저 여기서 Ctrl + X 눌러서 나오시고",
+    "start": 354,
+    "duration": 2
+  },
+  {
+    "text": "그 다음",
+    "start": 356,
+    "duration": 1
+  },
+  {
+    "text": "다시 이 명령어를 치시고",
+    "start": 357,
+    "duration": 2
+  },
+  {
+    "text": "이거 내리다 보면",
+    "start": 359,
+    "duration": 2
+  },
+  {
+    "text": "이거 보이시죠?",
+    "start": 361,
+    "duration": 2
+  },
+  {
+    "text": "이게 Provider를 삭제하는 기능인데",
+    "start": 363,
+    "duration": 2
+  },
+  {
+    "text": "들어가면",
+    "start": 365,
+    "duration": 1
+  },
+  {
+    "text": "방금 생성한 Provider가 보이시죠?",
+    "start": 366,
+    "duration": 2
+  },
+  {
+    "text": "이를 선택을 해서 삭제할 수 있습니다",
+    "start": 368,
+    "duration": 3
+  },
+  {
+    "text": "삭제가 되었고 다시 생성하면 되겠죠?",
+    "start": 371,
+    "duration": 2
+  },
+  {
+    "text": "이제 Ollama 연동법 설명은 끝났습니다",
+    "start": 373,
+    "duration": 2
+  },
+  {
+    "text": "이제는 vLLM입니다",
+    "start": 375,
+    "duration": 2
+  },
+  {
+    "text": "역시 vLLM이 설치되어 있다는 가정하에",
+    "start": 377,
+    "duration": 3
+  },
+  {
+    "text": "Hermes Agent에 연동하는 부분만",
+    "start": 380,
+    "duration": 2
+  },
+  {
+    "text": "보여드릴 거예요",
+    "start": 382,
+    "duration": 1
+  },
+  {
+    "text": "참고로",
+    "start": 383,
+    "duration": 1
+  },
+  {
+    "text": "저는 vLLM을 Docker로 구동시켰고요",
+    "start": 384,
+    "duration": 2
+  },
+  {
+    "text": "이에 대한 설치법은",
+    "start": 386,
+    "duration": 2
+  },
+  {
+    "text": "저의 이전 영상을 참고하시면 되고",
+    "start": 388,
+    "duration": 2
+  },
+  {
+    "text": "만약에",
+    "start": 390,
+    "duration": 1
+  },
+  {
+    "text": "사용하시는 GPU가",
+    "start": 391,
+    "duration": 1
+  },
+  {
+    "text": "AMD GPU거나",
+    "start": 392,
+    "duration": 1
+  },
+  {
+    "text": "혹은",
+    "start": 393,
+    "duration": 1
+  },
+  {
+    "text": "Mac 환경이라면",
+    "start": 394,
+    "duration": 1
+  },
+  {
+    "text": "좀 다르게 진행하셔야 됩니다",
+    "start": 395,
+    "duration": 2
+  },
+  {
+    "text": "이제부터 잘 들으세요",
+    "start": 397,
+    "duration": 1
+  },
+  {
+    "text": "연동법은 두 단계로 나눠서 보여드릴 거고요",
+    "start": 398,
+    "duration": 3
+  },
+  {
+    "text": "첫 번째 단계",
+    "start": 401,
+    "duration": 1
+  },
+  {
+    "text": "vLLM Argument 설정",
+    "start": 402,
+    "duration": 2
+  },
+  {
+    "text": "vLLM을 Hermes에 연동할 때",
+    "start": 404,
+    "duration": 3
+  },
+  {
+    "text": "실행 인자",
+    "start": 407,
+    "duration": 1
+  },
+  {
+    "text": "일명, Argument 설정이",
+    "start": 408,
+    "duration": 2
+  },
+  {
+    "text": "매우 중요합니다",
+    "start": 410,
+    "duration": 1
+  },
+  {
+    "text": "Argument는 이 다섯 가지를 기억하셔야 하고요",
+    "start": 411,
+    "duration": 3
+  },
+  {
+    "text": "이렇게 보면 잘 이해가 안 되니까",
+    "start": 414,
+    "duration": 2
+  },
+  {
+    "text": "실제 vLLM 실행 명령어랑",
+    "start": 416,
+    "duration": 2
+  },
+  {
+    "text": "같이 확인해 봅시다",
+    "start": 418,
+    "duration": 1
+  },
+  {
+    "text": "아까 언급했듯",
+    "start": 419,
+    "duration": 1
+  },
+  {
+    "text": "Docker를 활용하기 때문에",
+    "start": 420,
+    "duration": 2
+  },
+  {
+    "text": "거기에 맞춰서 명령어가 구성되어 있고요",
+    "start": 422,
+    "duration": 2
+  },
+  {
+    "text": "윗부분에는 (Docker) 컨테이너 설정",
+    "start": 424,
+    "duration": 2
+  },
+  {
+    "text": "아랫부분에는 우리가 눈여겨봐야 할",
+    "start": 426,
+    "duration": 2
+  },
+  {
+    "text": "vLLM Argument가 있습니다",
+    "start": 428,
+    "duration": 2
+  },
+  {
+    "text": "참고로",
+    "start": 430,
+    "duration": 1
+  },
+  {
+    "text": "현재 Docker를 사용하지 않는 분들도",
+    "start": 431,
+    "duration": 1
+  },
+  {
+    "text": "이 Argument를 설정하는 부분은 똑같으니까",
+    "start": 432,
+    "duration": 3
+  },
+  {
+    "text": "걱정하지 마시고요",
+    "start": 435,
+    "duration": 2
+  },
+  {
+    "text": "아까 다섯 가지 기억나시죠?",
+    "start": 437,
+    "duration": 1
+  },
+  {
+    "text": "그래서 여기",
+    "start": 438,
+    "duration": 1
+  },
+  {
+    "text": "최대 컨텍스트 길이는",
+    "start": 439,
+    "duration": 2
+  },
+  {
+    "text": "65536으로 지정을 했고",
+    "start": 441,
+    "duration": 1
+  },
+  {
+    "text": "그 다음",
+    "start": 442,
+    "duration": 1
+  },
+  {
+    "text": "이 Argument를 추가하였고요",
+    "start": 443,
+    "duration": 3
+  },
+  {
+    "text": "사용한 모델이 Qwen3.5다 보니까",
+    "start": 446,
+    "duration": 2
+  },
+  {
+    "text": "Tool Call Parser는 모델에 맞춰서",
+    "start": 448,
+    "duration": 2
+  },
+  {
+    "text": "'qwen3_coder' 로 지정하였습니다",
+    "start": 450,
+    "duration": 3
+  },
+  {
+    "text": "만약 여러분들이 사용하는 모델이",
+    "start": 453,
+    "duration": 2
+  },
+  {
+    "text": "이거랑 다르다!",
+    "start": 455,
+    "duration": 1
+  },
+  {
+    "text": "그러면",
+    "start": 456,
+    "duration": 1
+  },
+  {
+    "text": "해당 표를 참고하시고요",
+    "start": 457,
+    "duration": 1
+  },
+  {
+    "text": "여기에도 없다",
+    "start": 458,
+    "duration": 1
+  },
+  {
+    "text": "그러면 현재 보여드리는",
+    "start": 459,
+    "duration": 1
+  },
+  {
+    "text": "Docs 내용을 확인하셔서",
+    "start": 460,
+    "duration": 2
+  },
+  {
+    "text": "넣으시면 됩니다",
+    "start": 462,
+    "duration": 1
+  },
+  {
+    "text": "그리고 여기",
+    "start": 463,
+    "duration": 1
+  },
+  {
+    "text": "--reasoning-parser 역시",
+    "start": 464,
+    "duration": 2
+  },
+  {
+    "text": "모델에 맞는 parser를 지정하시면 됩니다",
+    "start": 466,
+    "duration": 2
+  },
+  {
+    "text": "마지막으로 --served-model-name",
+    "start": 468,
+    "duration": 2
+  },
+  {
+    "text": "이건 이따가",
+    "start": 470,
+    "duration": 1
+  },
+  {
+    "text": "Hermes 연동 부분에서 활용되는 것을",
+    "start": 471,
+    "duration": 2
+  },
+  {
+    "text": "눈으로 확인하시면",
+    "start": 473,
+    "duration": 1
+  },
+  {
+    "text": "이해가 되실 겁니다",
+    "start": 474,
+    "duration": 1
+  },
+  {
+    "text": "두 번째",
+    "start": 475,
+    "duration": 1
+  },
+  {
+    "text": "Hermes 연동 설정",
+    "start": 476,
+    "duration": 1
+  },
+  {
+    "text": "이 부분은 좀 전에",
+    "start": 477,
+    "duration": 1
+  },
+  {
+    "text": "Ollama를 연동했던 방식이랑 비슷합니다",
+    "start": 478,
+    "duration": 3
+  },
+  {
+    "text": "'hermes model' 을 치시고요",
+    "start": 481,
+    "duration": 3
+  },
+  {
+    "text": "그리고 vLLM도",
+    "start": 484,
+    "duration": 1
+  },
+  {
+    "text": "(전용 Provider가) 이곳에는 없기 때문에",
+    "start": 485,
+    "duration": 2
+  },
+  {
+    "text": "Custom endpoint를",
+    "start": 487,
+    "duration": 1
+  },
+  {
+    "text": "아까와 똑같이 선택을 해주시고요",
+    "start": 488,
+    "duration": 4
+  },
+  {
+    "text": "IP와 포트는",
+    "start": 492,
+    "duration": 1
+  },
+  {
+    "text": "아까 컨테이너를 8000 포트로 바인딩 해놨으니까",
+    "start": 493,
+    "duration": 5
+  },
+  {
+    "text": "이렇게 입력을 하시고",
+    "start": 498,
+    "duration": 3
+  },
+  {
+    "text": "그 뒤에는 /v1 을 붙이시면 됩니다",
+    "start": 501,
+    "duration": 2
+  },
+  {
+    "text": "API Key는 따로 지정할 거 없으니까",
+    "start": 503,
+    "duration": 2
+  },
+  {
+    "text": "넘기시고요",
+    "start": 505,
+    "duration": 2
+  },
+  {
+    "text": "이 부분도 아까와 똑같이",
+    "start": 507,
+    "duration": 1
+  },
+  {
+    "text": "자동 감지를 선택해도 괜찮습니다",
+    "start": 508,
+    "duration": 3
+  },
+  {
+    "text": "여기서는 아까 실행 명령어에서",
+    "start": 511,
+    "duration": 2
+  },
+  {
+    "text": "--served-model-name 기억나시죠?",
+    "start": 513,
+    "duration": 2
+  },
+  {
+    "text": "그 값을 넣으시면 됩니다",
+    "start": 515,
+    "duration": 2
+  },
+  {
+    "text": "이것도 아까도 똑같이",
+    "start": 517,
+    "duration": 3
+  },
+  {
+    "text": "자동 감지를 사용하겠습니다",
+    "start": 520,
+    "duration": 5
+  },
+  {
+    "text": "이제 Provider 설정은 완료되었고",
+    "start": 525,
+    "duration": 3
+  },
+  {
+    "text": "채팅을 쳐보면",
+    "start": 528,
+    "duration": 15
+  },
+  {
+    "text": "잘 나오죠?",
+    "start": 543,
+    "duration": 1
+  },
+  {
+    "text": "도구도 사용하라 해볼까요?",
+    "start": 544,
+    "duration": 15
+  },
+  {
+    "text": "Qwen이 중국 모델이고",
+    "start": 559,
+    "duration": 2
+  },
+  {
+    "text": "파라미터가 작아서 그런지",
+    "start": 561,
+    "duration": 1
+  },
+  {
+    "text": "중국어가 섞여서 나오긴 하는데",
+    "start": 562,
+    "duration": 2
+  },
+  {
+    "text": "중국어가 섞여서 나오긴 하는데",
+    "start": 564,
+    "duration": 1
+  },
+  {
+    "text": "일단은 잘 됩니다",
+    "start": 565,
+    "duration": 2
+  },
+  {
+    "text": "이렇게 vLLM 연동법 설명도 끝났습니다",
+    "start": 567,
+    "duration": 4
+  },
+  {
+    "text": "이제는 SGLang 입니다",
+    "start": 571,
+    "duration": 1
+  },
+  {
+    "text": "SGLang도 vLLM과 똑같이",
+    "start": 572,
+    "duration": 3
+  },
+  {
+    "text": "Docker로 실행할 것이고요",
+    "start": 575,
+    "duration": 1
+  },
+  {
+    "text": "역시 Docker와",
+    "start": 576,
+    "duration": 1
+  },
+  {
+    "text": "컨테이너 GPU 드라이버가",
+    "start": 577,
+    "duration": 2
+  },
+  {
+    "text": "설치되어 있는 상황이어야 합니다",
+    "start": 579,
+    "duration": 1
+  },
+  {
+    "text": "만약에 안 되어 있다면",
+    "start": 580,
+    "duration": 2
+  },
+  {
+    "text": "아까와 똑같이",
+    "start": 582,
+    "duration": 1
+  },
+  {
+    "text": "제 이전 영상에서",
+    "start": 583,
+    "duration": 1
+  },
+  {
+    "text": "이 둘을 설치하는 파트만",
+    "start": 584,
+    "duration": 1
+  },
+  {
+    "text": "참고하시면 되고요",
+    "start": 585,
+    "duration": 1
+  },
+  {
+    "text": "AMD GPU나 Mac 환경이라면",
+    "start": 586,
+    "duration": 2
+  },
+  {
+    "text": "방법이 다르니까",
+    "start": 588,
+    "duration": 1
+  },
+  {
+    "text": "영상 설명란에 레퍼런스를 참고하시면 됩니다",
+    "start": 589,
+    "duration": 3
+  },
+  {
+    "text": "돌아와서",
+    "start": 592,
+    "duration": 1
+  },
+  {
+    "text": "SGLang 연동법 역시",
+    "start": 593,
+    "duration": 2
+  },
+  {
+    "text": "vLLM과 유사합니다",
+    "start": 595,
+    "duration": 1
+  },
+  {
+    "text": "이것도 총 두 단계로 보여드릴 거예요",
+    "start": 596,
+    "duration": 3
+  },
+  {
+    "text": "첫 번째, Arguments 설정",
+    "start": 599,
+    "duration": 2
+  },
+  {
+    "text": "SGLang도 똑같게",
+    "start": 601,
+    "duration": 1
+  },
+  {
+    "text": "Arguments 설정이 중요합니다",
+    "start": 602,
+    "duration": 2
+  },
+  {
+    "text": "아까 vLLM을 보셨다면",
+    "start": 604,
+    "duration": 1
+  },
+  {
+    "text": "추가로 공부하실거는 없고요",
+    "start": 605,
+    "duration": 2
+  },
+  {
+    "text": "왜인지는",
+    "start": 607,
+    "duration": 1
+  },
+  {
+    "text": "실행 명령어를 바로 보여드릴게요",
+    "start": 608,
+    "duration": 2
+  },
+  {
+    "text": "아까와 많이 비슷하죠?",
+    "start": 610,
+    "duration": 2
+  },
+  {
+    "text": "이 부분이 SGLang의 Argument 영역이고",
+    "start": 612,
+    "duration": 3
+  },
+  {
+    "text": "(아까) vLLM과 차이점으로",
+    "start": 615,
+    "duration": 1
+  },
+  {
+    "text": "--context-length 가 있긴 한데",
+    "start": 616,
+    "duration": 2
+  },
+  {
+    "text": "이거는 모델 최대 컨텍스트 크기고요",
+    "start": 618,
+    "duration": 3
+  },
+  {
+    "text": "나머지는 다 똑같죠?",
+    "start": 621,
+    "duration": 2
+  },
+  {
+    "text": "Argument별 설명이 궁금하신 분들은",
+    "start": 623,
+    "duration": 2
+  },
+  {
+    "text": "여기 표를",
+    "start": 625,
+    "duration": 1
+  },
+  {
+    "text": "확인하시면 되고",
+    "start": 626,
+    "duration": 1
+  },
+  {
+    "text": "아까랑 같은 내용이니",
+    "start": 627,
+    "duration": 1
+  },
+  {
+    "text": "따로 설명을 안 하겠습니다",
+    "start": 628,
+    "duration": 2
+  },
+  {
+    "text": "그리고 중요한",
+    "start": 630,
+    "duration": 1
+  },
+  {
+    "text": "Tool Call Parser와 Reasoning Parser 또한",
+    "start": 631,
+    "duration": 2
+  },
+  {
+    "text": "지정하는 값이 vLLM과 유사하고요",
+    "start": 633,
+    "duration": 2
+  },
+  {
+    "text": "각 Docs 링크는",
+    "start": 635,
+    "duration": 1
+  },
+  {
+    "text": "영상 설명란에 공유해드리겠습니다",
+    "start": 636,
+    "duration": 2
+  },
+  {
+    "text": "두번째, Hermes 연동",
+    "start": 638,
+    "duration": 2
+  },
+  {
+    "text": "역시 vLLM과 비슷하니까",
+    "start": 640,
+    "duration": 2
+  },
+  {
+    "text": "빠르게 넘기면서 보여드리겠습니다 00:10:59",
+    "start": 642,
+    "duration": 19
+  },
+  {
+    "text": "아까 vLLM 같은 경우에는",
+    "start": 661,
+    "duration": 2
+  },
+  {
+    "text": "vLLM 프로세스를 켜놓지 않은 상태에서",
+    "start": 663,
+    "duration": 3
+  },
+  {
+    "text": "진행을 해가지고",
+    "start": 666,
+    "duration": 1
+  },
+  {
+    "text": "모델 감지가 안 됐었는데",
+    "start": 667,
+    "duration": 1
+  },
+  {
+    "text": "지금은 SGLang 프로세스를 켜놨거든요?",
+    "start": 668,
+    "duration": 3
+  },
+  {
+    "text": "그래 가지고",
+    "start": 671,
+    "duration": 1
+  },
+  {
+    "text": "Hermes가 SGLang에 통신을 해가지고",
+    "start": 672,
+    "duration": 1
+  },
+  {
+    "text": "모델을 감지해서",
+    "start": 673,
+    "duration": 1
+  },
+  {
+    "text": "저한테",
+    "start": 674,
+    "duration": 1
+  },
+  {
+    "text": "사용할려는 모델 이름",
+    "start": 675,
+    "duration": 1
+  },
+  {
+    "text": "이거 맞죠?",
+    "start": 676,
+    "duration": 1
+  },
+  {
+    "text": "라면서",
+    "start": 677,
+    "duration": 1
+  },
+  {
+    "text": "저한테 지금 제안을 하고 있는 모습을",
+    "start": 678,
+    "duration": 1
+  },
+  {
+    "text": "볼 수가 있습니다",
+    "start": 679,
+    "duration": 1
+  },
+  {
+    "text": "그럼 당연히 이거 선택을 해야죠",
+    "start": 680,
+    "duration": 7
+  },
+  {
+    "text": "Provider 등록은 끝났고요",
+    "start": 687,
+    "duration": 1
+  },
+  {
+    "text": "한번 채팅을 쳐 보겠습니다",
+    "start": 688,
+    "duration": 23
+  },
+  {
+    "text": "도구도 잘 사용이 되네요",
+    "start": 711,
+    "duration": 1
+  },
+  {
+    "text": "이렇게 SGLang 연동도 완료되었습니다",
+    "start": 712,
+    "duration": 4
+  },
+  {
+    "text": "자, 이렇게",
+    "start": 716,
+    "duration": 1
+  },
+  {
+    "text": "Ollama, vLLM,",
+    "start": 717,
+    "duration": 2
+  },
+  {
+    "text": "이 세가지 서빙 엔진을",
+    "start": 719,
+    "duration": 1
+  },
+  {
+    "text": "Hermes Agent에 연동하는 방법을 알아보았습니다",
+    "start": 720,
+    "duration": 4.008
+  }
+]

@@ -1,0 +1,159 @@
+{
+  "videoId": "u8XMK-Y2tvI",
+  "title": "역대급 오픈소스 이미지 생성 모델 Ideogram 4 완벽 해부: ComfyUI 워크플로우부터 JSON 프롬프트, bbox까지",
+  "channel": "Deno",
+  "channelId": "UCbxWV6MF3RLTbY3AR-9Jukw",
+  "description": "ComfyUI에 업데이트된 최신 이미지 생성 모델 Ideogram 4 리뷰입니다.\n텍스트 렌더링 품질, JSON prompt 구조, 두 개의 diffusion model 흐름, CFGOverride, DualModelGuider, ConditioningZeroOut, Ideogram4Scheduler, mu/std, bbox, 그리고 KJ Ideogram Prompt Builder까지 깊게 파헤쳐 보았습니다\n\n이번 영상은 Ideogram 4를 처음 만졌을 때 헷갈릴 수 있는 구조를 이해하는 데 초점을 맞췄습니다. 다음 영상에서는 실전 활용 흐름을 더 자세히 다룰 예정입니다.\n\n🚀 Deno AI HUB\nhttps://deno2026.github.io/Deno-AI-HUB/\n\n💻 PC Spec\n9950X3D\n256GB RAM\nRTX5090\n\n00:00 Ideogram 4 소개\n00:31 모델이 특별한 이유\n01:46 ComfyUI 기본 템플릿 열기\n02:12 JSON prompt와 color_palette\n02:38 기본 프롬프트 출력 테스트\n02:59 품질 옵션과 샘플 결과\n04:18 영어/한글 텍스트 렌더링 비교\n05:14 상업적 활용 가능성 예시\n06:31 workflow graph 살펴보기\n06:44 두 개의 diffusion model 구조\n07:13 기본 workflow 흐름\n07:50 conditional / unconditional model 이해\n08:54 ConditioningZeroOut과 negative prompt\n09:58 CFGOverride와 DualModelGuider\n10:58 CFG 7에서 CFG 3으로 바뀌는 구간\n12:50 Euler sampler와 scheduler\n13:04 Ideogram4Scheduler, mu, std\n14:18 custom combo 품질 preset\n15:24 Ideogram Caption Prompt Template\n16:05 LLM으로 JSON prompt 만들기\n17:42 JSON prompt 구조가 필요한 이유\n18:54 high_level_description과 prompt 구성요소\n19:38 object와 text 분리\n21:44 bbox 개념\n22:54 KJ Ideogram Prompt Builder\n23:49 자연어 prompt를 JSON으로 구조화하기\n25:54 bbox 수정과 생성 테스트\n26:27 마무리",
+  "duration": 1602,
+  "publishDate": "2026-06-12",
+  "url": "https://www.youtube.com/watch?v=u8XMK-Y2tvI",
+  "coverImage": "imgs/cover.jpg",
+  "thumbnailUrl": "https://i.ytimg.com/vi/u8XMK-Y2tvI/maxresdefault.jpg",
+  "language": {
+    "code": "ko",
+    "name": "Korean",
+    "isGenerated": true
+  },
+  "chapters": [
+    {
+      "title": "Ideogram 4 소개",
+      "start": 0,
+      "end": 31
+    },
+    {
+      "title": "모델이 특별한 이유",
+      "start": 31,
+      "end": 106
+    },
+    {
+      "title": "ComfyUI 기본 템플릿 열기",
+      "start": 106,
+      "end": 132
+    },
+    {
+      "title": "JSON prompt와 color_palette",
+      "start": 132,
+      "end": 158
+    },
+    {
+      "title": "기본 프롬프트 출력 테스트",
+      "start": 158,
+      "end": 179
+    },
+    {
+      "title": "품질 옵션과 샘플 결과",
+      "start": 179,
+      "end": 258
+    },
+    {
+      "title": "영어/한글 텍스트 렌더링 비교",
+      "start": 258,
+      "end": 314
+    },
+    {
+      "title": "상업적 활용 가능성 예시",
+      "start": 314,
+      "end": 391
+    },
+    {
+      "title": "workflow graph 살펴보기",
+      "start": 391,
+      "end": 404
+    },
+    {
+      "title": "두 개의 diffusion model 구조",
+      "start": 404,
+      "end": 433
+    },
+    {
+      "title": "기본 workflow 흐름",
+      "start": 433,
+      "end": 470
+    },
+    {
+      "title": "conditional / unconditional model 이해",
+      "start": 470,
+      "end": 534
+    },
+    {
+      "title": "ConditioningZeroOut과 negative prompt",
+      "start": 534,
+      "end": 598
+    },
+    {
+      "title": "CFGOverride와 DualModelGuider",
+      "start": 598,
+      "end": 658
+    },
+    {
+      "title": "CFG 7에서 CFG 3으로 바뀌는 구간",
+      "start": 658,
+      "end": 770
+    },
+    {
+      "title": "Euler sampler와 scheduler",
+      "start": 770,
+      "end": 784
+    },
+    {
+      "title": "Ideogram4Scheduler, mu, std",
+      "start": 784,
+      "end": 858
+    },
+    {
+      "title": "custom combo 품질 preset",
+      "start": 858,
+      "end": 924
+    },
+    {
+      "title": "Ideogram Caption Prompt Template",
+      "start": 924,
+      "end": 965
+    },
+    {
+      "title": "LLM으로 JSON prompt 만들기",
+      "start": 965,
+      "end": 1062
+    },
+    {
+      "title": "JSON prompt 구조가 필요한 이유",
+      "start": 1062,
+      "end": 1134
+    },
+    {
+      "title": "high_level_description과 prompt 구성요소",
+      "start": 1134,
+      "end": 1178
+    },
+    {
+      "title": "object와 text 분리",
+      "start": 1178,
+      "end": 1304
+    },
+    {
+      "title": "bbox 개념",
+      "start": 1304,
+      "end": 1374
+    },
+    {
+      "title": "KJ Ideogram Prompt Builder",
+      "start": 1374,
+      "end": 1429
+    },
+    {
+      "title": "자연어 prompt를 JSON으로 구조화하기",
+      "start": 1429,
+      "end": 1554
+    },
+    {
+      "title": "bbox 수정과 생성 테스트",
+      "start": 1554,
+      "end": 1587
+    },
+    {
+      "title": "마무리",
+      "start": 1587,
+      "end": 1602
+    }
+  ]
+}

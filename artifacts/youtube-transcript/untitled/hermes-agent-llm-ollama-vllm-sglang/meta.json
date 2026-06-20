@@ -1,0 +1,44 @@
+{
+  "videoId": "W0HK1ksbPWM",
+  "title": "Hermes Agent + 로컬 LLM 연동하기! (Ollama, vLLM, SGLang 활용)",
+  "channel": "괴발자",
+  "channelId": "UCcLJlezJrJ6sW-l7WPZnlMg",
+  "description": "Hermes Agent에 로컬 LLM 연동법 가이드! (Ollama, vLLm, SGLang 활용)\n\n⏱️ Timestamps (타임스탬프)\n\n0:00 - Hermes Agent에서 로컬 LLM을 사용하는 방\n0:39 - Ollama를 Hermes Agent에 연동하기\n6:16 - vLLM를 Hermes Agent에 연동하기\n9:31 - SGLang을 Hermes Agent에 연동하기\n11:55 - 마무리\n\n\n\n📑 Reference\n\n[vLLM]\n\n📌 Docker를 활용한 vLLM 설치 가이드\n\n🖥️ AMD GPU(ROCm): https://docs.vllm.ai/en/stable/deployment/docker/#amd-rocm\n🖥️ Mac OS(Apple Silicon): https://docs.vllm.ai/en/stable/deployment/docker/#apple-silicon\n\n📌 vLLM 설치 가이드 (Docker 미사용)\n\n🖥️ AMD GPU(ROCm): https://docs.vllm.ai/en/latest/getting_started/installation/gpu/#amd-rocm\n🖥️ Mac OS(Apple Silicon): https://docs.vllm.ai/en/latest/getting_started/installation/gpu/#apple-silicon\n\n📌 vLLM Tool Call Parser 지정시 참고 \nhttps://docs.vllm.ai/en/latest/features/tool_calling/\n\n📌 vLLM Reasoning Parser 지정시 참고\nhttps://docs.vllm.ai/en/latest/features/reasoning_outputs/\n\n\n\n[SGLang]\n\n📌 Docker를 활용한 SGLang 설치 가이드\n\n🖥️ AMD GPU(ROCm): https://github.com/sgl-project/sglang/blob/main/docs/platforms/amd_gpu.md#install-using-docker-recommended\n🖥️ Mac OS(Apple Silicon): Docker 보다는 기본 설치법을 추천합니다\n\n📌 SGLang 설치 가이드 (Docker 미사용)\n\n🖥️ AMD GPU(ROCm): https://docs.sglang.io/docs/hardware-platforms/amd_gpu\n🖥️ Mac OS(Apple Silicon): https://docs.sglang.io/docs/hardware-platforms/apple_metal\n\n📌 SGLang Tool Call Parser 지정시 참고\nhttps://sgl-project.github.io/advanced_features/tool_parser.html\n\n📌 SGLang Reasoning Parser 지정시 참고\nhttps://sgl-project.github.io/advanced_features/separate_reasoning.html\n\n\n\n#Hermes #openclaw #ollama #vllm #sglang",
+  "duration": 724,
+  "publishDate": "2026-05-31",
+  "url": "https://www.youtube.com/watch?v=W0HK1ksbPWM",
+  "coverImage": "imgs/cover.jpg",
+  "thumbnailUrl": "https://i.ytimg.com/vi/W0HK1ksbPWM/maxresdefault.jpg",
+  "language": {
+    "code": "ko",
+    "name": "Korean",
+    "isGenerated": false
+  },
+  "chapters": [
+    {
+      "title": "- Hermes Agent에서 로컬 LLM을 사용하는 방",
+      "start": 0,
+      "end": 39
+    },
+    {
+      "title": "- Ollama를 Hermes Agent에 연동하기",
+      "start": 39,
+      "end": 376
+    },
+    {
+      "title": "- vLLM를 Hermes Agent에 연동하기",
+      "start": 376,
+      "end": 571
+    },
+    {
+      "title": "- SGLang을 Hermes Agent에 연동하기",
+      "start": 571,
+      "end": 715
+    },
+    {
+      "title": "- 마무리",
+      "start": 715,
+      "end": 724
+    }
+  ]
+}
