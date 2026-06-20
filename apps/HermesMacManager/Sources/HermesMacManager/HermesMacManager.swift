@@ -270,15 +270,6 @@ private enum Commands {
         "\(HermesPaths.hermes)" gateway restart && "\(HermesPaths.hermes)" gateway status
         """)
 
-    static let openModel = ManagedCommand("Open Model", systemImage: "terminal", shell: """
-        osascript <<'OSA'
-        tell application "Terminal"
-          activate
-          do script "export PATH=\\"\(HermesPaths.path)\\"; cd \(HermesPaths.workspace); \(HermesPaths.hermes) model"
-        end tell
-        OSA
-        """)
-
     static func checkEndpoint(_ endpoint: String) -> ManagedCommand {
         ManagedCommand("Check Endpoint", systemImage: "network", shell: """
         set +e
@@ -337,7 +328,7 @@ private struct ContentView: View {
             Button {
                 model.refresh()
             } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
+                Label("Refresh Status", systemImage: "arrow.clockwise")
             }
             .keyboardShortcut("r")
             .disabled(model.isRunning)
@@ -389,7 +380,6 @@ private struct ContentView: View {
                     )
                     HStack {
                         CommandButton(command: Commands.checkEndpoint(model.endpoint), action: model.run)
-                        CommandButton(command: Commands.openModel, action: model.run)
                     }
                 }
                 .padding(.vertical, 4)
