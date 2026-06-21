@@ -66,6 +66,7 @@ bin/hermes-remote research-intel-doctor
 bin/hermes-remote research-intel-init-policy
 bin/hermes-remote research-intel-xai-smoke
 bin/hermes-remote research-intel-clay-smoke
+bin/hermes-remote research-intel-clay-webhook-smoke
 bin/hermes-remote research-intel-xai-search --query "<question>"
 bin/hermes-remote research-intel-collect --slug <slug> --query "<question>" --url <url>
 bin/hermes-remote research-intel-enrich --input artifacts/research-intel/<date>-<slug>/candidates.jsonl --max-records 5

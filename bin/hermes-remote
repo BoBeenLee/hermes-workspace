@@ -99,6 +99,7 @@ Commands:
   research-intel-doctor     Check Research Intelligence pilot readiness.
   research-intel-init-policy Create conservative Research Intelligence policy gates.
   research-intel-clay-smoke Check Clay key and spend policy without enrichment.
+  research-intel-clay-webhook-smoke Validate Clay webhook URL without posting by default.
   research-intel-xai-smoke  Check xAI API key without switching Hermes provider.
   research-intel-xai-search Use xAI X Search as a research signal channel.
   research-intel-collect    Run manual research collection and source-ledger output.
@@ -829,6 +830,10 @@ research_intel_clay_smoke() {
   research_intel_run clay-smoke "$@"
 }
 
+research_intel_clay_webhook_smoke() {
+  research_intel_run clay-webhook-smoke "$@"
+}
+
 research_intel_xai_smoke() {
   research_intel_run xai-smoke "$@"
 }
@@ -932,6 +937,7 @@ case "$cmd" in
   research-intel-doctor) research_intel_doctor "$@" ;;
   research-intel-init-policy) research_intel_init_policy "$@" ;;
   research-intel-clay-smoke) research_intel_clay_smoke "$@" ;;
+  research-intel-clay-webhook-smoke) research_intel_clay_webhook_smoke "$@" ;;
   research-intel-xai-smoke) research_intel_xai_smoke "$@" ;;
   research-intel-xai-search) research_intel_xai_search "$@" ;;
   research-intel-collect) research_intel_collect "$@" ;;

@@ -64,6 +64,7 @@ bin/hermes-remote research-intel-doctor
 bin/hermes-remote research-intel-init-policy
 bin/hermes-remote research-intel-xai-smoke
 bin/hermes-remote research-intel-clay-smoke
+bin/hermes-remote research-intel-clay-webhook-smoke
 bin/hermes-remote research-intel-collect --slug ai-agent-gtm --url https://github.com/Panniantong/agent-reach
 bin/hermes-remote gateway-restart
 bin/hermes-remote is-working 1512384300689916064

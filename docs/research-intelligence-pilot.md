@@ -22,6 +22,8 @@ bin/hermes-remote research-intel-doctor
 bin/hermes-remote research-intel-init-policy
 bin/hermes-remote research-intel-xai-smoke
 bin/hermes-remote research-intel-clay-smoke
+bin/hermes-remote research-intel-clay-webhook-smoke \
+  --url "https://<clay-table-webhook-endpoint>"
 bin/hermes-remote research-intel-xai-search \
   --slug ai-agent-x-signals \
   --query "AI agent research automation GTM signals"
@@ -89,9 +91,19 @@ Use:
 
 ```bash
 bin/hermes-remote research-intel-clay-smoke
+bin/hermes-remote research-intel-clay-webhook-smoke
 ```
 
 This verifies that the Clay key is present and that policy gates are readable. It does not call a live enrichment endpoint and does not spend Clay Actions or Data Credits.
+
+Clay workbook URLs and Clay webhook endpoints are different. A workbook URL like `https://app.clay.com/workspaces/.../workbooks/...` is a browser UI route for humans. The table webhook endpoint is a separate POST URL exposed by Clay for sending rows into a table. Store the UI route as `CLAY_WORKBOOK_URL` for audit/navigation, and store only the actual POST endpoint as `CLAY_WEBHOOK_URL`.
+
+`research-intel-clay-webhook-smoke` refuses Clay `app.clay.com` workbook/table UI URLs. It validates URL shape without posting by default. A real row send requires all of the following:
+
+- `allow_clay_spend: true` in the policy file
+- `--confirm-send`
+- `--budget-actions <n>`
+- at least one `--field key=value`
 
 ## HIL Approval Summary Fields
 

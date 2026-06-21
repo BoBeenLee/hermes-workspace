@@ -164,6 +164,53 @@ def secret_signal(name: str) -> str:
     return "present" if os.environ.get(name) else "missing"
 
 
+def redact_url(value: str | None) -> str:
+    if not value:
+        return "missing"
+    parsed = urllib.parse.urlparse(value)
+    if not parsed.scheme or not parsed.netloc:
+        return "configured-invalid-url"
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+
+def classify_clay_url(value: str | None) -> dict:
+    if not value:
+        return {
+            "configured": False,
+            "classification": "missing",
+            "post_safe": False,
+            "reason": "No Clay URL configured.",
+        }
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return {
+            "configured": True,
+            "classification": "invalid",
+            "post_safe": False,
+            "reason": "URL must be an absolute http(s) endpoint.",
+        }
+    if parsed.netloc == "app.clay.com" and "/workbooks/" in parsed.path:
+        return {
+            "configured": True,
+            "classification": "clay_workbook_ui",
+            "post_safe": False,
+            "reason": "This is the Clay workbook/table UI URL, not the table webhook endpoint.",
+        }
+    if parsed.netloc == "app.clay.com":
+        return {
+            "configured": True,
+            "classification": "clay_app_ui",
+            "post_safe": False,
+            "reason": "app.clay.com URLs are browser UI routes and are not safe to POST from Hermes.",
+        }
+    return {
+        "configured": True,
+        "classification": "candidate_webhook_endpoint",
+        "post_safe": True,
+        "reason": "The URL is not a Clay app UI route. Treat it as a candidate webhook only after human approval.",
+    }
+
+
 def request_json(url: str, payload: dict, headers: dict, timeout_seconds: int) -> dict:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
@@ -298,18 +345,90 @@ def clay_smoke(args: argparse.Namespace) -> int:
     load_secret_env()
     policy = policy_summary(Path(args.policy))
     key_present = bool(os.environ.get("CLAY_API_KEY"))
+    webhook_url = os.environ.get("CLAY_WEBHOOK_URL")
+    workbook_url = os.environ.get("CLAY_WORKBOOK_URL")
     result = {
         "checked_at": timestamp(),
         "clay_api_key": "present" if key_present else "missing",
         "clay_mcp_url": secret_signal("CLAY_MCP_URL"),
+        "clay_webhook_url": redact_url(webhook_url),
+        "clay_webhook_url_classification": classify_clay_url(webhook_url),
+        "clay_workbook": {
+            "url": redact_url(workbook_url),
+            "workspace_id": secret_signal("CLAY_WORKSPACE_ID"),
+            "workbook_id": secret_signal("CLAY_WORKBOOK_ID"),
+            "table_id": secret_signal("CLAY_TABLE_ID"),
+            "view_id": secret_signal("CLAY_VIEW_ID"),
+        },
         "policy": policy,
         "no_spend": True,
         "live_enrichment_enabled": False,
-        "reason": "No official no-spend Clay validation endpoint is wired in this pilot. Dry-run remains the default.",
-        "next_step": "Use enrich dry-run, then wire the selected official Clay API/MCP endpoint behind budget gates.",
+        "reason": "Dry-run remains the default. Clay table webhooks can trigger enrichments and spend.",
+        "next_step": "Set CLAY_WEBHOOK_URL only to the table's POST endpoint, then use clay-webhook-smoke before any approved send.",
     }
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if key_present else 4
+
+
+def parse_key_values(values: list[str]) -> dict:
+    payload = {}
+    for item in values:
+        if "=" not in item:
+            raise ValueError(f"field must be key=value: {item}")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"field key is empty: {item}")
+        payload[key] = value
+    return payload
+
+
+def clay_webhook_smoke(args: argparse.Namespace) -> int:
+    load_secret_env()
+    policy = policy_summary(Path(args.policy))
+    url = args.url or os.environ.get("CLAY_WEBHOOK_URL") or os.environ.get("CLAY_WORKBOOK_URL")
+    url_status = classify_clay_url(url)
+    payload = parse_key_values(args.field or [])
+    result = {
+        "checked_at": timestamp(),
+        "url": redact_url(url),
+        "url_status": url_status,
+        "payload_keys": sorted(payload),
+        "policy": policy,
+        "dry_run": not args.confirm_send,
+        "no_spend": not args.confirm_send,
+        "completion_mode": "review-required before Clay row send",
+    }
+    if not args.confirm_send:
+        result["result"] = "validated_without_post"
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if url_status["configured"] else 4
+    if not url_status["post_safe"]:
+        result["result"] = "refused"
+        result["reason"] = url_status["reason"]
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 4
+    if policy.get("clay_spend_policy") != "allowlisted":
+        result["result"] = "refused"
+        result["reason"] = "Policy does not set allow_clay_spend: true."
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 4
+    if args.budget_actions <= 0:
+        result["result"] = "refused"
+        result["reason"] = "--budget-actions must be greater than zero for an approved Clay webhook send."
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 4
+    if not payload:
+        result["result"] = "refused"
+        result["reason"] = "At least one --field key=value is required for an approved Clay webhook send."
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 4
+    response = request_json(url, payload, {}, args.timeout)
+    result["result"] = "posted" if response.get("ok") else "post_failed"
+    result["response"] = safe_error(response)
+    result["no_spend"] = False
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if response.get("ok") else 5
 
 
 def xai_responses(prompt: str, model: str, timeout_seconds: int, use_x_search: bool) -> dict:
@@ -957,6 +1076,15 @@ def build_parser() -> argparse.ArgumentParser:
     clay_parser = sub.add_parser("clay-smoke", help="Check Clay key and spend policy without enrichment")
     clay_parser.add_argument("--policy", default=str(DEFAULT_POLICY))
     clay_parser.set_defaults(func=clay_smoke)
+
+    clay_webhook_parser = sub.add_parser("clay-webhook-smoke", help="Validate Clay webhook settings without posting by default")
+    clay_webhook_parser.add_argument("--url")
+    clay_webhook_parser.add_argument("--policy", default=str(DEFAULT_POLICY))
+    clay_webhook_parser.add_argument("--field", action="append", default=[])
+    clay_webhook_parser.add_argument("--budget-actions", type=int, default=0)
+    clay_webhook_parser.add_argument("--timeout", type=int, default=45)
+    clay_webhook_parser.add_argument("--confirm-send", action="store_true")
+    clay_webhook_parser.set_defaults(func=clay_webhook_smoke)
 
     xai_smoke_parser = sub.add_parser("xai-smoke", help="Run minimal xAI API key smoke without x_search")
     xai_smoke_parser.add_argument("--model", default=XAI_DEFAULT_MODEL)
