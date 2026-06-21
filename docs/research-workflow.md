@@ -78,6 +78,8 @@ Use `review-required` when the research task also creates or modifies:
 - GitHub Actions or external publishing flows
 - anything that spends money or changes production-like behavior
 
+Research Intelligence + GTM enrichment tasks use the same artifact contract plus an artifact directory under `artifacts/research-intel/<date>-<slug>/`. Clay enrichment starts as a dry-run. Real Clay spend, cookie-backed access, OAuth/auth changes, gateway integration, scheduled jobs, CRM writes, and outbound sending always require human review and finish as `review-required`.
+
 ## Example Request
 
 ```text

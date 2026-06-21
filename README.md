@@ -60,6 +60,11 @@ bin/hermes-remote setup-kanban
 bin/hermes-remote model-status
 bin/hermes-remote check-llm-endpoint http://127.0.0.1:8000/v1
 bin/hermes-remote antigravity-check
+bin/hermes-remote research-intel-doctor
+bin/hermes-remote research-intel-init-policy
+bin/hermes-remote research-intel-xai-smoke
+bin/hermes-remote research-intel-clay-smoke
+bin/hermes-remote research-intel-collect --slug ai-agent-gtm --url https://github.com/Panniantong/agent-reach
 bin/hermes-remote gateway-restart
 bin/hermes-remote is-working 1512384300689916064
 bin/hermes-remote tail-thread 1512384300689916064
@@ -107,6 +112,8 @@ Market research and analysis tasks use the Research Analysis module in [docs/res
 research/
 reports/
 ```
+
+Research Intelligence and GTM enrichment pilots are documented in [docs/research-intelligence-pilot.md](docs/research-intelligence-pilot.md) and [docs/research-intelligence-roadmap.md](docs/research-intelligence-roadmap.md). Use the `research-intel-*` commands for manual, auditable collection, Clay dry-runs, dashboards, and pilot evaluation. Do not connect the flow to the gateway, scheduled jobs, CRM, or outbound sending without a separate review-required approval.
 
 Local LLM provider operations use [docs/local-llm-providers.md](docs/local-llm-providers.md). Use it when connecting Hermes to Ollama, vLLM, SGLang, or a DGX Spark model server. Provider config changes are remote config work and should finish as `review-required`.
 

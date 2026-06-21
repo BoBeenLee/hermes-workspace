@@ -57,6 +57,26 @@ If the Approval Summary identifies a standalone service, product, app, site, too
 | `delegated-implementation` | Asking Antigravity CLI to implement inside an isolated worktree while Hermes supervises | Antigravity session id, branch/worktree, artifact path, diff/check summary | `review-required` |
 | `new-repo-hil` | A standalone service, product, app, site, or tool appears to need its own GitHub repo/workspace | Proposed owner, repo name, visibility, stack, deployment target, delegation mode | `review-required`; wait for approval before creation |
 
+## Research Intelligence Pilot
+
+Use [research-intelligence-pilot.md](research-intelligence-pilot.md) when a task combines research collection with GTM enrichment. The pilot is manual CLI work only:
+
+```bash
+bin/hermes-remote research-intel-doctor
+bin/hermes-remote research-intel-init-policy
+bin/hermes-remote research-intel-xai-smoke
+bin/hermes-remote research-intel-clay-smoke
+bin/hermes-remote research-intel-xai-search --query "<question>"
+bin/hermes-remote research-intel-collect --slug <slug> --query "<question>" --url <url>
+bin/hermes-remote research-intel-enrich --input artifacts/research-intel/<date>-<slug>/candidates.jsonl --max-records 5
+bin/hermes-remote research-intel-report --artifact <date>-<slug>
+bin/hermes-remote research-intel-evaluate --artifact <date>-<slug>
+```
+
+Before Discord or Hermes requests use this flow, the Approval Summary must include the research purpose, target market/company/person scope, allowed data sources, cookie-use decision, Clay-use decision with budget limit, output format, and completion mode.
+
+Do not attach this pilot to the gateway, scheduled jobs, CRM writes, or outbound sending. Clay spend, cookie-backed access, OAuth/auth changes, and remote config changes remain `review-required`.
+
 ## Required Interface
 
 Every task must leave a concise completion note with:

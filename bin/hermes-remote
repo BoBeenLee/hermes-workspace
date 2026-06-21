@@ -28,6 +28,8 @@ fi
 : "${HERMES_LLM_MODEL:=}"
 : "${HERMES_LLM_CONTEXT_LENGTH:=65536}"
 
+RESEARCH_INTEL_SCRIPT="$ROOT_DIR/scripts/hermes/research_intel.py"
+
 ssh_remote() {
   ssh -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "$HERMES_REMOTE_HOST" "$@"
 }
@@ -94,6 +96,15 @@ Commands:
   antigravity-collect <id>  Capture logs, diff, checks, and review-required note.
   setup-antigravity-worker  Register Antigravity as a Hermes MCP worker.
   verify-antigravity-worker Verify Hermes can discover and call the worker.
+  research-intel-doctor     Check Research Intelligence pilot readiness.
+  research-intel-init-policy Create conservative Research Intelligence policy gates.
+  research-intel-clay-smoke Check Clay key and spend policy without enrichment.
+  research-intel-xai-smoke  Check xAI API key without switching Hermes provider.
+  research-intel-xai-search Use xAI X Search as a research signal channel.
+  research-intel-collect    Run manual research collection and source-ledger output.
+  research-intel-enrich     Prepare Clay enrichment dry-run output.
+  research-intel-report     Generate Research Intelligence review dashboard.
+  research-intel-evaluate   Write pilot evaluation and next-step notes.
   gateway-restart           Restart the Hermes gateway service.
   dashboard-start           Start dashboard on the remote Hermes host at 127.0.0.1:9119.
   dashboard-status          Show dashboard status.
@@ -791,6 +802,57 @@ echo '== tmux sessions =='
 REMOTE
 }
 
+research_intel_run() {
+  local subcommand="$1"
+  shift || true
+  if [[ ! -f "$RESEARCH_INTEL_SCRIPT" ]]; then
+    echo "missing Research Intelligence script: $RESEARCH_INTEL_SCRIPT" >&2
+    exit 1
+  fi
+  local quoted_args=""
+  local arg
+  for arg in "$subcommand" "$@"; do
+    quoted_args+=" $(quote_value "$arg")"
+  done
+  ssh_remote "export PATH='$HERMES_REMOTE_PATH'; export HERMES_REMOTE_HOST='$HERMES_REMOTE_HOST'; export HERMES_REMOTE_HOME='$HERMES_REMOTE_HOME'; export HERMES_BIN='$HERMES_BIN'; export HERMES_CONFIG='$HERMES_CONFIG'; export HERMES_REMOTE_WORKSPACE='$HERMES_REMOTE_WORKSPACE'; cd '$HERMES_REMOTE_WORKSPACE' && python3 -$quoted_args" < "$RESEARCH_INTEL_SCRIPT"
+}
+
+research_intel_doctor() {
+  research_intel_run doctor "$@"
+}
+
+research_intel_init_policy() {
+  research_intel_run init-policy "$@"
+}
+
+research_intel_clay_smoke() {
+  research_intel_run clay-smoke "$@"
+}
+
+research_intel_xai_smoke() {
+  research_intel_run xai-smoke "$@"
+}
+
+research_intel_xai_search() {
+  research_intel_run xai-search "$@"
+}
+
+research_intel_collect() {
+  research_intel_run collect "$@"
+}
+
+research_intel_enrich() {
+  research_intel_run enrich "$@"
+}
+
+research_intel_report() {
+  research_intel_run report "$@"
+}
+
+research_intel_evaluate() {
+  research_intel_run evaluate "$@"
+}
+
 gateway_restart() {
   ssh_remote "'$HERMES_BIN' gateway restart && '$HERMES_BIN' gateway status"
 }
@@ -867,6 +929,15 @@ case "$cmd" in
   antigravity-collect) antigravity_collect "$@" ;;
   setup-antigravity-worker) setup_antigravity_worker "$@" ;;
   verify-antigravity-worker) verify_antigravity_worker "$@" ;;
+  research-intel-doctor) research_intel_doctor "$@" ;;
+  research-intel-init-policy) research_intel_init_policy "$@" ;;
+  research-intel-clay-smoke) research_intel_clay_smoke "$@" ;;
+  research-intel-xai-smoke) research_intel_xai_smoke "$@" ;;
+  research-intel-xai-search) research_intel_xai_search "$@" ;;
+  research-intel-collect) research_intel_collect "$@" ;;
+  research-intel-enrich) research_intel_enrich "$@" ;;
+  research-intel-report) research_intel_report "$@" ;;
+  research-intel-evaluate) research_intel_evaluate "$@" ;;
   gateway-restart) gateway_restart "$@" ;;
   dashboard-start) dashboard_start "$@" ;;
   dashboard-status) dashboard_status "$@" ;;
