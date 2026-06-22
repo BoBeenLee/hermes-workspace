@@ -3,7 +3,7 @@ import Foundation
 import SwiftUI
 
 private enum HermesPaths {
-    static let home = "/Users/bobeenlee"
+    static let home = ProcessInfo.processInfo.environment["HERMES_REMOTE_HOME"] ?? NSHomeDirectory()
     static let hermes = "\(home)/.local/bin/hermes"
     static let logs = "\(home)/.hermes/logs"
     static let workspace = "\(home)/Workspaces/hermes-workspace"

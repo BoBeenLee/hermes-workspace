@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-const home = process.env.HOME || "/Users/bobeenlee";
+const home = process.env.HERMES_REMOTE_HOME || process.env.HOME || "/home/hermes";
 const defaultWorkspace = process.env.HERMES_REMOTE_WORKSPACE || path.join(home, "Workspaces", "hermes-workspace");
 const workspacesRoot = path.join(home, "Workspaces");
 const agyBin = process.env.ANTIGRAVITY_BIN || path.join(home, ".local", "bin", "agy");

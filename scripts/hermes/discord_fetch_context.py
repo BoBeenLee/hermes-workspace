@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
+import argparse
 import json
+import os
 import pathlib
-import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -19,12 +20,21 @@ def load_env(path):
 
 
 def main():
-    if len(sys.argv) != 4:
-        print("usage: discord_fetch_context.py CHANNEL_ID MESSAGE_ID LIMIT", file=sys.stderr)
-        return 2
+    parser = argparse.ArgumentParser()
+    parser.add_argument("channel_id")
+    parser.add_argument("message_id")
+    parser.add_argument("limit")
+    parser.add_argument(
+        "--env-path",
+        default=None,
+        help="Path to Hermes .env. Defaults to $HERMES_ENV_PATH or $HERMES_REMOTE_HOME/.hermes/.env or $HOME/.hermes/.env.",
+    )
+    args = parser.parse_args()
 
-    channel_id, message_id, limit = sys.argv[1], sys.argv[2], sys.argv[3]
-    env = load_env("/Users/bobeenlee/.hermes/.env")
+    home = pathlib.Path(os.environ.get("HERMES_REMOTE_HOME") or os.environ.get("HOME") or "~").expanduser()
+    env_path = args.env_path or os.environ.get("HERMES_ENV_PATH") or str(home / ".hermes" / ".env")
+    channel_id, message_id, limit = args.channel_id, args.message_id, args.limit
+    env = load_env(env_path)
     token = env.get("DISCORD_BOT_TOKEN", "").strip()
     print("token_configured:", bool(token))
     if not token:

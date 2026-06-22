@@ -43,7 +43,7 @@ For standalone repos, Hermes must pass the approved repo workspace path to `anti
 ## Required Flow
 
 1. Create a short task brief for Antigravity.
-2. Call `antigravity_start_task` with the brief. For a standalone repo, include `workspace: "/Users/bobeenlee/Workspaces/<repo>"`.
+2. Call `antigravity_start_task` with the brief. For a standalone repo, include the approved absolute workspace path, such as `workspace: "<HERMES_REMOTE_HOME>/Workspaces/<repo>"`.
 3. Poll `antigravity_status` until the worker is ready for review, blocked, or should be stopped.
 4. Call `antigravity_collect`.
 5. Re-run the relevant checks yourself from the returned worktree path.

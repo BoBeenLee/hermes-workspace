@@ -7,14 +7,14 @@ The Workspace Lifecycle module is the deep interface for Hermes work in this rep
 Use the canonical workspace from the active target profile. For the current default macOS target it is:
 
 ```text
-/Users/bobeenlee/Workspaces/hermes-workspace
+$HERMES_REMOTE_WORKSPACE
 ```
 
 Hermes should run from the target profile's repo root and use git worktree isolation:
 
 ```yaml
 terminal:
-  cwd: "/Users/bobeenlee/Workspaces/hermes-workspace"
+  cwd: "<value of HERMES_REMOTE_WORKSPACE from the active target profile>"
 
 worktree: true
 ```
@@ -22,11 +22,11 @@ worktree: true
 For one-shot CLI work:
 
 ```bash
-cd /Users/bobeenlee/Workspaces/hermes-workspace
+cd "$HERMES_REMOTE_WORKSPACE"
 hermes -w
 ```
 
-For Linux targets, use the same lifecycle with the Linux profile's `HERMES_REMOTE_WORKSPACE`, commonly `/home/<user>/Workspaces/hermes-workspace`. Keep OS-specific paths in `.env` or `config/targets/<target>.env`; do not bake them into lifecycle rules.
+For the current default `bobeen-mac` profile, `HERMES_REMOTE_WORKSPACE` resolves to `/Users/bobeenlee/Workspaces/hermes-workspace`. For other macOS or Linux targets, use the same lifecycle with that profile's value. Keep OS-specific paths in `.env` or `config/targets/<target>.env`; do not bake them into lifecycle rules.
 
 ## Discord HIL Gate
 
@@ -115,7 +115,7 @@ Before creating or cloning a new repo, Hermes must ask for HIL approval with:
 
 After approval, Hermes may create the repo, clone the workspace, scaffold, delegate implementation, verify, and deploy. The completion note must include the approved HIL values and end as `review-required`.
 
-When delegating implementation for a new repo, Hermes must pass the approved repo workspace path to Antigravity. For example, use `/Users/bobeenlee/Workspaces/Todo` as the `workspace` argument for `antigravity_start_task`; do not let a standalone product task default back to `hermes-workspace`.
+When delegating implementation for a new repo, Hermes must pass the approved repo workspace path to Antigravity. For example, use `<HERMES_REMOTE_HOME>/Workspaces/Todo` as the `workspace` argument for `antigravity_start_task`; do not let a standalone product task default back to `hermes-workspace`.
 
 ## Forbidden Outputs
 

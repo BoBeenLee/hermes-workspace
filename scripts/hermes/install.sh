@@ -1,10 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST="192.168.0.8"
-USER_NAME="bobeenlee"
-KEY_PATH="$HOME/.ssh/id_ed25519_bobeenlee_nopass"
-CONNECT_TIMEOUT="8"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+TARGET_PROFILE="${HERMES_TARGET:-}"
+for ((i = 1; i <= $#; i++)); do
+  if [[ "${!i}" == "--target-profile" ]]; then
+    j=$((i + 1))
+    TARGET_PROFILE="${!j:-}"
+  fi
+done
+
+resolve_env_file() {
+  local path="$1"
+  if [[ "$path" = /* ]]; then
+    printf '%s\n' "$path"
+  else
+    printf '%s\n' "$ROOT_DIR/$path"
+  fi
+}
+
+if [[ -n "$TARGET_PROFILE" ]]; then
+  TARGET_PROFILE_FILE="$(resolve_env_file "$TARGET_PROFILE")"
+  if [[ ! -f "$TARGET_PROFILE_FILE" ]]; then
+    echo "target profile not found: $TARGET_PROFILE_FILE" >&2
+    exit 2
+  fi
+  # shellcheck disable=SC1090
+  source "$TARGET_PROFILE_FILE"
+elif [[ -f "$ROOT_DIR/.env" ]]; then
+  # shellcheck disable=SC1091
+  source "$ROOT_DIR/.env"
+elif [[ -f "$ROOT_DIR/config/example.env" ]]; then
+  # shellcheck disable=SC1091
+  source "$ROOT_DIR/config/example.env"
+fi
+
+HOST="${HERMES_REMOTE_HOST:-replace-me-host}"
+USER_NAME="${HERMES_REMOTE_USER:-hermes}"
+KEY_PATH="${HERMES_SSH_KEY:-}"
+CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-8}"
 DRY_RUN=false
 WITH_BROWSER=false
 
@@ -12,21 +46,29 @@ usage() {
   cat <<'EOF'
 Usage: scripts/hermes/install.sh [options]
 
-Install or update NousResearch Hermes Agent on the Hermes MacBook.
+Install or update NousResearch Hermes Agent on an SSH target.
 
 Options:
-  --host HOST       SSH host or IP (default: 192.168.0.8)
-  --user USER       SSH user (default: bobeenlee)
-  --key PATH        SSH private key path (default: ~/.ssh/id_ed25519_bobeenlee_nopass)
-  --timeout SEC     SSH connect timeout (default: 8)
-  --with-browser    Allow browser tooling installation
-  --dry-run         Print the remote actions without changing the target
-  -h, --help        Show this help
+  --target-profile PATH  Source a target profile before applying CLI overrides
+  --host HOST            SSH host, alias, or IP
+  --user USER            SSH user
+  --key PATH             SSH private key path
+  --timeout SEC          SSH connect timeout
+  --with-browser         Allow browser tooling installation
+  --dry-run              Print the remote actions without changing the target
+  -h, --help             Show this help
+
+Defaults come from HERMES_TARGET, .env, or config/example.env. Built-in
+fallbacks are placeholders, not a runnable host. Secrets and OAuth auth files
+are not copied.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --target-profile)
+      shift 2
+      ;;
     --host)
       HOST="${2:?missing value for --host}"
       shift 2
@@ -64,14 +106,19 @@ while [ "$#" -gt 0 ]; do
 done
 
 SSH_OPTS=(
-  -i "$KEY_PATH"
-  -o IdentitiesOnly=yes
   -o BatchMode=yes
   -o ConnectTimeout="$CONNECT_TIMEOUT"
 )
-TARGET="${USER_NAME}@${HOST}"
+if [ -n "$KEY_PATH" ]; then
+  SSH_OPTS=(-i "$KEY_PATH" -o IdentitiesOnly=yes "${SSH_OPTS[@]}")
+fi
+if [[ "$HOST" == *@* ]]; then
+  TARGET="$HOST"
+else
+  TARGET="${USER_NAME}@${HOST}"
+fi
 
-if [ ! -f "$KEY_PATH" ]; then
+if [ -n "$KEY_PATH" ] && [ ! -f "$KEY_PATH" ]; then
   echo "Missing SSH key: $KEY_PATH" >&2
   exit 1
 fi
@@ -90,6 +137,8 @@ Dry run only. No remote changes will be made.
 
 Target:
   ${TARGET}
+  target_profile: ${TARGET_PROFILE:-unset}
+  ssh_key: ${KEY_PATH:-ssh-config/default}
 
 Remote actions:
   1. Verify SSH connectivity.
@@ -102,6 +151,9 @@ Official paths:
   code: ~/.hermes/hermes-agent
   data/config/session/log: ~/.hermes
   command: ~/.local/bin/hermes
+
+Secrets, provider API keys, OAuth tokens, and ~/.hermes/auth.json must be
+configured manually on the target after installation.
 EOF
   exit 0
 fi

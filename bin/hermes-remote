@@ -3,7 +3,24 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [[ -f "$ROOT_DIR/.env" ]]; then
+resolve_env_file() {
+  local path="$1"
+  if [[ "$path" = /* ]]; then
+    printf '%s\n' "$path"
+  else
+    printf '%s\n' "$ROOT_DIR/$path"
+  fi
+}
+
+if [[ -n "${HERMES_TARGET:-}" ]]; then
+  HERMES_TARGET_FILE="$(resolve_env_file "$HERMES_TARGET")"
+  if [[ ! -f "$HERMES_TARGET_FILE" ]]; then
+    echo "HERMES_TARGET file not found: $HERMES_TARGET_FILE" >&2
+    exit 2
+  fi
+  # shellcheck disable=SC1090
+  source "$HERMES_TARGET_FILE"
+elif [[ -f "$ROOT_DIR/.env" ]]; then
   # shellcheck disable=SC1091
   source "$ROOT_DIR/.env"
 elif [[ -f "$ROOT_DIR/config/example.env" ]]; then
@@ -12,7 +29,17 @@ elif [[ -f "$ROOT_DIR/config/example.env" ]]; then
 fi
 
 : "${HERMES_REMOTE_HOST:=bobeen}"
-: "${HERMES_REMOTE_HOME:=/Users/bobeenlee}"
+: "${HERMES_REMOTE_USER:=hermes}"
+: "${HERMES_REMOTE_OS:=macos}"
+: "${HERMES_SERVICE_MANAGER:=launchd}"
+: "${HERMES_COMPUTER_USE_BACKEND:=cua-driver}"
+if [[ -z "${HERMES_REMOTE_HOME:-}" ]]; then
+  case "$HERMES_REMOTE_OS" in
+    macos) HERMES_REMOTE_HOME="/Users/$HERMES_REMOTE_USER" ;;
+    linux) HERMES_REMOTE_HOME="/home/$HERMES_REMOTE_USER" ;;
+    *) HERMES_REMOTE_HOME="/home/$HERMES_REMOTE_USER" ;;
+  esac
+fi
 : "${HERMES_BIN:=$HERMES_REMOTE_HOME/.local/bin/hermes}"
 : "${CUA_BIN:=$HERMES_REMOTE_HOME/.local/bin/cua-driver}"
 : "${HERMES_CONFIG:=$HERMES_REMOTE_HOME/.hermes/config.yaml}"
@@ -27,19 +54,24 @@ fi
 : "${HERMES_LLM_BASE_URL:=}"
 : "${HERMES_LLM_MODEL:=}"
 : "${HERMES_LLM_CONTEXT_LENGTH:=65536}"
+: "${HERMES_SSH_KEY:=}"
 
 RESEARCH_INTEL_SCRIPT="$ROOT_DIR/scripts/hermes/research_intel.py"
+SSH_OPTS=(-o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}")
+if [[ -n "$HERMES_SSH_KEY" ]]; then
+  SSH_OPTS=(-i "$HERMES_SSH_KEY" -o IdentitiesOnly=yes "${SSH_OPTS[@]}")
+fi
 
 ssh_remote() {
-  ssh -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "$HERMES_REMOTE_HOST" "$@"
+  ssh "${SSH_OPTS[@]}" "$HERMES_REMOTE_HOST" "$@"
 }
 
 scp_remote() {
-  scp -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "$@"
+  scp "${SSH_OPTS[@]}" "$@"
 }
 
 remote_bash() {
-  ssh_remote "PATH='$HERMES_REMOTE_PATH' HERMES_REMOTE_HOST='$HERMES_REMOTE_HOST' HERMES_REMOTE_HOME='$HERMES_REMOTE_HOME' HERMES_BIN='$HERMES_BIN' CUA_BIN='$CUA_BIN' HERMES_CONFIG='$HERMES_CONFIG' HERMES_REMOTE_WORKSPACE='$HERMES_REMOTE_WORKSPACE' ANTIGRAVITY_BIN='$ANTIGRAVITY_BIN' ANTIGRAVITY_ARTIFACT_ROOT='$ANTIGRAVITY_ARTIFACT_ROOT' TMUX_BIN='$TMUX_BIN' HERMES_NODE_BIN='$HERMES_NODE_BIN' HERMES_LLM_PROVIDER='$HERMES_LLM_PROVIDER' HERMES_LLM_BASE_URL='$HERMES_LLM_BASE_URL' HERMES_LLM_MODEL='$HERMES_LLM_MODEL' HERMES_LLM_CONTEXT_LENGTH='$HERMES_LLM_CONTEXT_LENGTH' bash -s"
+  ssh_remote "PATH='$HERMES_REMOTE_PATH' HERMES_REMOTE_HOST='$HERMES_REMOTE_HOST' HERMES_REMOTE_HOME='$HERMES_REMOTE_HOME' HERMES_REMOTE_OS='$HERMES_REMOTE_OS' HERMES_SERVICE_MANAGER='$HERMES_SERVICE_MANAGER' HERMES_COMPUTER_USE_BACKEND='$HERMES_COMPUTER_USE_BACKEND' HERMES_BIN='$HERMES_BIN' CUA_BIN='$CUA_BIN' HERMES_CONFIG='$HERMES_CONFIG' HERMES_REMOTE_WORKSPACE='$HERMES_REMOTE_WORKSPACE' ANTIGRAVITY_BIN='$ANTIGRAVITY_BIN' ANTIGRAVITY_ARTIFACT_ROOT='$ANTIGRAVITY_ARTIFACT_ROOT' TMUX_BIN='$TMUX_BIN' HERMES_NODE_BIN='$HERMES_NODE_BIN' HERMES_LLM_PROVIDER='$HERMES_LLM_PROVIDER' HERMES_LLM_BASE_URL='$HERMES_LLM_BASE_URL' HERMES_LLM_MODEL='$HERMES_LLM_MODEL' HERMES_LLM_CONTEXT_LENGTH='$HERMES_LLM_CONTEXT_LENGTH' bash -s"
 }
 
 require_arg() {
@@ -57,6 +89,24 @@ quote_value() {
 
 redact_url() {
   printf '%s' "$1" | sed -E 's#(https?://)[^/@]+@#\1***@#; s#\?.*##'
+}
+
+supports_computer_use() {
+  [[ "$HERMES_REMOTE_OS" == "macos" && "$HERMES_COMPUTER_USE_BACKEND" == "cua-driver" ]]
+}
+
+require_computer_use_target() {
+  if supports_computer_use; then
+    return 0
+  fi
+  cat >&2 <<EOF
+computer_use is unsupported for this target.
+  HERMES_REMOTE_OS=$HERMES_REMOTE_OS
+  HERMES_COMPUTER_USE_BACKEND=$HERMES_COMPUTER_USE_BACKEND
+
+Use a macOS target with HERMES_COMPUTER_USE_BACKEND=cua-driver for CuaDriver desktop control.
+EOF
+  exit 2
 }
 
 antigravity_task_bash() {
@@ -115,42 +165,63 @@ Commands:
   logs                      Print recent gateway, agent, and error logs.
 
 Config:
-  Copy config/example.env to .env and edit host/paths.
+  Copy config/example.env to .env and edit host/paths, or run with:
+    HERMES_TARGET=config/targets/<target>.env bin/hermes-remote <command>
 USAGE
 }
 
 check_ssh() {
-  ssh_remote "set -e; hostname; whoami; date; test -x '$HERMES_BIN' && '$HERMES_BIN' --version || true; test -x '$CUA_BIN' && '$CUA_BIN' --version || true"
+  remote_bash <<'REMOTE'
+set -e
+hostname
+whoami
+date
+test -x "$HERMES_BIN" && "$HERMES_BIN" --version || true
+if test "$HERMES_REMOTE_OS" = "macos" && test "$HERMES_COMPUTER_USE_BACKEND" = "cua-driver"; then
+  test -x "$CUA_BIN" && "$CUA_BIN" --version || true
+fi
+REMOTE
 }
 
 status() {
-  ssh_remote "set +e
+  remote_bash <<'REMOTE'
+set +e
 echo '== host =='
 hostname; whoami; date
+echo "target_os=${HERMES_REMOTE_OS:-unknown}"
+echo "service_manager=${HERMES_SERVICE_MANAGER:-unknown}"
+echo "computer_use_backend=${HERMES_COMPUTER_USE_BACKEND:-unknown}"
 echo
 echo '== hermes status =='
-'$HERMES_BIN' status
+"$HERMES_BIN" status
 echo
 echo '== gateway =='
-'$HERMES_BIN' gateway status
+"$HERMES_BIN" gateway status
 echo
-echo '== computer_use =='
-'$HERMES_BIN' computer-use status
-echo
-echo '== cua permissions =='
-'$CUA_BIN' permissions status
+if test "${HERMES_REMOTE_OS:-}" = "macos" && test "${HERMES_COMPUTER_USE_BACKEND:-}" = "cua-driver"; then
+  echo '== computer_use =='
+  "$HERMES_BIN" computer-use status
+  echo
+  echo '== cua permissions =='
+  "$CUA_BIN" permissions status
+else
+  echo '== computer_use =='
+  echo "unsupported for target: os=${HERMES_REMOTE_OS:-unknown} backend=${HERMES_COMPUTER_USE_BACKEND:-unknown}"
+fi
 echo
 echo '== kanban =='
-'$HERMES_BIN' kanban stats
+"$HERMES_BIN" kanban stats
 echo
 echo '== dashboard =='
-'$HERMES_BIN' dashboard --status
+"$HERMES_BIN" dashboard --status
 echo
 echo '== processes =='
-/bin/ps -axo pid,etime,stat,command | /usr/bin/grep -E 'hermes|gateway|cua-driver' | /usr/bin/grep -v grep"
+/bin/ps -axo pid,etime,stat,command | /usr/bin/grep -E 'hermes|gateway|cua-driver' | /usr/bin/grep -v grep
+REMOTE
 }
 
 setup_computer_use() {
+  require_computer_use_target
   ssh_remote "'$HERMES_BIN' computer-use install || true"
 
   remote_bash <<'REMOTE'
@@ -234,10 +305,12 @@ REMOTE
 }
 
 grant_computer_use() {
+  require_computer_use_target
   ssh_remote "'$CUA_BIN' permissions grant"
 }
 
 verify_computer_use() {
+  require_computer_use_target
   ssh_remote "set +e
 open -n -g -a CuaDriver --args serve
 sleep 2
@@ -906,7 +979,11 @@ run_prompt() {
     echo "prompt required" >&2
     exit 2
   fi
-  ssh_remote "'$HERMES_BIN' -t computer_use -z $(printf '%q' "$prompt")"
+  if supports_computer_use; then
+    ssh_remote "'$HERMES_BIN' -t computer_use -z $(printf '%q' "$prompt")"
+  else
+    ssh_remote "'$HERMES_BIN' -z $(printf '%q' "$prompt")"
+  fi
 }
 
 logs() {

@@ -128,6 +128,10 @@ messaging provider를 구성하려면:
 
 2026-06-22에 적용한 Hermes MacBook context/output/subagent 최적화 기록은 [Hermes Workflow Optimization](hermes-workflow-optimization.md)에 둔다. 이 작업은 remote config 변경과 gateway restart를 포함하므로 완료 상태는 `review-required`다.
 
+## Multi-Host Bootstrap
+
+Hermes Agent를 다른 macOS 또는 Linux/DGX Spark 호스트로 이식할 때는 [Hermes Agent Multi-Host Bootstrap](hermes-agent-multi-host.md)을 따른다. 이식은 `~/.hermes` 전체 복사가 아니라 target profile 추가, 공식 installer 실행, provider/auth 수동 재설정, gateway/computer_use 검증 순서로 진행한다.
+
 ## Gateway
 
 CLI-first gateway 운영을 위해 Hermes 공식 명령으로 user-level launchd agent를 설치·시작했다. Telegram/Discord 같은 messaging provider는 아직 구성하지 않았다.

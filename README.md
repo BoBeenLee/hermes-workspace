@@ -25,16 +25,16 @@ bin/hermes-remote status
 The canonical remote workspace for Hermes work is:
 
 ```text
-/Users/bobeenlee/Workspaces/hermes-workspace
+$HERMES_REMOTE_WORKSPACE
 ```
 
-For another target, use that profile's `HERMES_REMOTE_WORKSPACE` instead, such as `/home/<user>/Workspaces/hermes-workspace` on Linux.
+For the current default `bobeen-mac` profile this resolves to `/Users/bobeenlee/Workspaces/hermes-workspace`. Other targets must use their own profile's `HERMES_REMOTE_WORKSPACE`, such as `/Users/<user>/Workspaces/hermes-workspace` on macOS or `/home/<user>/Workspaces/hermes-workspace` on Linux.
 
 Hermes should use this config shape:
 
 ```yaml
 terminal:
-  cwd: "/Users/bobeenlee/Workspaces/hermes-workspace"
+  cwd: "<value of HERMES_REMOTE_WORKSPACE from the active target profile>"
 
 worktree: true
 ```
@@ -122,4 +122,4 @@ Local LLM provider operations use [docs/local-llm-providers.md](docs/local-llm-p
 
 - The repo does not store SSH keys, provider keys, Discord tokens, or Hermes secrets.
 - Remote config changes are backed up under `~/.hermes/config.yaml.bak-remote-ops-*`.
-- The script reads target values from `.env` or `config/example.env`; copy from `config/targets/bobeen-mac.env` or `config/targets/linux-example.env` when setting up another host.
+- The script reads target values from `HERMES_TARGET`, `.env`, or `config/example.env`; copy from `config/targets/macos-example.env`, `config/targets/linux-example.env`, or `config/targets/dgx-spark-example.env` when setting up another host.

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import json
+import os
+import pathlib
 import re
 import time
 import urllib.error
@@ -87,9 +89,11 @@ def find_deepseek_textbox(snap):
 
 
 def write_debug_snapshot(name, snap):
-    path = f"/Users/bobeenlee/.hermes/camofox-server/{name}"
+    home = pathlib.Path(os.environ.get("HERMES_REMOTE_HOME") or os.environ.get("HOME") or "~").expanduser()
+    path = home / ".hermes" / "camofox-server" / name
     try:
-        with open(path, "w", encoding="utf-8") as handle:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
             handle.write(snap)
     except OSError:
         pass

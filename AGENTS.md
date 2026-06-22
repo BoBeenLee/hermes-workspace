@@ -13,6 +13,7 @@ The operating model comes from:
 - `docs/local-llm-providers.md`
 - `docs/dgx-spark-remote-access.md` for DGX Spark / AI TOP ATOM remote access
 - `docs/hermes-agent.md` for the migrated first MacBook bootstrap runbook
+- `docs/hermes-agent-multi-host.md` for macOS and Linux/DGX Hermes Agent migration
 - migrated historical plans under `docs/plans/` when they are present after repo promotion
 
 Important terms:
