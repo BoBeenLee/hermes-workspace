@@ -76,7 +76,7 @@ bin/hermes-remote is-working <thread_id>
 bin/hermes-remote tail-thread <thread_id>
 ```
 
-Interpret state with `docs/discord-thread-triage.md`:
+Interpret state with `knowledge/workflows/discord-thread-triage.md`:
 
 - Recent inbound message without a later response usually means Hermes may still be working.
 - A live Hermes worker process beyond the gateway process usually means work is active.
@@ -275,4 +275,3 @@ When reporting back outside Discord, include:
 - target channel/thread/message IDs used
 - whether a gate or approval was required
 - any follow-up the user needs to approve
-

@@ -1,15 +1,5 @@
-# Claude Guide
+# Claude Entry Point
 
-Follow `AGENTS.md` in this directory for Hermes remote operations.
+Read [AGENTS.md](AGENTS.md) first.
 
-Quick start:
-
-```bash
-cd /Users/mac_al03241161/Documents/mygit/bbl-ai-lab/hermes-workspace
-bin/hermes-remote check-ssh
-bin/hermes-remote status
-```
-
-For repo work, follow `docs/workspace-lifecycle.md`. For market research or analysis, follow `docs/research-workflow.md` and keep a source ledger.
-
-Do not commit `.env`, SSH keys, API keys, OAuth tokens, Discord tokens, or copied remote Hermes secret files.
+The canonical durable knowledge base is [knowledge/index.md](knowledge/index.md). New durable documentation belongs under `knowledge/` and must follow [Knowledge Authoring Rules](knowledge/policies/authoring-rules.md).
