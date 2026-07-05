@@ -4,7 +4,7 @@ title: KakaoTalk Mac MCP
 description: Runbook for wiring read-only KakaoTalk for Mac message access into the remote Hermes Agent through an MCP server.
 resource: repo://hermes-workspace/knowledge/runbooks/kakaotalk-mac-mcp.md
 tags: [hermes, kakaotalk, macos, mcp, remote-config]
-timestamp: 2026-07-05T20:30:00+09:00
+timestamp: 2026-07-05T21:30:00+09:00
 ---
 
 # KakaoTalk Mac MCP
@@ -46,6 +46,8 @@ platform_toolsets:
 ```
 
 The `platform_toolsets.cli` entry is required. If the MCP server is configured but not listed for CLI, `hermes mcp test` can pass while `hermes -z` still cannot see KakaoTalk tools.
+
+The Jarvis Discord profile must have the same MCP server and include `openhuman-kakaotalk-mac` in both `platform_toolsets.cli` and `platform_toolsets.discord`. A Discord request can otherwise reach Jarvis but still fail tool discovery or route only through non-KakaoTalk tools.
 
 ## Safety Rules
 
@@ -127,6 +129,30 @@ On 2026-07-05, the previous default Groq provider returned `Request payload too 
 
 The operator-visible status may show this as `Provider: Custom endpoint` with model `openai/gpt-oss-120b`. Do not record API keys in this repo.
 
+## Discord Timeout Incident
+
+On 2026-07-05, a Jarvis Discord request for general KakaoTalk messages failed with:
+
+```text
+all attempts to query the OpenHuman KakaoTalk service timed out
+```
+
+The root cause was a broad `list_new_messages_since` call over a large since-window. The first MCP call held the Jarvis session until Hermes' 300 second tool timeout, then follow-up calls such as `list_chats`, `auth_status`, and `find_chat` also timed out against the same wedged MCP connection. Direct auth and exact MCP calls still worked, so the failure was not KakaoTalk DB authentication.
+
+The deployed fix bounds the read path:
+
+- `KAKAOTALK_MCP_DEFAULT_CHAT_LIST_LIMIT` defaults to `100`.
+- `KAKAOTALK_MCP_DEFAULT_MESSAGE_LIMIT_PER_CHAT` defaults to `30`.
+- `KAKAOTALK_MCP_KAKAOCLI_TIMEOUT_SECONDS` defaults to `25.0`.
+- `KAKAOTALK_MCP_SCAN_BUDGET_SECONDS` defaults to `45.0`.
+- `list_new_messages_since` returns partial results with `partial`, `truncated_reason`, `chat_count_requested`, `chat_count_scanned`, and `elapsed_seconds` instead of running until the outer Hermes timeout.
+
+If this recurs, inspect the Jarvis logs for the first timed-out MCP call before chasing later retry failures. Prefer a constrained prompt such as "recent 5 messages" or a target chat lookup. For broad scans, a successful direct MCP smoke signal should complete in seconds and include bounded metadata, for example:
+
+```text
+ok=true, requested=100, scanned=<n>, partial=false, elapsed=<seconds>
+```
+
 ## Change Evidence
 
 Known 2026-07-05 remote backups created during setup:
@@ -143,3 +169,4 @@ Final verification showed:
 - Default `hermes -z` successfully used `find_chat` and `preview_messages` for a target chat.
 - `HERMES_RUN_TOOLSETS=openhuman-kakaotalk-mac bin/hermes-remote run ...` successfully used the MCP path instead of desktop control.
 - Gateway was restarted and `bin/hermes-remote status` showed the `openhuman-kakaotalk-mac` MCP process running.
+- Jarvis Discord recovery after the timeout fix returned recent KakaoTalk message previews and posted the corrected result back to the failed Discord thread.
