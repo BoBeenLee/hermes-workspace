@@ -141,11 +141,14 @@ The root cause was a broad `list_new_messages_since` call over a large since-win
 
 The deployed fix bounds the read path:
 
-- `KAKAOTALK_MCP_DEFAULT_CHAT_LIST_LIMIT` defaults to `100`.
-- `KAKAOTALK_MCP_DEFAULT_MESSAGE_LIMIT_PER_CHAT` defaults to `30`.
-- `KAKAOTALK_MCP_KAKAOCLI_TIMEOUT_SECONDS` defaults to `25.0`.
+- `KAKAOTALK_MCP_DEFAULT_CHAT_LIST_LIMIT` defaults to `20`.
+- `KAKAOTALK_MCP_DEFAULT_MESSAGE_LIMIT_PER_CHAT` defaults to `10`.
+- `KAKAOTALK_MCP_KAKAOCLI_TIMEOUT_SECONDS` defaults to `8.0`.
+- `KAKAOTALK_MCP_KAKAOCLI_TIMEOUT_RETRIES` defaults to `1`.
 - `KAKAOTALK_MCP_SCAN_BUDGET_SECONDS` defaults to `45.0`.
+- `KAKAOTALK_MCP_RECENT_CACHE_MAX_AGE_SECONDS` defaults to `600.0`.
 - `list_new_messages_since` returns partial results with `partial`, `truncated_reason`, `chat_count_requested`, `chat_count_scanned`, and `elapsed_seconds` instead of running until the outer Hermes timeout.
+- If a launchd/Discord live chat-list call times out, `list_new_messages_since` can use the short-lived local cache at `~/.openhuman-second-brain/kakaotalk-recent-cache.json`. The cache is written after successful live reads with `0600` permissions.
 
 If this recurs, inspect the Jarvis logs for the first timed-out MCP call before chasing later retry failures. Prefer a constrained prompt such as "recent 5 messages" or a target chat lookup. For broad scans, a successful direct MCP smoke signal should complete in seconds and include bounded metadata, for example:
 
