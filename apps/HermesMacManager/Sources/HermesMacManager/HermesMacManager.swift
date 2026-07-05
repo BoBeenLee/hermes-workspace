@@ -8,6 +8,9 @@ private enum HermesPaths {
     static let logs = "\(home)/.hermes/logs"
     static let workspace = "\(home)/Workspaces/hermes-workspace"
     static let mlxModel = "\(home)/Workspaces/local-llm/models/qwen3.6-35b-a3b-mlx"
+    static let launchAgents = "\(home)/Library/LaunchAgents"
+    static let powerWindowLabel = "ai.hermes.mac-manager.power-window"
+    static let powerWindowPlist = "\(launchAgents)/\(powerWindowLabel).plist"
     static let path = "\(home)/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 }
 
@@ -36,6 +39,10 @@ private final class CommandModel: ObservableObject {
     @Published var localLLMRunning = false
     @Published var hermesStateText = "Unknown"
     @Published var localLLMStateText = "Unknown"
+    @Published var powerWindowEnabled = false
+    @Published var powerWindowStateText = "Disabled"
+    @Published var powerStartTime = "10:00"
+    @Published var powerSleepTime = "20:00"
 
     private var task: Process?
 
@@ -64,6 +71,45 @@ private final class CommandModel: ObservableObject {
             title: shouldRun ? "Start Local LLM" : "Stop Local LLM",
             shell: """
             \(shouldRun ? Self.startLocalLLMScript() : Self.stopLocalLLMScript())
+            \(Self.statusScript(endpoint: endpoint))
+            """,
+            parseStatus: true
+        )
+    }
+
+    func setPowerWindowEnabled(_ shouldEnable: Bool) {
+        guard shouldEnable != powerWindowEnabled else { return }
+        powerWindowEnabled = shouldEnable
+        powerWindowStateText = shouldEnable ? "Pending apply" : "Pending disable"
+    }
+
+    func applyPowerWindow() {
+        guard let start = Self.parseTime(powerStartTime), let sleep = Self.parseTime(powerSleepTime) else {
+            output = "Use HH:MM time, for example 10:00 and 20:00."
+            status = "Power Schedule needs valid times"
+            return
+        }
+        guard sleep.secondsSinceMidnight > start.secondsSinceMidnight else {
+            output = "Sleep time must be later than start time on the same day."
+            status = "Power Schedule needs a daytime window"
+            return
+        }
+
+        run(
+            title: "Apply Power Schedule",
+            shell: """
+            \(Self.applyPowerWindowScript(start: start, sleep: sleep))
+            \(Self.statusScript(endpoint: endpoint))
+            """,
+            parseStatus: true
+        )
+    }
+
+    func disablePowerWindow() {
+        run(
+            title: "Disable Power Schedule",
+            shell: """
+            \(Self.disablePowerWindowScript())
             \(Self.statusScript(endpoint: endpoint))
             """,
             parseStatus: true
@@ -149,6 +195,12 @@ private final class CommandModel: ObservableObject {
             localLLMRunning = value == "1"
             localLLMStateText = localLLMRunning ? "Running" : "Stopped"
         }
+        if let value = marker("__POWER_WINDOW_ENABLED", in: text) {
+            powerWindowEnabled = value == "1"
+        }
+        if let value = marker("__POWER_WINDOW_STATE", in: text) {
+            powerWindowStateText = value
+        }
     }
 
     private func marker(_ name: String, in text: String) -> String? {
@@ -173,8 +225,22 @@ private final class CommandModel: ObservableObject {
         pgrep -fl 'mlx_lm.server|mlx-lm|mlx_lm' >/dev/null 2>&1 && local_llm_running=1
         curl -fsS --max-time 3 "${endpoint%/}/models" >/tmp/hermes-mac-manager-endpoint.json 2>/tmp/hermes-mac-manager-endpoint.err && local_llm_running=1
 
+        power_window_enabled=0
+        power_window_state="Disabled"
+        uid="$(id -u)"
+        if [ -f "\(HermesPaths.powerWindowPlist)" ]; then
+          if launchctl print "gui/$uid/\(HermesPaths.powerWindowLabel)" >/tmp/hermes-mac-manager-power-window.txt 2>&1; then
+            power_window_enabled=1
+            power_window_state="Enabled"
+          else
+            power_window_state="Configured, not loaded"
+          fi
+        fi
+
         echo "__HERMES_RUNNING=$hermes_running"
         echo "__LOCAL_LLM_RUNNING=$local_llm_running"
+        echo "__POWER_WINDOW_ENABLED=$power_window_enabled"
+        echo "__POWER_WINDOW_STATE=$power_window_state"
 
         echo "== host =="
         hostname
@@ -192,6 +258,18 @@ private final class CommandModel: ObservableObject {
         echo
         echo "== mlx local llm processes =="
         /bin/ps -axo pid,etime,stat,command | /usr/bin/grep -Ei 'mlx_lm.server|mlx-lm|mlx_lm' | /usr/bin/grep -v grep || echo "none"
+
+        echo
+        echo "== power schedule =="
+        pmset -g sched 2>&1
+        echo
+        echo "== power window keep-awake =="
+        if [ -f "\(HermesPaths.powerWindowPlist)" ]; then
+          echo "plist: \(HermesPaths.powerWindowPlist)"
+          launchctl print "gui/$uid/\(HermesPaths.powerWindowLabel)" 2>&1 | sed -n '1,80p'
+        else
+          echo "disabled"
+        fi
 
         echo
         echo "== endpoint: ${endpoint%/}/models =="
@@ -222,6 +300,66 @@ private final class CommandModel: ObservableObject {
         echo
         echo "== recent gateway errors =="
         tail -40 "\(HermesPaths.logs)/gateway.error.log" 2>/dev/null || echo "no gateway.error.log"
+        """
+    }
+
+    private static func applyPowerWindowScript(start: PowerTime, sleep: PowerTime) -> String {
+        let duration = max(60, sleep.secondsSinceMidnight - start.secondsSinceMidnight - 300)
+        let adminScript = appleScriptDoShellScript(
+            "pmset repeat wakeorpoweron MTWRFSU \(start.pmsetValue) sleep MTWRFSU \(sleep.pmsetValue)"
+        )
+
+        return """
+        set -e
+        export PATH="\(HermesPaths.path)"
+        mkdir -p "\(HermesPaths.launchAgents)" "\(HermesPaths.logs)"
+        \(adminScript)
+        cat > "\(HermesPaths.powerWindowPlist)" <<'PLIST'
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+          <key>Label</key>
+          <string>\(HermesPaths.powerWindowLabel)</string>
+          <key>ProgramArguments</key>
+          <array>
+            <string>/usr/bin/caffeinate</string>
+            <string>-i</string>
+            <string>-t</string>
+            <string>\(duration)</string>
+          </array>
+          <key>StartCalendarInterval</key>
+          <dict>
+            <key>Hour</key>
+            <integer>\(start.hour)</integer>
+            <key>Minute</key>
+            <integer>\(start.minute)</integer>
+          </dict>
+          <key>StandardOutPath</key>
+          <string>\(HermesPaths.logs)/power-window.log</string>
+          <key>StandardErrorPath</key>
+          <string>\(HermesPaths.logs)/power-window.error.log</string>
+        </dict>
+        </plist>
+        PLIST
+        uid="$(id -u)"
+        launchctl bootout "gui/$uid/\(HermesPaths.powerWindowLabel)" >/dev/null 2>&1 || true
+        launchctl bootstrap "gui/$uid" "\(HermesPaths.powerWindowPlist)"
+        launchctl enable "gui/$uid/\(HermesPaths.powerWindowLabel)"
+        echo "Power Schedule enabled: wake \(start.displayValue), sleep \(sleep.displayValue), keep-awake \(duration)s"
+        """
+    }
+
+    private static func disablePowerWindowScript() -> String {
+        let adminScript = appleScriptDoShellScript("pmset repeat cancel")
+
+        return """
+        set -e
+        uid="$(id -u)"
+        \(adminScript)
+        launchctl bootout "gui/$uid/\(HermesPaths.powerWindowLabel)" >/dev/null 2>&1 || true
+        rm -f "\(HermesPaths.powerWindowPlist)"
+        echo "Power Schedule disabled"
         """
     }
 
@@ -263,6 +401,43 @@ private final class CommandModel: ObservableObject {
     private static func escape(_ value: String) -> String {
         value.replacingOccurrences(of: "\"", with: "\\\"")
     }
+
+    private static func appleScriptDoShellScript(_ command: String) -> String {
+        let escaped = command
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "osascript -e 'do shell script \"\(escaped)\" with administrator privileges'"
+    }
+
+    private static func parseTime(_ value: String) -> PowerTime? {
+        let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let hour = Int(parts[0]),
+              let minute = Int(parts[1]),
+              (0...23).contains(hour),
+              (0...59).contains(minute)
+        else {
+            return nil
+        }
+        return PowerTime(hour: hour, minute: minute)
+    }
+}
+
+private struct PowerTime {
+    let hour: Int
+    let minute: Int
+
+    var displayValue: String {
+        String(format: "%02d:%02d", hour, minute)
+    }
+
+    var pmsetValue: String {
+        "\(displayValue):00"
+    }
+
+    var secondsSinceMidnight: Int {
+        hour * 3600 + minute * 60
+    }
 }
 
 private enum Commands {
@@ -303,12 +478,15 @@ private struct ContentView: View {
             header
             Divider()
             HStack(alignment: .top, spacing: 16) {
-                controls
+                ScrollView {
+                    controls
+                }
+                .frame(width: 430)
                 output
             }
             .padding(16)
         }
-        .frame(minWidth: 980, minHeight: 640)
+        .frame(minWidth: 1040, minHeight: 720)
         .onAppear { model.refresh() }
     }
 
@@ -385,6 +563,64 @@ private struct ContentView: View {
                 .padding(.vertical, 4)
             }
 
+            GroupBox("Power Schedule") {
+                VStack(alignment: .leading, spacing: 12) {
+                    stateToggle(
+                        title: "Daily Server Window",
+                        detail: model.powerWindowStateText,
+                        isOn: Binding(
+                            get: { model.powerWindowEnabled },
+                            set: { model.setPowerWindowEnabled($0) }
+                        )
+                    )
+
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Start")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                            TextField("10:00", text: $model.powerStartTime)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 88)
+                        }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Sleep")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                            TextField("20:00", text: $model.powerSleepTime)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 88)
+                        }
+
+                        Spacer()
+                    }
+
+                    Text("Uses the system-wide pmset repeat slot. Applying this replaces any existing repeating power schedule.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack {
+                        Button {
+                            model.applyPowerWindow()
+                        } label: {
+                            Label("Apply", systemImage: "checkmark.circle")
+                                .frame(minWidth: 96)
+                        }
+
+                        Button(role: .destructive) {
+                            model.disablePowerWindow()
+                        } label: {
+                            Label("Disable", systemImage: "power")
+                                .frame(minWidth: 96)
+                        }
+                    }
+                    .controlSize(.large)
+                }
+                .padding(.vertical, 4)
+            }
+
             GroupBox("Files") {
                 HStack {
                     Button {
@@ -404,7 +640,6 @@ private struct ContentView: View {
 
             Spacer(minLength: 0)
         }
-        .frame(width: 410)
         .disabled(model.isRunning)
     }
 
