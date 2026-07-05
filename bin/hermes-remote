@@ -167,6 +167,8 @@ Commands:
 Config:
   Copy config/example.env to .env and edit host/paths, or run with:
     HERMES_TARGET=config/targets/<target>.env bin/hermes-remote <command>
+  Override run toolsets with:
+    HERMES_RUN_TOOLSETS=openhuman-kakaotalk-mac bin/hermes-remote run <prompt>
 USAGE
 }
 
@@ -979,7 +981,9 @@ run_prompt() {
     echo "prompt required" >&2
     exit 2
   fi
-  if supports_computer_use; then
+  if [[ -n "${HERMES_RUN_TOOLSETS:-}" ]]; then
+    ssh_remote "'$HERMES_BIN' -t $(printf '%q' "$HERMES_RUN_TOOLSETS") -z $(printf '%q' "$prompt")"
+  elif supports_computer_use; then
     ssh_remote "'$HERMES_BIN' -t computer_use -z $(printf '%q' "$prompt")"
   else
     ssh_remote "'$HERMES_BIN' -z $(printf '%q' "$prompt")"

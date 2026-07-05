@@ -3,6 +3,8 @@
 ## 2026-07-05
 
 - Documented Hermes Mac Manager power schedule controls, including default-disabled behavior, `pmset` effects, the keep-awake LaunchAgent, and review-required safety notes.
+- Added the KakaoTalk Mac MCP runbook covering read-only message lookup through the remote Hermes Agent, provider/toolset pitfalls, auth recovery notes, and safe verification.
+- Documented `HERMES_RUN_TOOLSETS` for `bin/hermes-remote run` so MCP-specific prompts can bypass the macOS `computer_use` default.
 
 ## 2026-06-27
 

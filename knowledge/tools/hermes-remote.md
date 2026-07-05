@@ -29,4 +29,13 @@ bin/hermes-remote model-status
 bin/hermes-remote gateway-restart
 ```
 
+## One-Shot Toolset Override
+
+On macOS targets, `bin/hermes-remote run` defaults to the `computer_use` toolset. Use `HERMES_RUN_TOOLSETS` when a task must route to a specific MCP server instead of desktop control:
+
+```bash
+HERMES_RUN_TOOLSETS=openhuman-kakaotalk-mac \
+  bin/hermes-remote run '<read-only KakaoTalk prompt>'
+```
+
 Prefer this wrapper over ad hoc SSH for Hermes host operations.

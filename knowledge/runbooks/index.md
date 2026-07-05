@@ -4,5 +4,6 @@
 - [Hermes Agent Bootstrap](hermes-agent-bootstrap.md)
 - [Hermes Agent Multi-Host Bootstrap](hermes-agent-multi-host.md)
 - [Hermes Workflow Optimization](hermes-workflow-optimization.md)
+- [KakaoTalk Mac MCP](kakaotalk-mac-mcp.md)
 - [Linux Target Profile](linux-target-profile.md)
 - [macOS Target Profile](macos-target-profile.md)
