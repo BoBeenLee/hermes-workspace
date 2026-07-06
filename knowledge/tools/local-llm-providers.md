@@ -68,12 +68,12 @@ The default macOS Hermes host is `bobeen` / `bobeenlee` and its runtime currentl
 | Profile | Primary provider | Primary model |
 | --- | --- | --- |
 | `default` | `custom:altalt` | `openai/gpt-5-nano` |
-| `jarvis` | Custom endpoint, config provider `openrouter` | `openai/gpt-oss-120b` |
+| `jarvis` | `custom:altalt` | `openai/gpt-5-nano` |
 | `content` | `groq` | `openai/gpt-oss-120b` |
 | `product` | `groq` | `openai/gpt-oss-120b` |
 | `preflight` | `custom:mlx-qwen` | `samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed` |
 
-The default profile currently falls back to OpenRouter, then Groq:
+The `default` and `jarvis` profiles currently fall back to OpenRouter, then Groq:
 
 ```yaml
 fallback_providers:
@@ -85,7 +85,7 @@ fallback_providers:
     base_url: https://api.groq.com/openai/v1
 ```
 
-The named `jarvis`, `content`, `product`, and `preflight` profiles were not changed during the 2026-07-06 `altalt` default-profile switch; at that time they still had the single OpenRouter fallback. The `preflight` profile and default config also include a local MLX Qwen provider:
+The named `content`, `product`, and `preflight` profiles were not changed during the 2026-07-06 `altalt` default-profile and `jarvis` switches; at that time they still had the single OpenRouter fallback. The `preflight` profile and default config also include a local MLX Qwen provider:
 
 ```yaml
 custom_providers:
@@ -98,9 +98,9 @@ custom_providers:
         context_length: 65536
 ```
 
-## Default Altalt Routing
+## Altalt Routing
 
-The default profile route is configured as:
+The `default` and `jarvis` profile routes are configured as:
 
 1. Primary: `altalt` custom OpenAI-compatible endpoint, model `openai/gpt-5-nano`.
 2. Fallback 1: OpenRouter.
@@ -159,10 +159,11 @@ bin/hermes-remote status
 
 Provider changes on the remote Mac are `remote-config` work: create or rely on a timestamped backup before editing, do not print secrets, and finish as `review-required`.
 
-The 2026-07-06 default-profile switch created a remote backup at:
+The 2026-07-06 `altalt` switches created remote backups at:
 
 ```text
 /Users/bobeenlee/.hermes/config.yaml.bak-altalt-20260706-231404
+/Users/bobeenlee/.hermes/profiles/jarvis/config.yaml.bak-altalt-20260706-231932
 ```
 
 ## Endpoint Patterns
