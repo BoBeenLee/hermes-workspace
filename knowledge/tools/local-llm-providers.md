@@ -110,6 +110,8 @@ Hermes tries `fallback_providers` in list order when the primary model fails.
 
 This is compatible with Hermes v0.18.0 because custom providers support `extra_headers`, and those headers are merged into OpenAI client `default_headers` for matching `base_url` entries. Use `extra_headers` for gateways that require headers such as `X-Machine-ID`.
 
+Altalt accepts `X-Machine-ID` authentication and rejects requests that also include an `Authorization` bearer header. Hermes uses the OpenAI SDK for custom endpoints, and the SDK normally sends a placeholder bearer token for no-key custom providers. For altalt, explicitly blank the Authorization header in the same `extra_headers` block.
+
 Do not hard-code the real machine ID in git-tracked docs, shell history, or task artifacts. Treat it like a credential. Keep it only in the remote Hermes host config or secret store.
 
 Secret-safe YAML shape:
@@ -127,6 +129,7 @@ custom_providers:
     api_mode: chat_completions
     model: openai/gpt-5-nano
     extra_headers:
+      Authorization: ""
       X-Machine-ID: "<remote-only-machine-id>"
     models:
       openai/gpt-5-nano: {}
