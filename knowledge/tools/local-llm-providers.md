@@ -10,7 +10,7 @@ source_path: docs/local-llm-providers.md
 
 # Local LLM Providers
 
-This runbook covers Hermes Agent model providers backed by local or self-hosted OpenAI-compatible endpoints such as Ollama, vLLM, SGLang, or a DGX Spark model service.
+This runbook covers Hermes Agent model providers backed by local, self-hosted, or custom OpenAI-compatible endpoints such as Ollama, vLLM, SGLang, DGX Spark model services, and internal routing gateways.
 
 Use this when Hermes can start but chat, tool use, or gateway work fails because no model provider is configured, the model endpoint is unreachable, or the provider was registered with the wrong API compatibility mode.
 
@@ -53,6 +53,117 @@ When Ollama, vLLM, or SGLang is not offered as a first-class provider, choose a 
 After registering, select that provider as the default and run a short chat smoke test. If the provider was registered incorrectly, the simplest recovery is usually to delete it from `hermes model` and recreate it with the correct endpoint, model name, and compatibility mode.
 
 Provider config changes are `remote-config` work and finish as `review-required`.
+
+## Current Remote Mac Routing
+
+Last checked from the control host on 2026-07-06:
+
+```bash
+bin/hermes-remote check-ssh
+bin/hermes-remote status
+```
+
+The default macOS Hermes host is `bobeen` / `bobeenlee` and its runtime currently reports:
+
+| Profile | Primary provider | Primary model |
+| --- | --- | --- |
+| `default` | `custom:altalt` | `openai/gpt-5-nano` |
+| `jarvis` | Custom endpoint, config provider `openrouter` | `openai/gpt-oss-120b` |
+| `content` | `groq` | `openai/gpt-oss-120b` |
+| `product` | `groq` | `openai/gpt-oss-120b` |
+| `preflight` | `custom:mlx-qwen` | `samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed` |
+
+The default profile currently falls back to OpenRouter, then Groq:
+
+```yaml
+fallback_providers:
+  - provider: openrouter
+    model: openrouter/free
+    base_url: https://openrouter.ai/api/v1
+  - provider: groq
+    model: openai/gpt-oss-120b
+    base_url: https://api.groq.com/openai/v1
+```
+
+The named `jarvis`, `content`, `product`, and `preflight` profiles were not changed during the 2026-07-06 `altalt` default-profile switch; at that time they still had the single OpenRouter fallback. The `preflight` profile and default config also include a local MLX Qwen provider:
+
+```yaml
+custom_providers:
+  - name: mlx-qwen
+    base_url: http://127.0.0.1:8080/v1
+    api_mode: chat_completions
+    model: samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed
+    models:
+      samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed:
+        context_length: 65536
+```
+
+## Default Altalt Routing
+
+The default profile route is configured as:
+
+1. Primary: `altalt` custom OpenAI-compatible endpoint, model `openai/gpt-5-nano`.
+2. Fallback 1: OpenRouter.
+3. Fallback 2: Groq.
+
+Hermes tries `fallback_providers` in list order when the primary model fails.
+
+This is compatible with Hermes v0.18.0 because custom providers support `extra_headers`, and those headers are merged into OpenAI client `default_headers` for matching `base_url` entries. Use `extra_headers` for gateways that require headers such as `X-Machine-ID`.
+
+Do not hard-code the real machine ID in git-tracked docs, shell history, or task artifacts. Treat it like a credential. Keep it only in the remote Hermes host config or secret store.
+
+Secret-safe YAML shape:
+
+```yaml
+model:
+  provider: custom:altalt
+  default: openai/gpt-5-nano
+  base_url: https://api.altalt.io/v1
+  api_mode: chat_completions
+
+custom_providers:
+  - name: altalt
+    base_url: https://api.altalt.io/v1
+    api_mode: chat_completions
+    model: openai/gpt-5-nano
+    extra_headers:
+      X-Machine-ID: "<remote-only-machine-id>"
+    models:
+      openai/gpt-5-nano: {}
+
+fallback_providers:
+  - provider: openrouter
+    model: openrouter/free
+    base_url: https://openrouter.ai/api/v1
+  - provider: groq
+    model: openai/gpt-oss-120b
+    base_url: https://api.groq.com/openai/v1
+```
+
+Equivalent endpoint smoke test shape, with the real `X-Machine-ID` supplied only on the remote host:
+
+```bash
+curl https://api.altalt.io/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H "X-Machine-ID: $ALTALT_MACHINE_ID" \
+  -d '{"model":"openai/gpt-5-nano","messages":[{"role":"user","content":"test"}],"stream":false}'
+```
+
+After editing remote `~/.hermes/config.yaml`, verify and restart:
+
+```bash
+bin/hermes-remote model-status
+bin/hermes-remote gateway-restart
+bin/hermes-remote status
+```
+
+Provider changes on the remote Mac are `remote-config` work: create or rely on a timestamped backup before editing, do not print secrets, and finish as `review-required`.
+
+The 2026-07-06 default-profile switch created a remote backup at:
+
+```text
+/Users/bobeenlee/.hermes/config.yaml.bak-altalt-20260706-231404
+```
 
 ## Endpoint Patterns
 
