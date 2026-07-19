@@ -329,32 +329,77 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         self.assertNotIn("group-1", assistant.state["room_buffers"])
 
-    def test_verified_send_uses_mcp_resolved_chat_id_and_never_retries_actual_send(self):
+    def test_verified_send_uses_actual_room_id_and_never_retries_actual_send(self):
         class FakeKakao:
             def __init__(self):
                 self.calls = []
 
             def send(self, target, message, *, dry_run, chat_id=None):
                 self.calls.append((target, message, dry_run, chat_id))
-                if dry_run and chat_id is None:
-                    return {"ok": True, "kmsg_match_count": 1, "send_chat_id": "chat-1"}
                 if dry_run:
                     return {"ok": True, "chat_id_validated": True}
                 return {"ok": True, "message_sent": True}
 
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
         assistant.kakao = FakeKakao()
-        assistant._verify_sent = mock.Mock(return_value=True)
+        assistant._verify_sent = mock.Mock(side_effect=[False, True])
 
         self.assertTrue(assistant._send_verified("친구", "123", "답장"))
         self.assertEqual(
             assistant.kakao.calls,
             [
-                ("친구", "답장", True, None),
-                ("친구", "답장", True, "chat-1"),
-                ("친구", "답장", False, "chat-1"),
+                ("친구", "답장", True, "123"),
+                ("친구", "답장", False, "123"),
             ],
         )
+
+    def test_verified_send_falls_back_to_cua_mcp_and_reads_back(self):
+        class FakeKakao:
+            @staticmethod
+            def send(_target, _message, *, dry_run, chat_id=None):
+                if dry_run:
+                    return {"ok": True, "chat_id_validated": True}
+                return {"ok": False, "message_sent": False}
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.kakao = FakeKakao()
+        assistant.cua = mock.Mock()
+        assistant.cua.send_to_open_room.return_value = True
+        assistant._verify_sent = mock.Mock(side_effect=[False, False, True])
+
+        self.assertTrue(assistant._send_verified("친구", "123", "답장"))
+        assistant.cua.send_to_open_room.assert_called_once_with("친구", "답장")
+        self.assertEqual(assistant._verify_sent.call_count, 3)
+
+    def test_cua_fallback_requires_exact_open_room_and_types_relative_to_window(self):
+        client = module.CuaDriverClient.__new__(module.CuaDriverClient)
+        client._call_tool = mock.Mock(
+            side_effect=[
+                {
+                    "apps": [
+                        {
+                            "bundle_id": client.KAKAO_BUNDLE_ID,
+                            "running": True,
+                            "pid": 10,
+                        }
+                    ]
+                },
+                {
+                    "windows": [
+                        {"title": "친구", "is_on_screen": True, "window_id": 20},
+                    ]
+                },
+                {"screenshot_width": 1000, "screenshot_height": 800},
+                {"verified": True, "characters": 2},
+                {},
+            ]
+        )
+
+        self.assertTrue(client.send_to_open_room("친구", "답장"))
+        typed = client._call_tool.call_args_list[3]
+        self.assertEqual(typed.args[0], "type_text")
+        self.assertEqual(typed.args[1]["x"], 330)
+        self.assertEqual(typed.args[1]["y"], 688)
 
 
 if __name__ == "__main__":

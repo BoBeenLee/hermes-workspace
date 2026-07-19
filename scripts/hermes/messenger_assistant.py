@@ -383,6 +383,133 @@ class KakaoClient:
         return self._call_tool("send_message", arguments)
 
 
+class CuaDriverClient:
+    """Fail-closed KakaoTalk UI fallback routed through the Hermes CuaDriver MCP."""
+
+    KAKAO_BUNDLE_ID = "com.kakao.KakaoTalkMac"
+
+    def __init__(self, profile_dir: Path) -> None:
+        self.profile_dir = profile_dir
+        self.server = self._load_server_config()
+
+    def _load_server_config(self) -> dict[str, Any]:
+        config_path = self.profile_dir / "config.yaml"
+        try:
+            import yaml
+
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return {}
+        server = (config.get("mcp_servers") or {}).get("cua-driver") or {}
+        if not server.get("enabled", True) or not str(server.get("command") or "").strip():
+            return {}
+        return server
+
+    async def _call_tool_async(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if not self.server:
+            raise RuntimeError("Hermes CuaDriver MCP server가 구성되지 않았습니다")
+        try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("Hermes MCP Python SDK를 찾지 못했습니다") from exc
+
+        env = os.environ.copy()
+        env.update({str(key): str(value) for key, value in (self.server.get("env") or {}).items()})
+        params = StdioServerParameters(
+            command=str(self.server["command"]),
+            args=[str(value) for value in (self.server.get("args") or [])],
+            env=env,
+            cwd=self.server.get("cwd"),
+        )
+        async with stdio_client(params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                result = await session.call_tool(tool_name, arguments=arguments)
+
+        if getattr(result, "isError", False):
+            detail = " ".join(
+                str(getattr(block, "text", ""))
+                for block in result.content
+                if getattr(block, "type", "") == "text"
+            )
+            raise RuntimeError(f"CuaDriver MCP tool error: {compact(detail, 300)}")
+        structured = getattr(result, "structuredContent", None)
+        return structured if isinstance(structured, dict) else {}
+
+    def _call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        return asyncio.run(self._call_tool_async(name, arguments or {}))
+
+    def send_to_open_room(self, target: str, message: str) -> bool:
+        """Send once only when an already-open KakaoTalk window exactly matches target."""
+        try:
+            apps = self._call_tool("list_apps")
+            kakao = next(
+                (
+                    app
+                    for app in apps.get("apps") or []
+                    if app.get("bundle_id") == self.KAKAO_BUNDLE_ID and app.get("running") and app.get("pid")
+                ),
+                None,
+            )
+            if not kakao:
+                return False
+            pid = int(kakao["pid"])
+            windows = self._call_tool("list_windows", {"pid": pid, "session": "messenger-assistant"})
+            room_window = next(
+                (
+                    window
+                    for window in windows.get("windows") or []
+                    if str(window.get("title") or "").strip() == target.strip() and window.get("is_on_screen")
+                ),
+                None,
+            )
+            if not room_window:
+                return False
+            window_id = int(room_window["window_id"])
+            state = self._call_tool(
+                "get_window_state",
+                {
+                    "pid": pid,
+                    "window_id": window_id,
+                    "session": "messenger-assistant",
+                    "max_elements": 1,
+                    "max_depth": 0,
+                },
+            )
+            width = int(state.get("screenshot_width") or 0)
+            height = int(state.get("screenshot_height") or 0)
+            if width < 100 or height < 100:
+                return False
+            typed = self._call_tool(
+                "type_text",
+                {
+                    "pid": pid,
+                    "window_id": window_id,
+                    "x": int(width * 0.33),
+                    "y": int(height * 0.86),
+                    "text": message,
+                    "delivery_mode": "foreground",
+                    "session": "messenger-assistant",
+                },
+            )
+            if not typed.get("verified") or int(typed.get("characters") or 0) != len(message):
+                return False
+            self._call_tool(
+                "press_key",
+                {
+                    "pid": pid,
+                    "window_id": window_id,
+                    "key": "Return",
+                    "delivery_mode": "foreground",
+                    "session": "messenger-assistant",
+                },
+            )
+            return True
+        except Exception:
+            return False
+
+
 def gateway_identity(profile_dir: Path) -> str:
     pid_path = profile_dir / "gateway.pid"
     try:
@@ -662,6 +789,7 @@ class MessengerAssistant:
         self.discord = DiscordClient(token, str(self.config.get("discord_channel_id") or ""))
         self.allowed_user_id = str(self.config.get("discord_user_id") or "")
         self.kakao = KakaoClient(self.profile_dir, self.config)
+        self.cua = CuaDriverClient(self.profile_dir)
 
     def save(self) -> None:
         self.state["version"] = STATE_VERSION
@@ -1134,17 +1262,20 @@ class MessengerAssistant:
             }
 
     def _send_verified(self, room_name: str, room_id: str, message: str) -> bool:
-        dry = self.kakao.send(room_name, message, dry_run=True)
-        send_chat_id = str(dry.get("send_chat_id") or "")
-        if not dry.get("ok") or int(dry.get("kmsg_match_count") or 0) != 1 or not send_chat_id:
-            return False
-        validated = self.kakao.send(room_name, message, dry_run=True, chat_id=send_chat_id)
-        if not validated.get("ok") or not validated.get("chat_id_validated"):
-            return False
-        result = self.kakao.send(room_name, message, dry_run=False, chat_id=send_chat_id)
-        if result.get("ok") and result.get("message_sent"):
+        if self._verify_sent(room_name, room_id, message):
+            return True
+        try:
+            validated = self.kakao.send(room_name, message, dry_run=True, chat_id=room_id)
+            if validated.get("ok") and validated.get("chat_id_validated"):
+                self.kakao.send(room_name, message, dry_run=False, chat_id=room_id)
+                if self._verify_sent(room_name, room_id, message):
+                    return True
+        except Exception:
+            pass
+        cua = getattr(self, "cua", None)
+        if cua and cua.send_to_open_room(room_name, message):
             return self._verify_sent(room_name, room_id, message)
-        return self._verify_sent(room_name, room_id, message)
+        return False
 
     def _verify_sent(self, room_name: str, room_id: str, message: str) -> bool:
         preview = self.kakao.preview(room_name, room_id)
