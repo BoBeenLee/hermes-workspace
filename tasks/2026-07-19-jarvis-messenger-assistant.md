@@ -17,6 +17,57 @@
   secret is handled by Jarvis or committed
 - Completion mode: `review-required`
 
+## Confidence-based automatic replies
+
+- The content gate now uses the primary model's reported confidence only:
+  `0.80` and above sends automatically, while lower or non-finite values create
+  an approval card. Semantic risk flags remain visible in Discord audit cards
+  but no longer independently block sending.
+- The classifier interface is `intent`, `reply_kind`, `reply`, `summary`,
+  `reason`, `confidence`, and `weather_location`. Missing required details are
+  answered with an automatic clarification when confidence passes the gate.
+- A location-free weather question asks for the region. A later place reply is
+  recovered from recent same-room context, geocoded through Open-Meteo, and
+  resolved through a second current-forecast request. Both requests use one
+  exact verified Jarvis terminal call and raw session tool output.
+- Ambiguous regions, stale or malformed weather, changed terminal commands,
+  fallback models, empty replies, and uncertain Kakao sends still fail closed.
+- `assistant_status` always replaces the draft with the friendly fixed response
+  and exposes no process, Discord, MCP, polling, model, or token details.
+- Local regression suite: 33 tests passed, including the `0.79`/`0.80`
+  boundary, all semantic audit flags, missing-location follow-up, Seoul weather,
+  ambiguous/stale weather, exact terminal evidence, status redaction, and the
+  Hermes 0.18.2 JSON gateway PID record.
+- Read-only production smoke checks returned the expected primary model schema:
+  missing-location weather confidence `0.85` and assistant-status confidence
+  `0.92`. The follow-up context ending in `서울` recovered
+  `intent=weather`, `weather_location=Seoul`, and confidence `0.82`. A verified
+  Seoul lookup returned fresh Open-Meteo data without any KakaoTalk send.
+- Installed controller SHA-256:
+  `1578386107103765fda85464dac9dfe2659968001f364e5b90cf3476e53e1a3e`.
+  Backups:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-confidence-auto-20260719-233334`
+  and
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-json-gateway-pid-20260719-234011`.
+- The initial Discord listener restart reported connected. The
+  first post-deployment cron execution `c7af106999ca4fd694e8c0b50218301a`
+  completed `ok` at 23:36:38 KST, advanced both Kakao cursors to 23:36:13,
+  kept the assistant enabled, and added no failures.
+- A concurrent KakaoTalk MCP `validated-send-id` deployment independently ran
+  `hermes --profile jarvis gateway restart`, sending SIGTERM at 23:38:06 and
+  again at 23:41:03. This controller deployment did not invoke either restart;
+  launchd ultimately restored the gateway as PID `56537`.
+- Hermes 0.18.2 stores `gateway.pid` as JSON instead of the previous plain PID.
+  The controller's old parser returned `invalid`, so a red regression test was
+  added and the parser now supports both formats. After the corrected script
+  was deployed, listener PID `56361` connected and correctly changed the
+  assistant to disabled. Cron execution `24b4e852bad44bb09c2a37ca0eab9a7a`
+  then completed `ok`, recorded gateway identity PID `56537`, and kept the
+  assistant disabled. The allowed user must issue `메신저 시작` in Discord to
+  establish a fresh baseline.
+- Completion mode remains `review-required` because the automatic-send policy
+  and recurring controller deployment are materially changed.
+
 ## Jarvis-direct MCP refactor
 
 - The two-minute cron remains the only Kakao polling trigger. It wakes the

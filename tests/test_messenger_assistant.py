@@ -1,3 +1,4 @@
+import contextlib
 import datetime as dt
 import importlib.util
 import json
@@ -22,6 +23,19 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertFalse(state["automatic_paused"])
         self.assertEqual(state["pending"], {})
 
+    def test_gateway_identity_supports_json_pid_record(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile = Path(temp_dir)
+            (profile / "gateway.pid").write_text(
+                json.dumps({"pid": 55932, "kind": "hermes-gateway"}),
+                encoding="utf-8",
+            )
+            completed = mock.Mock(stdout="Sun Jul 19 23:38:40 2026\n")
+            with mock.patch.object(module.subprocess, "run", return_value=completed):
+                identity = module.gateway_identity(profile)
+
+        self.assertEqual(identity, "55932:Sun Jul 19 23:38:40 2026")
+
     def test_discord_text_is_split_under_limit(self):
         chunks = module.split_discord("a" * 4001, limit=1000)
         self.assertGreater(len(chunks), 1)
@@ -29,10 +43,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertEqual("".join(chunks), "a" * 4001)
 
     def test_fallback_model_forces_approval(self):
-        reason = module.hard_approval_reason(
-            [{"text": "안녕", "message_type": "text", "has_media": False}],
+        reason = module.automatic_reply_block_reason(
             {
-                "decision": "auto",
                 "reply": "안녕!",
                 "confidence": 1,
                 "flags": {},
@@ -41,123 +53,329 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         )
         self.assertIn("fallback", reason)
 
-    def test_link_forces_approval(self):
-        reason = module.hard_approval_reason(
-            [{"text": "https://example.com 봐줘", "message_type": "text", "has_media": False}],
-            {"decision": "auto", "reply": "봤어", "confidence": 1, "flags": {}},
+    def test_confidence_below_point_eight_requires_approval(self):
+        reason = module.automatic_reply_block_reason(
+            {"reply": "답장", "confidence": 0.79, "flags": {}},
             {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER},
         )
-        self.assertIn("링크", reason)
+        self.assertIn("0.79", reason)
 
-    def test_emergency_forces_approval(self):
-        reason = module.hard_approval_reason(
-            [{"text": "지금 119 불러야 해", "message_type": "text", "has_media": False}],
-            {"decision": "auto", "reply": "알겠어", "confidence": 1, "flags": {}},
+    def test_non_finite_confidence_requires_approval(self):
+        reason = module.automatic_reply_block_reason(
+            {"reply": "답장", "confidence": "nan", "flags": {}},
             {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER},
         )
-        self.assertTrue(reason)
+        self.assertIn("0.00", reason)
 
-    def test_used_memory_forces_approval(self):
-        reason = module.hard_approval_reason(
-            [{"text": "뭐 좋아해?", "message_type": "text", "has_media": False}],
-            {
-                "decision": "auto",
-                "reply": "매운 음식 좋아해",
-                "confidence": 1,
-                "flags": {"used_memory": True},
-            },
-            {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER},
-        )
-        self.assertIn("used_memory", reason)
-
-    def test_high_confidence_low_risk_may_auto(self):
-        reason = module.hard_approval_reason(
-            [{"text": "안녕", "message_type": "text", "has_media": False}],
-            {
-                "decision": "auto",
-                "reply": "안녕 😊",
-                "confidence": 0.99,
-                "flags": {},
-            },
+    def test_confidence_point_eight_allows_every_flag(self):
+        flags = {name: True for name in module.POLICY_FLAG_NAMES}
+        reason = module.automatic_reply_block_reason(
+            {"reply": "확인했어", "confidence": 0.80, "flags": flags},
             {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER},
         )
         self.assertEqual(reason, "")
+        audit = module.classification_audit(
+            {"intent": "other", "reply_kind": "answer", "confidence": 0.80, "flags": flags}
+        )
+        self.assertIn("money_contract", audit)
+        self.assertIn("auth_secret", audit)
 
-    def test_hanam_current_weather_query_is_recognized_without_accepting_generic_text(self):
-        self.assertTrue(module.is_hanam_weather_lookup("하남 오늘 날씨"))
-        self.assertTrue(module.is_hanam_weather_lookup("하남시 현재 날씨 알려줘"))
-        self.assertFalse(module.is_hanam_weather_lookup("서울 오늘 날씨"))
-        self.assertFalse(module.is_hanam_weather_lookup("하남 맛집"))
-        self.assertIn("timeout=30", module.hanam_weather_prompt(module.now_utc().astimezone(module.KST)))
+    def test_classifier_contract_covers_weather_status_and_clarification(self):
+        prompt = module.classification_prompt("친구", [], [], [])
+        self.assertIn('"intent":"weather|assistant_status|other"', prompt)
+        self.assertIn('"reply_kind":"answer|clarification"', prompt)
+        self.assertIn('"weather_location":""', prompt)
+        self.assertIn("0.80", prompt)
 
-    def test_hanam_weather_resolution_requires_fresh_primary_model_data(self):
-        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
-        assistant.hermes_bin = Path("/tmp/hermes")
-        assistant.profile_dir = Path("/tmp/profile")
-        assistant.config = {"profile": "jarvis"}
-        requested = module.now_utc().astimezone(module.KST).replace(microsecond=0)
-        observed = (requested - dt.timedelta(minutes=5)).isoformat()
-        result = {
-            "ok": True,
-            "location": "Hanam-si, Gyeonggi-do",
-            "requested_at_kst": requested.isoformat(),
-            "observed_at_kst": observed,
-            "weather_code": 2,
-            "temperature_c": 28.5,
-            "apparent_temperature_c": 33.0,
-            "humidity_percent": 72,
-            "precipitation_mm": 0,
-            "today_high_c": 31,
-            "today_low_c": 24,
-            "precipitation_probability_max_percent": 60,
-            "source_name": "Open-Meteo",
-            "source_url": module.HANAM_WEATHER_URL,
+    def test_weather_lookup_recognizes_any_current_location_question(self):
+        self.assertTrue(module.is_weather_lookup("하남 오늘 날씨"))
+        self.assertTrue(module.is_weather_lookup("서울 현재 날씨 알려줘"))
+        self.assertFalse(module.is_weather_lookup("하남 맛집"))
+
+    def test_open_meteo_resolves_unambiguous_seoul_and_validates_forecast(self):
+        observed = module.now_utc().astimezone(module.KST).replace(second=0, microsecond=0)
+        terminal = mock.Mock()
+        terminal.fetch_json.side_effect = [
+            {
+                "results": [
+                    {
+                        "name": "서울특별시",
+                        "admin1": "서울특별시",
+                        "country": "대한민국",
+                        "latitude": 37.566,
+                        "longitude": 126.9784,
+                        "population": 10349312,
+                    },
+                    {"name": "Séoulétié", "latitude": 8.0, "longitude": 13.0, "population": 882},
+                ]
+            },
+            {
+                "latitude": 37.55,
+                "longitude": 127.0,
+                "utc_offset_seconds": 32400,
+                "current": {
+                    "time": observed.replace(tzinfo=None).isoformat(timespec="minutes"),
+                    "temperature_2m": 28.5,
+                    "apparent_temperature": 33.0,
+                    "relative_humidity_2m": 72,
+                    "precipitation": 0,
+                    "weather_code": 2,
+                },
+                "daily": {
+                    "temperature_2m_max": [31],
+                    "temperature_2m_min": [24],
+                    "precipitation_probability_max": [60],
+                },
+            },
+        ]
+        weather = module.OpenMeteoWeather(terminal)
+
+        reply, evidence = weather.resolve("Seoul")
+
+        self.assertIn("서울특별시 현재 날씨는 구름 조금, 28.5°C", reply)
+        self.assertIn("최대 강수확률은 60%", reply)
+        self.assertEqual(evidence["source_name"], "Open-Meteo")
+        self.assertIn("name=Seoul", terminal.fetch_json.call_args_list[0].args[0])
+        self.assertIn(module.OPEN_METEO_FORECAST_HOST, terminal.fetch_json.call_args_list[1].args[0])
+
+    def test_open_meteo_rejects_ambiguous_place(self):
+        terminal = mock.Mock()
+        terminal.fetch_json.return_value = {
+            "results": [
+                {"name": "광주광역시", "latitude": 35.1, "longitude": 126.8, "population": 1400000},
+                {"name": "광주시", "latitude": 37.4, "longitude": 127.2, "population": 81000},
+            ]
         }
-        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER, "session_id": "weather-session"}
+        with self.assertRaisesRegex(RuntimeError, "여러 개"):
+            module.OpenMeteoWeather(terminal).resolve("Gwangju")
 
-        with mock.patch.object(module, "run_hermes_json", return_value=(result, usage)) as run, mock.patch.object(
-            module, "hermes_session_used_tool", return_value=True
-        ) as used_tool:
-            reply, evidence = assistant._resolve_hanam_weather("하남 오늘 날씨")
+    def test_open_meteo_rejects_stale_forecast(self):
+        stale = (module.now_utc().astimezone(module.KST) - dt.timedelta(hours=2)).replace(tzinfo=None)
+        place = {"name": "서울", "latitude": 37.566, "longitude": 126.9784}
+        forecast = {
+            "latitude": 37.55,
+            "longitude": 127.0,
+            "utc_offset_seconds": 32400,
+            "current": {"time": stale.isoformat(timespec="minutes")},
+            "daily": {},
+        }
+        with self.assertRaisesRegex(RuntimeError, "현재 시각"):
+            module.OpenMeteoWeather._format(place, forecast, "Seoul", "geo", "forecast")
 
-        self.assertIn("하남은 현재 구름 조금, 28.5°C", reply)
-        self.assertIn("최대 강수확률 60%", reply)
-        self.assertEqual(evidence["source_url"], module.HANAM_WEATHER_URL)
+    def test_read_only_terminal_requires_exact_recorded_call(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile = Path(temp_dir)
+            database = profile / "state.db"
+            url = "https://geocoding-api.open-meteo.com/v1/search?name=Seoul"
+            command = f"/usr/bin/curl --fail --silent --show-error --max-time 20 '{url}'"
+            calls = [
+                {
+                    "function": {
+                        "name": "terminal",
+                        "arguments": json.dumps(
+                            {
+                                "command": command,
+                                "background": False,
+                                "timeout": 30,
+                                "pty": False,
+                                "notify_on_complete": False,
+                            }
+                        ),
+                    }
+                }
+            ]
+            content = json.dumps({"output": json.dumps({"results": []}), "exit_code": 0, "error": None})
+            with contextlib.closing(sqlite3.connect(database)) as connection:
+                connection.execute(
+                    "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, "
+                    "content TEXT, tool_calls TEXT, tool_name TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO messages(session_id, role, tool_calls) VALUES(?,?,?)",
+                    ("terminal-session", "assistant", json.dumps(calls)),
+                )
+                connection.execute(
+                    "INSERT INTO messages(session_id, role, content, tool_name) VALUES(?,?,?,?)",
+                    ("terminal-session", "tool", content, "terminal"),
+                )
+                connection.commit()
+            usage = {
+                "model": module.PRIMARY_MODEL,
+                "provider": module.PRIMARY_PROVIDER,
+                "session_id": "terminal-session",
+            }
+            terminal = module.JarvisReadOnlyTerminal(Path("/tmp/hermes"), "jarvis", profile)
+            with mock.patch.object(module, "run_hermes_json", return_value=({"ok": True}, usage)) as run:
+                result = terminal.fetch_json(url)
+
+        self.assertEqual(result, {"results": []})
         self.assertEqual(run.call_args.kwargs["toolsets"], "terminal")
-        used_tool.assert_called_once_with(Path("/tmp/profile"), "weather-session", "terminal")
 
-    def test_stale_hanam_weather_resolution_fails_closed(self):
+    @staticmethod
+    def _assistant_for_events(events):
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
-        assistant.hermes_bin = Path("/tmp/hermes")
-        assistant.profile_dir = Path("/tmp/profile")
+        assistant.state = module.default_state()
+        assistant.memory = module.default_memory()
         assistant.config = {"profile": "jarvis"}
-        stale = (module.now_utc().astimezone(module.KST) - dt.timedelta(hours=2)).isoformat()
-        result = {
-            "ok": True,
-            "observed_at_kst": stale,
-            "source_name": "Open-Meteo",
-            "source_url": module.HANAM_WEATHER_URL,
+        assistant.hermes_bin = Path("/tmp/hermes")
+        assistant.kakao = mock.Mock()
+        assistant.kakao.preview.return_value = {"observed": [{"events": events}]}
+        assistant.weather = mock.Mock()
+        assistant.discord = mock.Mock()
+        assistant._send_automatic = mock.Mock()
+        assistant._create_approval_card = mock.Mock()
+        return assistant
+
+    def test_missing_weather_location_auto_asks_in_kakaotalk(self):
+        event = {
+            "entity_id": "message-1",
+            "timestamp": module.iso_now(),
+            "sender_name": "친구",
+            "is_from_me": False,
+            "message_type": "text",
+            "snippet": "오늘 날씨 어때?",
         }
-        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER, "session_id": "weather-session"}
+        assistant = self._assistant_for_events([event])
+        result = {
+            "intent": "weather",
+            "reply_kind": "clarification",
+            "reply": "",
+            "summary": "날씨 질문",
+            "reason": "지역 누락",
+            "confidence": 0.80,
+            "weather_location": "",
+            "flags": {},
+            "memory_updates": [
+                {"key": "weather_requires_location", "value": "true", "confidence": 1, "secret_or_auth": False}
+            ],
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER}
+        with mock.patch.object(module, "run_hermes_json", return_value=(result, usage)):
+            assistant._process_room_buffer(
+                "room-1",
+                {"room_name": "친구", "entity_ids": ["message-1"], "last_at": event["timestamp"]},
+            )
 
-        with mock.patch.object(module, "run_hermes_json", return_value=(result, usage)), mock.patch.object(
-            module, "hermes_session_used_tool", return_value=True
-        ):
-            with self.assertRaisesRegex(RuntimeError, "현재 시각"):
-                assistant._resolve_hanam_weather("하남 오늘 날씨")
+        assistant.weather.resolve.assert_not_called()
+        assistant._create_approval_card.assert_not_called()
+        self.assertEqual(assistant._send_automatic.call_args.args[3], module.WEATHER_LOCATION_QUESTION)
+        self.assertEqual(assistant.memory["contacts"], {})
 
-    def test_hanam_weather_resolution_rejects_missing_terminal_tool_evidence(self):
-        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
-        assistant.hermes_bin = Path("/tmp/hermes")
-        assistant.profile_dir = Path("/tmp/profile")
-        assistant.config = {"profile": "jarvis"}
-        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER, "session_id": "weather-session"}
+    def test_weather_followup_location_resolves_and_auto_sends(self):
+        earlier = {
+            "entity_id": "message-1",
+            "timestamp": (module.now_utc() - dt.timedelta(minutes=2)).isoformat(),
+            "sender_name": "친구",
+            "is_from_me": False,
+            "message_type": "text",
+            "snippet": "오늘 날씨 어때?",
+        }
+        question = {
+            "entity_id": "message-2",
+            "timestamp": (module.now_utc() - dt.timedelta(minutes=1)).isoformat(),
+            "sender_name": "나",
+            "is_from_me": True,
+            "message_type": "text",
+            "snippet": f"{module.PREFIX} {module.WEATHER_LOCATION_QUESTION}",
+        }
+        answer = {
+            "entity_id": "message-3",
+            "timestamp": module.iso_now(),
+            "sender_name": "친구",
+            "is_from_me": False,
+            "message_type": "text",
+            "snippet": "서울",
+        }
+        assistant = self._assistant_for_events([earlier, question, answer])
+        assistant.weather.resolve.return_value = (
+            "서울특별시 현재 날씨는 맑음, 25°C(체감 26°C)야.",
+            {"location": "서울특별시", "source_name": "Open-Meteo", "observed_at": module.iso_now()},
+        )
+        result = {
+            "intent": "weather",
+            "reply_kind": "answer",
+            "reply": "",
+            "summary": "서울 날씨",
+            "reason": "문맥에서 지역 확인",
+            "confidence": 0.80,
+            "weather_location": "Seoul",
+            "flags": {},
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER}
+        with mock.patch.object(module, "run_hermes_json", return_value=(result, usage)):
+            assistant._process_room_buffer(
+                "room-1",
+                {"room_name": "친구", "entity_ids": ["message-3"], "last_at": answer["timestamp"]},
+            )
 
-        with mock.patch.object(module, "run_hermes_json", return_value=({"ok": True}, usage)), mock.patch.object(
-            module, "hermes_session_used_tool", return_value=False
-        ):
-            with self.assertRaisesRegex(RuntimeError, "실제 날씨 조회 도구 호출"):
-                assistant._resolve_hanam_weather("하남 오늘 날씨")
+        assistant.weather.resolve.assert_called_once_with("Seoul")
+        self.assertIn("서울특별시 현재 날씨는", assistant._send_automatic.call_args.args[3])
+        self.assertIn("출처=Open-Meteo", assistant._send_automatic.call_args.args[5])
+
+    def test_weather_resolution_failure_creates_approval(self):
+        event = {
+            "entity_id": "message-1",
+            "timestamp": module.iso_now(),
+            "sender_name": "친구",
+            "is_from_me": False,
+            "message_type": "text",
+            "snippet": "광주 오늘 날씨",
+        }
+        assistant = self._assistant_for_events([event])
+        assistant.weather.resolve.side_effect = RuntimeError("날씨 지역 후보가 여러 개")
+        result = {
+            "intent": "weather",
+            "reply_kind": "answer",
+            "reply": "",
+            "summary": "광주 날씨",
+            "confidence": 0.95,
+            "weather_location": "Gwangju",
+            "flags": {},
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER}
+        with mock.patch.object(module, "run_hermes_json", return_value=(result, usage)):
+            assistant._process_room_buffer(
+                "room-1",
+                {"room_name": "친구", "entity_ids": ["message-1"], "last_at": event["timestamp"]},
+            )
+
+        assistant._send_automatic.assert_not_called()
+        self.assertIn("지역 불명확", assistant._create_approval_card.call_args.args[5])
+
+    def test_assistant_status_is_friendly_and_hides_operations(self):
+        event = {
+            "entity_id": "message-1",
+            "timestamp": module.iso_now(),
+            "sender_name": "친구",
+            "is_from_me": False,
+            "message_type": "text",
+            "snippet": "너의 상태는 어때?",
+        }
+        assistant = self._assistant_for_events([event])
+        result = {
+            "intent": "assistant_status",
+            "reply_kind": "answer",
+            "reply": "PID 123에서 MCP 폴링 중",
+            "summary": "상태 질문",
+            "confidence": 0.80,
+            "weather_location": "",
+            "flags": {},
+            "memory_updates": [
+                {"key": "last_query", "value": "assistant status", "confidence": 1, "secret_or_auth": False}
+            ],
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER}
+        with mock.patch.object(module, "run_hermes_json", return_value=(result, usage)):
+            assistant._process_room_buffer(
+                "room-1",
+                {"room_name": "친구", "entity_ids": ["message-1"], "last_at": event["timestamp"]},
+            )
+
+        reply = assistant._send_automatic.call_args.args[3]
+        self.assertEqual(reply, module.ASSISTANT_STATUS_REPLY)
+        self.assertNotIn("PID", reply)
+        self.assertNotIn("MCP", reply)
+        self.assertEqual(assistant.memory["contacts"], {})
 
     def test_auth_memory_is_rejected(self):
         self.assertIsNone(
@@ -262,7 +480,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
             tool_content = '<untrusted_tool_result source="mcp">\n' + json.dumps(
                 {"result": json.dumps({"ok": True, "chat_id_validated": True})}
             ) + "\n</untrusted_tool_result>"
-            with sqlite3.connect(database) as connection:
+            with contextlib.closing(sqlite3.connect(database)) as connection:
                 connection.execute(
                     "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, "
                     "content TEXT, tool_calls TEXT, tool_name TEXT)"
@@ -275,6 +493,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                     "INSERT INTO messages(session_id, role, content, tool_name) VALUES(?,?,?,?)",
                     ("session-1", "tool", tool_content, expected_tool),
                 )
+                connection.commit()
 
             result = module.hermes_session_tool_payload(
                 profile,

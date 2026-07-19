@@ -4,7 +4,7 @@ title: Jarvis Messenger Assistant
 description: Fail-closed KakaoTalk messenger assistant operated by the existing Jarvis profile through a private Discord control channel.
 resource: repo://hermes-workspace/knowledge/runbooks/jarvis-messenger-assistant.md
 tags: [hermes, jarvis, kakaotalk, discord, gateway, cron, human-in-the-loop]
-timestamp: 2026-07-19T21:03:00+09:00
+timestamp: 2026-07-19T23:29:44+09:00
 ---
 
 # Jarvis Messenger Assistant
@@ -13,9 +13,9 @@ timestamp: 2026-07-19T21:03:00+09:00
 
 The existing `jarvis` profile acts as a KakaoTalk messenger assistant. It reads
 1:1 messages every two minutes while explicitly enabled, drafts replies with
-`openai/gpt-5-nano`, sends low-risk replies with a visible `[메신저 비서]`
-prefix, and routes every other reply through a private Discord approval
-channel.
+`openai/gpt-5-nano`, and sends replies with a visible `[메신저 비서]` prefix
+when the model reports confidence of at least `0.80`. Lower-confidence and
+operationally unverifiable replies go to a private Discord approval channel.
 
 This is a `remote-config` and recurring-automation change. Installation,
 gateway restart, and future policy changes remain `review-required`.
@@ -50,9 +50,16 @@ gateway restart, and future policy changes remain `review-required`.
   closed instead of being reconstructed from model text.
 - A Hermes one-shot call with tools disabled performs JSON classification and
   drafting. If the usage report does not show the configured primary nano
-  model, automatic sending is prohibited.
+  model, automatic sending is prohibited. Its interface reports `intent`,
+  `reply_kind`, `reply`, `summary`, `reason`, `confidence`, and
+  `weather_location`; semantic risk flags are retained only for Discord audit.
 - Linked pages are read with a separate Camofox identity named
-  `hermes-messenger-isolated`. Link replies always require approval.
+  `hermes-messenger-isolated`. A failed isolated read is passed to the model as
+  unavailable context instead of independently forcing approval.
+- `OpenMeteoWeather` resolves an explicit model-extracted place through the
+  Open-Meteo geocoding and forecast endpoints. Each public-data request is one
+  verified Jarvis `terminal` call with an exact allowlisted HTTPS URL and
+  read-only curl command; the controller consumes the raw recorded tool result.
 - Durable state and extracted contact facts live under
   `~/.hermes/profiles/jarvis/messenger-assistant/` with user-only permissions.
   Raw KakaoTalk turns are not stored there.
@@ -91,7 +98,9 @@ Reply to an approval or audit card with:
 ## Fail-Closed Rules
 
 - Initial state is disabled.
-- A Jarvis gateway PID/start-time change disables the assistant.
+- A Jarvis gateway PID/start-time change disables the assistant. The identity
+  reader accepts both the legacy plain PID file and Hermes 0.18.2's JSON PID
+  record; an unparseable record is treated as invalid.
 - Start creates a new baseline; messages received before it are summary-only.
 - Stop blocks approvals and corrections as well as automatic replies.
 - Only rooms whose adapter lookup reports the same `chat_id` from
@@ -104,10 +113,21 @@ Reply to an approval or audit card with:
   outstanding draft for the same room. Messages beginning with the visible
   `[메신저 비서]` prefix are never candidates, preventing reply loops.
 - Consecutive messages are buffered until 60 seconds after the newest message.
-- Unknown/fallback model use, low confidence, links, attachments, emergencies,
-  credentials, money/contracts, schedule changes, business commitments,
-  medical/legal content, responsibility admissions, relationship decisions,
-  or remembered facts in the reply require approval.
+- Unknown/fallback model use, confidence below `0.80`, an empty reply, weather
+  lookup failure, or an ambiguous weather location requires approval.
+- Money/contracts, schedule changes, business commitments, medical/legal or
+  emergency content, credentials, links, attachments, responsibility or
+  relationship decisions, harmful style, and remembered facts do not
+  independently block automatic sending. The model flags them in the Discord
+  audit card, and the selected policy uses model confidence as the sole content
+  gate.
+- Missing required details produce a short automatic clarification at
+  confidence `0.80` or above. A weather question without a location sends
+  `어느 지역 날씨를 알려줄까?`; the next turn is joined through the same
+  room's recent context without persisting raw clarification state.
+- `assistant_status` replies are replaced with the fixed friendly text
+  `응, 지금 정상적으로 작동 중이야 🙂`; internal process, gateway, MCP,
+  Discord, model, and polling information is never exposed in KakaoTalk.
 - Per-room automatic sends are capped at three per 30 minutes. Global automatic
   sends are capped at ten per ten minutes.
 - Sends first ask Jarvis to call MCP `send_message(dry_run=true)` for the
@@ -116,15 +136,12 @@ Reply to an approval or audit card with:
   an MCP preview to verify the visible message. There is no CuaDriver fallback
   and no second actual-send attempt. An adapter timeout or uncertain read-back
   is reported with its specific reason while the approval remains pending.
-- The special approved edit `수정: 하남 오늘 날씨` is resolved by a Jarvis
-  one-shot restricted to the `terminal` toolset. Jarvis runs one fixed,
-  read-only `/usr/bin/curl --fail --max-time 20` request against the Open-Meteo
-  current-weather endpoint for Hanam. The controller verifies the same Hermes
-  session recorded exactly one terminal tool result, and rejects a non-primary
-  model, a different source URL, out-of-range fields, or an observation older
-  than 30 minutes. The edit text itself is never sent as the answer. The
-  validated values are formatted deterministically and only then sent through
-  Hermes MCP.
+- Explicit-location current-weather questions and approved weather edits use
+  Open-Meteo geocoding followed by a forecast lookup. Multiple plausible
+  populated locations, mismatched coordinates, out-of-range fields, altered
+  terminal calls, non-primary models, or observations older than 30 minutes
+  fail closed. Validated values are formatted deterministically and then sent
+  through KakaoTalk MCP.
 - KakaoTalk read state is never changed intentionally.
 
 ## KakaoTalk Recovery
@@ -214,8 +231,18 @@ Before live use, confirm in the private Discord channel:
    and reports `종료`.
 2. A gateway restart still leaves it `종료`.
 3. `메신저 시작` establishes a new baseline.
-4. A real incoming low-risk 1:1 text produces either an immediate audited
-   automatic reply or an approval card according to policy.
+4. `오늘 날씨 어때?` automatically asks for a region; replying `서울` produces
+   a validated current-weather answer.
+5. `너의 상태는 어때?` produces only the friendly fixed status text.
+6. Confidence `0.80` sends automatically, while `0.79`, fallback-model use,
+   ambiguous weather, and MCP send uncertainty produce approval or failure
+   audit according to their operational path.
+
+For controller-only updates, back up and replace the installed script, then
+restart only `ai.hermes.jarvis-messenger-assistant-discord`. The script-only
+cron loads the new file on its next two-minute run; the Jarvis gateway does not
+need a restart unless profile configuration, environment, or tool registration
+also changed.
 
 ## Rollback
 
