@@ -4,7 +4,7 @@ title: Jarvis Messenger Assistant
 description: Fail-closed KakaoTalk messenger assistant operated by the existing Jarvis profile through a private Discord control channel.
 resource: repo://hermes-workspace/knowledge/runbooks/jarvis-messenger-assistant.md
 tags: [hermes, jarvis, kakaotalk, discord, gateway, cron, human-in-the-loop]
-timestamp: 2026-07-19T20:47:00+09:00
+timestamp: 2026-07-19T21:03:00+09:00
 ---
 
 # Jarvis Messenger Assistant
@@ -85,7 +85,12 @@ Reply to an approval or audit card with:
 - Stop blocks approvals and corrections as well as automatic replies.
 - Only rooms whose adapter lookup reports the same `chat_id` from
   `NTUser.directChatId` are treated as 1:1 rooms; `member_count` is not used.
-- A new inbound message invalidates an outstanding draft for the same room.
+- Direct-room IDs are read in one adapter DB query rather than through
+  `find_chat`, whose preview-followup guard can intentionally suppress repeated
+  lookups after a successful message preview.
+- A new incoming message or user-authored outgoing message invalidates an
+  outstanding draft for the same room. Messages beginning with the visible
+  `[메신저 비서]` prefix are never candidates, preventing reply loops.
 - Consecutive messages are buffered until 60 seconds after the newest message.
 - Unknown/fallback model use, low confidence, links, attachments, emergencies,
   credentials, money/contracts, schedule changes, business commitments,

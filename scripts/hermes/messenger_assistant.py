@@ -38,7 +38,6 @@ UTC = dt.timezone.utc
 STATE_VERSION = 1
 PREFIX = "[메신저 비서]"
 DISCORD_LIMIT = 1900
-DIRECT_CHAT_SOURCE = "NTUser.directChatId"
 PRIMARY_MODEL = "openai/gpt-5-nano"
 PRIMARY_PROVIDER = "custom"
 TEXT_TYPES = {"text", "1", "unknown"}
@@ -103,6 +102,14 @@ def split_discord(text: str, limit: int = DISCORD_LIMIT) -> list[str]:
 def message_fingerprint(room_id: str, entity_id: str) -> str:
     raw = f"{room_id}\0{entity_id}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+def is_candidate_message(item: dict[str, Any]) -> bool:
+    is_from_me = str(item.get("is_from_me") or "").strip().casefold() in {"true", "1", "yes"}
+    if not is_from_me:
+        return True
+    text = str(item.get("text") or item.get("snippet") or "").lstrip()
+    return not text.startswith(PREFIX)
 
 
 def default_state() -> dict[str, Any]:
@@ -278,8 +285,19 @@ class KakaoClient:
     def auth_status(self) -> dict[str, Any]:
         return self.module.auth_status_impl()
 
-    def find_chat(self, query: str) -> dict[str, Any]:
-        return self.module.find_chat_impl(query, limit=50, scan_limit=500)
+    def direct_chat_ids(self) -> set[str]:
+        rows = self.module.run_kakaocli_json(
+            None,
+            ["query", "select distinct directChatId from NTUser where directChatId != 0"],
+            user_id=self.module._resolve_user_id(None),
+        )
+        if not isinstance(rows, list):
+            return set()
+        return {
+            str(row[0])
+            for row in rows
+            if isinstance(row, list) and row and row[0] not in (None, "", 0)
+        }
 
     def list_since(self, since: str, until: str) -> dict[str, Any]:
         return self.module.list_new_messages_since_impl(
@@ -919,28 +937,15 @@ class MessengerAssistant:
         self.discord.send(text)
 
     def _direct_chat_map(self, rooms: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-        direct: dict[str, dict[str, Any]] = {}
-        lookups: dict[str, dict[str, Any]] = {}
-        for room in rooms:
-            room_id = str(room.get("chat_id") or "")
-            room_name = str(room.get("display_name") or "").strip()
-            if not room_id or not room_name:
-                continue
-            if room_name not in lookups:
-                try:
-                    lookups[room_name] = self.kakao.find_chat(room_name)
-                except Exception:
-                    lookups[room_name] = {"matches": []}
-            for match in lookups[room_name].get("matches") or []:
-                if str(match.get("chat_id") or "") != room_id:
-                    continue
-                sources = match.get("sources")
-                if not isinstance(sources, list):
-                    sources = [match.get("source")]
-                if DIRECT_CHAT_SOURCE in sources:
-                    direct[room_id] = room
-                    break
-        return direct
+        try:
+            direct_ids = self.kakao.direct_chat_ids()
+        except Exception:
+            return {}
+        return {
+            room_id: room
+            for room in rooms
+            if (room_id := str(room.get("chat_id") or "")) in direct_ids
+        }
 
     def _poll_kakao(self) -> None:
         until = iso_now()
@@ -966,9 +971,9 @@ class MessengerAssistant:
             room_state["name"] = room_name
             if room_state.get("excluded"):
                 continue
-            incoming = [item for item in room.get("new_messages") or [] if not item.get("is_from_me")]
+            candidates = [item for item in room.get("new_messages") or [] if is_candidate_message(item)]
             new_items = []
-            for item in incoming:
+            for item in candidates:
                 entity_id = str(item.get("entity_id") or "")
                 fingerprint = message_fingerprint(room_id, entity_id)
                 if entity_id and fingerprint not in processed:
@@ -1017,7 +1022,7 @@ class MessengerAssistant:
         preview = self.kakao.preview(room_name, room_id)
         context = recent_context(preview)
         wanted = set(buffer.get("entity_ids") or [])
-        new_turn = [item for item in context if item.get("entity_id") in wanted and not item.get("is_from_me")]
+        new_turn = [item for item in context if item.get("entity_id") in wanted and is_candidate_message(item)]
         if not new_turn:
             raise RuntimeError("새 메시지 원문을 최근 문맥에서 다시 찾지 못했습니다")
         new_turn.sort(key=lambda item: item.get("timestamp") or "")
@@ -1111,9 +1116,11 @@ class MessengerAssistant:
         buffer: dict[str, Any],
     ) -> None:
         raw = "\n".join(
-            f"{item.get('sender') or '상대'}: {item.get('text') or '[첨부/비텍스트]'}" for item in new_turn
+            f"{'나' if item.get('is_from_me') else item.get('sender') or '상대'}: "
+            f"{item.get('text') or '[첨부/비텍스트]'}"
+            for item in new_turn
         )
-        self.discord.send(f"📨 **새 카카오톡 원문 — {room_name}**\n{raw}")
+        self.discord.send(f"📨 **새 카카오톡 처리 대상 — {room_name}**\n{raw}")
         card = (
             f"📝 **승인 요청 — {room_name}**\n"
             f"요약: {summary or '-'}\n"
@@ -1158,7 +1165,7 @@ class MessengerAssistant:
         self._touch_room_stats(room_name)
         card = self.discord.send(
             f"🤖 **자동 답변 완료 — {room_name}**\n"
-            f"수신 요약: {summary or compact(' / '.join(item.get('text') or '' for item in new_turn), 500)}\n"
+            f"메시지 요약: {summary or compact(' / '.join(item.get('text') or '' for item in new_turn), 500)}\n"
             f"판단: {compact(reason, 400)}\n"
             f"발신:\n{message}\n\n이 카드에 `정정: …`으로 답장하면 정정 메시지를 보냅니다."
         )

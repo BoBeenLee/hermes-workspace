@@ -75,6 +75,24 @@
 - Persisted controller state after the direct-room deployment — `enabled: true`,
   zero pending approvals, zero buffered rooms, and a successful Kakao poll at
   `2026-07-19T20:45:28+09:00`.
+- User-authored outgoing candidates — `is_from_me=true` messages now enter the
+  same candidate buffer as incoming messages. Messages beginning with
+  `[메신저 비서]` remain excluded at polling and replay time so automatic,
+  approved, and corrected replies cannot trigger a self-reply loop.
+- Stable direct-room lookup — polling now reads all `NTUser.directChatId` values
+  in one adapter DB query, avoiding the `find_chat` preview-followup guard while
+  retaining fail-closed direct-room matching.
+- Outgoing-candidate tests — the targeted regressions changed from RED to GREEN
+  and the full suite passes 18 tests, including manual outgoing inclusion and
+  assistant-prefixed outgoing exclusion.
+- Outgoing-candidate controller backup:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-from-me-candidate-20260719-210100`
+- Outgoing-candidate state backup:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/messenger-assistant/state.json.bak-from-me-candidate-20260719-210100`
+- Live outgoing-candidate verification — the latest pre-deployment manual
+  outgoing message was registered once, consumed by direct cron execution
+  `eb5e6d7dc09a43c08c07883f305aaddf`, recorded as processed, and routed to one
+  pending Discord approval card with zero failures and no automatic send.
 - Human review/action still required:
   - enter the KakaoTalk ID and changed password in the interactive `kmsg`
     prompts already opened on the remote Mac

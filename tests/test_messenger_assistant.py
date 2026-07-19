@@ -215,7 +215,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         assistant._process_discord_commands.assert_not_called()
 
-    def test_poll_buffers_direct_room_from_adapter_evidence_even_with_member_count_one(self):
+    def test_poll_buffers_manual_from_me_message_in_direct_room(self):
         class FakeKakao:
             @staticmethod
             def list_since(_since, _until):
@@ -228,7 +228,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                                 {
                                     "entity_id": "message-1",
                                     "timestamp": "2026-07-19T12:00:00+00:00",
-                                    "is_from_me": False,
+                                    "is_from_me": True,
+                                    "snippet": "오늘 날씨 어때?",
                                 }
                             ],
                         }
@@ -248,15 +249,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                 }
 
             @staticmethod
-            def find_chat(_query):
-                return {
-                    "matches": [
-                        {
-                            "chat_id": "direct-1",
-                            "sources": ["visible_chats", "NTUser.directChatId"],
-                        }
-                    ]
-                }
+            def direct_chat_ids():
+                return {"direct-1"}
 
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
         assistant.state = module.default_state()
@@ -268,6 +262,26 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant._poll_kakao()
 
         self.assertEqual(assistant.state["room_buffers"]["direct-1"]["entity_ids"], ["message-1"])
+
+    def test_assistant_authored_from_me_message_is_not_a_candidate(self):
+        self.assertFalse(
+            module.is_candidate_message(
+                {
+                    "is_from_me": True,
+                    "snippet": f"{module.PREFIX} 자동 답변",
+                }
+            )
+        )
+        self.assertFalse(
+            module.is_candidate_message(
+                {
+                    "is_from_me": True,
+                    "text": f"{module.PREFIX} 승인 답변",
+                }
+            )
+        )
+        self.assertTrue(module.is_candidate_message({"is_from_me": True, "text": "직접 보낸 질문"}))
+        self.assertTrue(module.is_candidate_message({"is_from_me": False, "text": "상대가 보낸 질문"}))
 
     def test_poll_rejects_member_count_two_without_adapter_direct_evidence(self):
         class FakeKakao:
@@ -302,15 +316,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                 }
 
             @staticmethod
-            def find_chat(_query):
-                return {
-                    "matches": [
-                        {
-                            "chat_id": "group-1",
-                            "sources": ["visible_chats", "NTChatRoom/NTOpenLink"],
-                        }
-                    ]
-                }
+            def direct_chat_ids():
+                return set()
 
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
         assistant.state = module.default_state()
