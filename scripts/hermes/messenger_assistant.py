@@ -185,6 +185,15 @@ def is_candidate_message(item: dict[str, Any]) -> bool:
     return not text.startswith(PREFIX)
 
 
+def parse_allowed_chat_ids(value: Any) -> frozenset[str]:
+    if not isinstance(value, list) or not value:
+        raise RuntimeError("allowed_chat_ids must be a non-empty JSON list")
+    normalized = [str(item).strip() for item in value]
+    if any(not item or not item.isdigit() for item in normalized):
+        raise RuntimeError("allowed_chat_ids must contain only numeric KakaoTalk chat IDs")
+    return frozenset(normalized)
+
+
 def default_state() -> dict[str, Any]:
     return {
         "version": STATE_VERSION,
@@ -1059,6 +1068,7 @@ class MessengerAssistant:
         self.config = load_json(config_path, {})
         if not self.config:
             raise RuntimeError(f"Missing assistant config: {config_path}")
+        self.allowed_chat_ids = parse_allowed_chat_ids(self.config.get("allowed_chat_ids"))
         self.profile_dir = Path(str(self.config.get("profile_dir") or "~/.hermes/profiles/jarvis")).expanduser()
         state_dir = Path(str(self.config.get("state_dir") or self.profile_dir / "messenger-assistant")).expanduser()
         self.state_path = state_dir / "state.json"
@@ -1099,6 +1109,19 @@ class MessengerAssistant:
                 for key, value in collection.items()
                 if parse_time(value.get("created_at")) is None or parse_time(value.get("created_at")) >= cutoff
             }
+        self.state["room_buffers"] = {
+            room_id: value
+            for room_id, value in (self.state.get("room_buffers") or {}).items()
+            if self._room_is_allowed(room_id)
+        }
+        for pending in (self.state.get("pending") or {}).values():
+            if not self._room_is_allowed(pending.get("room_id")) and pending.get("status") in {"pending", "held"}:
+                pending["status"] = "invalidated"
+        self.state["audit_cards"] = {
+            key: value
+            for key, value in (self.state.get("audit_cards") or {}).items()
+            if self._room_is_allowed(value.get("room_id"))
+        }
         contacts = self.memory.setdefault("contacts", {})
         memory_cutoff = now_utc() - dt.timedelta(days=365)
         for room_id, contact in list(contacts.items()):
@@ -1111,6 +1134,9 @@ class MessengerAssistant:
             }
             if not contact["facts"]:
                 contacts.pop(room_id, None)
+
+    def _room_is_allowed(self, room_id: Any) -> bool:
+        return str(room_id or "") in self.allowed_chat_ids
 
     def run(self, *, process_discord: bool, process_kakao: bool) -> None:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1227,7 +1253,7 @@ class MessengerAssistant:
                 continue
             pending["status"] = "invalidated"
             room_id = str(pending.get("room_id") or "")
-            if not room_id:
+            if not self._room_is_allowed(room_id):
                 continue
             buffers[room_id] = {
                 "room_name": pending.get("room_name") or room_id,
@@ -1236,7 +1262,7 @@ class MessengerAssistant:
                 "last_at": pending.get("latest_at") or stamp,
             }
         self.discord.send(
-            "✅ **메신저 비서 시작**\n시작 시점을 기준선으로 설정했습니다. 이후 1:1 카카오톡 메시지를 2분 주기로 확인합니다. "
+            "✅ **메신저 비서 시작**\n시작 시점을 기준선으로 설정했습니다. 이후 허용된 1:1 카카오톡 방만 2분 주기로 확인합니다. "
             "기존 승인 대기 건은 최신 문맥으로 새 카드를 생성합니다."
         )
 
@@ -1271,6 +1297,7 @@ class MessengerAssistant:
             f"- 최근 카카오 조회: {self.state.get('last_kakao_poll_at') or '-'}\n"
             f"- 자동 답변 일시 중지: {'예' if self.state.get('automatic_paused') else '아니오'}\n"
             f"- 미결 승인: {pending_count}\n"
+            f"- 허용 chat_id: {', '.join(sorted(self.allowed_chat_ids))}\n"
             f"- 제외 방: {', '.join(excluded) or '-'}\n"
             f"- 승인 전용 방: {', '.join(approval_only) or '-'}"
         )
@@ -1300,6 +1327,8 @@ class MessengerAssistant:
         direct: dict[str, dict[str, Any]] = {}
         for room in rooms:
             room_id = str(room.get("chat_id") or "")
+            if not self._room_is_allowed(room_id):
+                continue
             room_name = str(room.get("display_name") or room_id)
             room_state = self.state.setdefault("rooms", {}).setdefault(room_id, {"name": room_name})
             if room_state.get("is_direct") is True:
@@ -1341,6 +1370,8 @@ class MessengerAssistant:
         buffers = self.state.setdefault("room_buffers", {})
         for room in result_rooms:
             room_id = str(room.get("chat_id") or "")
+            if not self._room_is_allowed(room_id):
+                continue
             if room_id not in direct:
                 continue
             room_name = str(room.get("display_name") or direct[room_id].get("display_name") or room_id)
@@ -1395,6 +1426,8 @@ class MessengerAssistant:
                 buffers.pop(room_id, None)
 
     def _process_room_buffer(self, room_id: str, buffer: dict[str, Any]) -> None:
+        if not self._room_is_allowed(room_id):
+            return
         room_name = str(buffer.get("room_name") or room_id)
         preview = self.kakao.preview(room_name, room_id)
         context = recent_context(preview)
@@ -1593,6 +1626,8 @@ class MessengerAssistant:
             }
 
     def _send_verified(self, room_name: str, room_id: str, message: str) -> bool:
+        if not self._room_is_allowed(room_id):
+            raise RuntimeError(f"KakaoTalk chat_id allowlist 거부: {compact(room_id, 80)}")
         if self._verify_sent(room_name, room_id, message):
             return True
         validated = self.kakao.send(room_name, message, dry_run=True, chat_id=room_id)
@@ -1827,6 +1862,11 @@ def check_config(config_path: Path) -> int:
     if missing:
         print(json.dumps({"ok": False, "missing": missing}, ensure_ascii=False))
         return 1
+    try:
+        allowed_chat_ids = parse_allowed_chat_ids(config.get("allowed_chat_ids"))
+    except RuntimeError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 1
     profile_dir = Path(str(config.get("profile_dir") or "~/.hermes/profiles/jarvis")).expanduser()
     mcp_ready = jarvis_kakao_toolset_ready(profile_dir)
     checks = {
@@ -1836,6 +1876,7 @@ def check_config(config_path: Path) -> int:
         "kakaotalk_mcp": mcp_ready,
         "discord_token": bool(os.getenv("DISCORD_BOT_TOKEN") or dotenv_value(profile_dir / ".env", "DISCORD_BOT_TOKEN")),
         "hermes_bin": Path(str(config.get("hermes_bin") or "~/.local/bin/hermes")).expanduser().is_file(),
+        "allowed_chat_ids": bool(allowed_chat_ids),
     }
     print(json.dumps({"ok": all(checks.values()), "checks": checks}, ensure_ascii=False))
     return 0 if all(checks.values()) else 1

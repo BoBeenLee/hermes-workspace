@@ -4,7 +4,7 @@ title: Jarvis Messenger Assistant
 description: Fail-closed KakaoTalk messenger assistant operated by the existing Jarvis profile through a private Discord control channel.
 resource: repo://hermes-workspace/knowledge/runbooks/jarvis-messenger-assistant.md
 tags: [hermes, jarvis, kakaotalk, discord, gateway, cron, human-in-the-loop]
-timestamp: 2026-07-19T23:29:44+09:00
+timestamp: 2026-07-19T23:57:00+09:00
 ---
 
 # Jarvis Messenger Assistant
@@ -63,6 +63,9 @@ gateway restart, and future policy changes remain `review-required`.
 - Durable state and extracted contact facts live under
   `~/.hermes/profiles/jarvis/messenger-assistant/` with user-only permissions.
   Raw KakaoTalk turns are not stored there.
+- `allowed_chat_ids` is a required non-empty config list. Room discovery,
+  buffering, classification, approval/correction handling, and actual sends all
+  fail closed unless the adapter-provided `chat_id` is in that list.
 
 ## Control Commands
 
@@ -105,6 +108,9 @@ Reply to an approval or audit card with:
 - Stop blocks approvals and corrections as well as automatic replies.
 - Only rooms whose adapter lookup reports the same `chat_id` from
   `NTUser.directChatId` are treated as 1:1 rooms; `member_count` is not used.
+- Only configured `allowed_chat_ids` are considered before direct-room lookup.
+  Messages in every other room are ignored even when `is_from_me=true`, and a
+  final send guard prevents stale approval or audit cards from reaching them.
 - Direct-room evidence is obtained through the MCP `find_chat` tool and cached
   only when the same `chat_id` includes the adapter source
   `NTUser.directChatId`. A preview-followup guard produces no new evidence and
@@ -181,12 +187,19 @@ scp scripts/hermes/messenger_assistant.py \
 
 ssh bobeen '/Users/bobeenlee/.hermes/hermes-agent/venv/bin/python \
   /tmp/install_messenger_assistant.py \
-  --controller /tmp/messenger_assistant.py --dry-run'
+  --controller /tmp/messenger_assistant.py \
+  --allowed-chat-id <adapter-chat-id> --dry-run'
 
 ssh bobeen '/Users/bobeenlee/.hermes/hermes-agent/venv/bin/python \
   /tmp/install_messenger_assistant.py \
-  --controller /tmp/messenger_assistant.py'
+  --controller /tmp/messenger_assistant.py \
+  --allowed-chat-id <adapter-chat-id>'
 ```
+
+On later upgrades, omitting `--allowed-chat-id` preserves the non-empty list
+from the installed config. A first install or an existing config without the
+list requires the flag. The installer backs up the previous config before
+writing the new one.
 
 The installer:
 
@@ -237,6 +250,9 @@ Before live use, confirm in the private Discord channel:
 6. Confidence `0.80` sends automatically, while `0.79`, fallback-model use,
    ambiguous weather, and MCP send uncertainty produce approval or failure
    audit according to their operational path.
+7. A message in a different direct room, including a user-authored
+   `is_from_me=true` message, creates no buffer or approval card; a direct send
+   attempt to its `chat_id` is rejected before the KakaoTalk MCP call.
 
 For controller-only updates, back up and replace the installed script, then
 restart only `ai.hermes.jarvis-messenger-assistant-discord`. The script-only

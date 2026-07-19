@@ -23,6 +23,12 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertFalse(state["automatic_paused"])
         self.assertEqual(state["pending"], {})
 
+    def test_chat_id_allowlist_requires_nonempty_numeric_ids(self):
+        self.assertEqual(module.parse_allowed_chat_ids(["128426307555607"]), {"128426307555607"})
+        for invalid in (None, [], ["room-1"], [""]):
+            with self.subTest(invalid=invalid), self.assertRaises(RuntimeError):
+                module.parse_allowed_chat_ids(invalid)
+
     def test_gateway_identity_supports_json_pid_record(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             profile = Path(temp_dir)
@@ -217,6 +223,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant.state = module.default_state()
         assistant.memory = module.default_memory()
         assistant.config = {"profile": "jarvis"}
+        assistant.allowed_chat_ids = {"room-1"}
         assistant.hermes_bin = Path("/tmp/hermes")
         assistant.kakao = mock.Mock()
         assistant.kakao.preview.return_value = {"observed": [{"events": events}]}
@@ -626,6 +633,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
         assistant.state = module.default_state()
         assistant.state["baseline_at"] = "2026-07-19T11:59:00+00:00"
+        assistant.allowed_chat_ids = {"direct-1"}
         assistant.kakao = FakeKakao()
         assistant.discord = mock.Mock()
         assistant._invalidate_pending_for_room = mock.Mock()
@@ -681,6 +689,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
         assistant.state = module.default_state()
         assistant.state["baseline_at"] = "2026-07-19T11:59:00+00:00"
+        assistant.allowed_chat_ids = {"group-1"}
         assistant.kakao = FakeKakao()
         assistant.discord = mock.Mock()
         assistant._invalidate_pending_for_room = mock.Mock()
@@ -688,6 +697,56 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant._poll_kakao()
 
         self.assertNotIn("group-1", assistant.state["room_buffers"])
+
+    def test_poll_ignores_non_allowlisted_direct_rooms_including_from_me(self):
+        class FakeKakao:
+            @staticmethod
+            def list_since(_since, _until):
+                return {
+                    "rooms": [
+                        {
+                            "chat_id": "128426307555607",
+                            "display_name": "이보빈",
+                            "new_messages": [
+                                {
+                                    "entity_id": "allowed-message",
+                                    "timestamp": "2026-07-19T12:00:00+00:00",
+                                    "is_from_me": True,
+                                    "snippet": "오늘 날씨 어때?",
+                                }
+                            ],
+                        },
+                        {
+                            "chat_id": "999",
+                            "display_name": "다른 사람",
+                            "new_messages": [
+                                {
+                                    "entity_id": "blocked-message",
+                                    "timestamp": "2026-07-19T12:00:01+00:00",
+                                    "is_from_me": True,
+                                    "snippet": "너의 상태는?",
+                                }
+                            ],
+                        },
+                    ]
+                }
+
+            @staticmethod
+            def is_direct_chat(_chat_id, _display_name):
+                return True
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["baseline_at"] = "2026-07-19T11:59:00+00:00"
+        assistant.allowed_chat_ids = {"128426307555607"}
+        assistant.kakao = FakeKakao()
+        assistant.discord = mock.Mock()
+        assistant._invalidate_pending_for_room = mock.Mock()
+
+        assistant._poll_kakao()
+
+        self.assertEqual(set(assistant.state["room_buffers"]), {"128426307555607"})
+        self.assertNotIn("999", assistant.state["rooms"])
 
     def test_verified_send_uses_actual_room_id_and_never_retries_actual_send(self):
         class FakeKakao:
@@ -701,6 +760,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                 return {"ok": True, "message_sent": True}
 
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.allowed_chat_ids = {"123"}
         assistant.kakao = FakeKakao()
         assistant._verify_sent = mock.Mock(side_effect=[False, True])
 
@@ -723,12 +783,25 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                 return {"ok": False, "error": "kmsg_chats_timeout"}
 
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.allowed_chat_ids = {"123"}
         assistant.kakao = FakeKakao()
         assistant._verify_sent = mock.Mock(return_value=False)
 
         with self.assertRaisesRegex(RuntimeError, "kmsg_chats_timeout"):
             assistant._send_verified("친구", "123", "답장")
         self.assertEqual(FakeKakao.calls, 1)
+
+    def test_verified_send_rejects_non_allowlisted_room_before_any_mcp_call(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.allowed_chat_ids = {"128426307555607"}
+        assistant.kakao = mock.Mock()
+        assistant._verify_sent = mock.Mock()
+
+        with self.assertRaisesRegex(RuntimeError, "allowlist 거부"):
+            assistant._send_verified("다른 사람", "999", "답장")
+
+        assistant._verify_sent.assert_not_called()
+        assistant.kakao.send.assert_not_called()
 
 
 if __name__ == "__main__":

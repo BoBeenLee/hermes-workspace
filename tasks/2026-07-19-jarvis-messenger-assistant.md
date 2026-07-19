@@ -17,6 +17,42 @@
   secret is handled by Jarvis or committed
 - Completion mode: `review-required`
 
+## Direct-room chat ID allowlist
+
+- The controller now requires a non-empty numeric `allowed_chat_ids` config
+  list and fails closed when it is absent or invalid. Production is restricted
+  to adapter chat ID `128426307555607` (display name `이보빈`).
+- The allowlist is checked before direct-room discovery and candidate
+  buffering, again before buffered classification, and finally before every
+  automatic, approved, or correction send. Messages from other rooms are
+  ignored even when `is_from_me=true`; stale Discord cards cannot bypass the
+  final send guard.
+- Existing non-allowed room buffers are pruned, and pending/held cards for
+  non-allowed rooms are invalidated. Production inspection found no such
+  buffers or live pending cards after deployment.
+- The installer accepts repeatable `--allowed-chat-id`, preserves an existing
+  non-empty list on later upgrades, backs up the previous config, and writes
+  config version 2.
+- Local checks: Python compilation passed; 36 unit tests passed, including
+  allowed/manual-outgoing buffering, non-allowed manual-outgoing rejection,
+  empty/invalid allowlist rejection, and pre-MCP send rejection; OKF validation
+  and `git diff --check` passed.
+- Installed controller SHA-256:
+  `ea0bc2030693424dfee4505ab9f59a2bdfc17217cd184b71850cc7a0aa5c09df`.
+  Backups:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-chat-allowlist-20260719-235318`
+  and
+  `/Users/bobeenlee/.hermes/profiles/jarvis/messenger-assistant/config.json.bak-chat-allowlist-20260719-235318`.
+- Remote controller `--check` passed with `allowed_chat_ids=true`. The dedicated
+  Discord listener reconnected as PID `58474`; Jarvis gateway PID `56537` was
+  not restarted. Scheduled execution `095d724d70e44e8190039c4dd87fa549`
+  completed `ok`, advanced the Kakao poll cursor to 23:55:46 KST, retained only
+  allowed room state, and left the assistant enabled.
+- Branch/worktree: `main` at
+  `/Users/mac_al03241161/Documents/mygit/bbl-ai-lab/hermes-workspace`.
+- Completion mode remains `review-required` because the recurring controller
+  and remote routing configuration changed.
+
 ## Confidence-based automatic replies
 
 - The content gate now uses the primary model's reported confidence only:
