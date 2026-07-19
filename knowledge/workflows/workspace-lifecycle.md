@@ -4,7 +4,7 @@ title: Workspace Lifecycle
 description: Hermes task lifecycle for remote operations, research work, and delegated implementation.
 resource: repo://hermes-workspace/knowledge/workflows/workspace-lifecycle.md
 tags: [hermes, workflow, lifecycle]
-timestamp: 2026-06-27T00:00:00+09:00
+timestamp: 2026-07-19T00:00:00+09:00
 source_path: docs/workspace-lifecycle.md
 ---
 
@@ -14,7 +14,7 @@ The Workspace Lifecycle module is the deep interface for Hermes work in this rep
 
 ## Canonical Workspace
 
-Use the canonical workspace from the active target profile. For the current default macOS target it is:
+Unless the user explicitly names another target or requests local-only work, run project tasks on the default remote Mac. The local checkout is the SSH control surface, not the default execution environment. Run operational commands, make task changes, and verify results in the canonical workspace from the active target profile. For the current default macOS target it is:
 
 ```text
 $HERMES_REMOTE_WORKSPACE

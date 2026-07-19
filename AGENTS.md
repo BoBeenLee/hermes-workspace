@@ -16,6 +16,8 @@ Use [knowledge/workflows/workspace-lifecycle.md](knowledge/workflows/workspace-l
 
 ## Default Target
 
+Unless the user explicitly names a different target or requests local-only work, assume every task in this project runs on the default remote Mac. Treat the local checkout as the SSH control surface; run operational commands, edit task files, and verify results in the canonical remote workspace through `bin/hermes-remote`. Do not interpret an unspecified target as the local control host.
+
 - SSH alias: `bobeen`
 - Remote user: `bobeenlee`
 - Remote Hermes command: `/Users/bobeenlee/.local/bin/hermes`
@@ -23,7 +25,7 @@ Use [knowledge/workflows/workspace-lifecycle.md](knowledge/workflows/workspace-l
 - Remote Hermes config: `/Users/bobeenlee/.hermes/config.yaml`
 - Canonical remote workspace: `/Users/bobeenlee/Workspaces/hermes-workspace`
 
-Target details live in `config/example.env` and `config/targets/`. Do not commit `.env`.
+Target details live in `config/example.env` and `config/targets/`. Do not commit `.env`. See [knowledge/concepts/default-macos-target.md](knowledge/concepts/default-macos-target.md) for the durable rule.
 
 ## Safety Rules
 

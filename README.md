@@ -2,6 +2,8 @@
 
 Operator repo for managing remote Hermes Agent hosts over SSH/Tailscale.
 
+Unless a task explicitly names another target, treat the default remote Mac as the execution environment for work in this project. Use the local checkout as the control surface and perform operational commands, file changes, and verification in the remote workspace. See [Default macOS target](knowledge/concepts/default-macos-target.md).
+
 The canonical durable knowledge base is now the OKF bundle at [knowledge/index.md](knowledge/index.md). Root files are intentionally thin entrypoints; new durable documentation should be written under `knowledge/` according to [Knowledge Authoring Rules](knowledge/policies/authoring-rules.md).
 
 ## Quick Start
