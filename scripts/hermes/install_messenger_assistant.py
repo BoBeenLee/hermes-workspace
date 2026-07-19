@@ -297,7 +297,10 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
             existing_config = loaded
     requested_chat_ids = getattr(args, "allowed_chat_id", None) or existing_config.get("allowed_chat_ids")
     allowed_chat_ids = normalize_chat_ids(requested_chat_ids)
-    if not allowed_chat_ids:
+    allow_all_direct_chats = bool(
+        getattr(args, "allow_all_direct_chats", False) or existing_config.get("allow_all_direct_chats") is True
+    )
+    if not allowed_chat_ids and not allow_all_direct_chats:
         raise RuntimeError("At least one --allowed-chat-id is required (or must exist in the installed config)")
 
     if args.dry_run:
@@ -311,6 +314,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
                 Path.home() / "Library/LaunchAgents" / f"{LISTENER_LABEL}.plist"
             ),
             "allowed_chat_ids": allowed_chat_ids,
+            "allow_all_direct_chats": allow_all_direct_chats,
             "login_mode": "user-entered-kmsg-encrypted-cache",
         }
 
@@ -336,7 +340,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
     state_dir.mkdir(parents=True, exist_ok=True)
     state_dir.chmod(0o700)
     config = {
-        "version": 2,
+        "version": 3,
         "profile": "jarvis",
         "profile_dir": str(PROFILE_DIR),
         "state_dir": str(state_dir),
@@ -344,6 +348,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
         "discord_channel_id": channel_id,
         "discord_user_id": user_id,
         "allowed_chat_ids": allowed_chat_ids,
+        "allow_all_direct_chats": allow_all_direct_chats,
         "login_mode": "user-entered-kmsg-encrypted-cache",
     }
     config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -427,6 +432,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
         "config": str(config_path),
         "config_backup": str(config_backup) if config_backup else "",
         "allowed_chat_ids": allowed_chat_ids,
+        "allow_all_direct_chats": allow_all_direct_chats,
         "cron_created": cron_created,
         "discord_listener": str(listener_plist),
         "discord_listener_backup": str(listener_plist_backup) if listener_plist_backup else "",
@@ -444,6 +450,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--allowed-chat-id",
         action="append",
         help="Allowed KakaoTalk direct-room chat_id; repeat for more rooms",
+    )
+    parser.add_argument(
+        "--allow-all-direct-chats",
+        action="store_true",
+        help="Allow every room verified by the KakaoTalk adapter as a 1:1 direct chat",
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser

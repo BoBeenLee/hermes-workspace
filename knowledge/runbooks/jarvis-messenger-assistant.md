@@ -4,7 +4,7 @@ title: Jarvis Messenger Assistant
 description: Fail-closed KakaoTalk messenger assistant operated by the existing Jarvis profile through a private Discord control channel.
 resource: repo://hermes-workspace/knowledge/runbooks/jarvis-messenger-assistant.md
 tags: [hermes, jarvis, kakaotalk, discord, gateway, cron, human-in-the-loop]
-timestamp: 2026-07-20T00:28:00+09:00
+timestamp: 2026-07-20T00:48:00+09:00
 ---
 
 # Jarvis Messenger Assistant
@@ -67,9 +67,11 @@ gateway restart, and future policy changes remain `review-required`.
 - Durable state and extracted contact facts live under
   `~/.hermes/profiles/jarvis/messenger-assistant/` with user-only permissions.
   Raw KakaoTalk turns are not stored there.
-- `allowed_chat_ids` is a required non-empty config list. Room discovery,
-  buffering, classification, approval/correction handling, and actual sends all
-  fail closed unless the adapter-provided `chat_id` is in that list.
+- `allow_all_direct_chats=true` permits every room whose adapter lookup proves
+  the same `chat_id` through `NTUser.directChatId`. Group rooms and rooms that
+  lack this exact evidence remain blocked at discovery and at the final send
+  guard. Deployments that leave this setting false continue to use the
+  `allowed_chat_ids` allowlist.
 
 ## Control Commands
 
@@ -112,9 +114,11 @@ Reply to an approval or audit card with:
 - Stop blocks approvals and corrections as well as automatic replies.
 - Only rooms whose adapter lookup reports the same `chat_id` from
   `NTUser.directChatId` are treated as 1:1 rooms; `member_count` is not used.
-- Only configured `allowed_chat_ids` are considered before direct-room lookup.
-  Messages in every other room are ignored even when `is_from_me=true`, and a
-  final send guard prevents stale approval or audit cards from reaching them.
+- With `allow_all_direct_chats=true`, every discovered room may enter the
+  direct-room lookup, but no room may be buffered or sent to until the adapter
+  proves that exact `chat_id` as `NTUser.directChatId`. A final send guard
+  prevents stale approval or audit cards from reaching unverified or group
+  rooms. With the setting false, the original `allowed_chat_ids` scope applies.
 - Direct-room evidence is obtained through the MCP `find_chat` tool and cached
   only when the same `chat_id` includes the adapter source
   `NTUser.directChatId`. A preview-followup guard produces no new evidence and
@@ -122,7 +126,9 @@ Reply to an approval or audit card with:
 - A new incoming message or user-authored outgoing message invalidates an
   outstanding draft for the same room. Messages beginning with the visible
   `[메신저 비서]` prefix are never candidates, preventing reply loops.
-- Consecutive messages are buffered until 60 seconds after the newest message.
+- Consecutive messages are buffered until five seconds after the newest
+  message. Because KakaoTalk polling remains scheduled every two minutes, this
+  is a post-message quiet-period gate rather than a five-second polling SLA.
 - A buffered-message processing exception retains that room buffer. The next
   two-minute cron run retries the same entity IDs, and the buffer is removed
   only after processing succeeds. The Discord failure notice states that the
@@ -142,14 +148,14 @@ Reply to an approval or audit card with:
 - `assistant_status` replies are replaced with the fixed friendly text
   `응, 지금 정상적으로 작동 중이야 🙂`; internal process, gateway, MCP,
   Discord, model, and polling information is never exposed in KakaoTalk.
-- Per-room automatic sends are capped at three per 30 minutes. Global automatic
-  sends are capped at ten per ten minutes.
-- Sends first ask Jarvis to call MCP `send_message(dry_run=true)` for the
-  adapter-provided direct-room destination. After validation, Jarvis calls the
-  same MCP tool once with `dry_run=false`, and the controller asks Jarvis for
-  an MCP preview to verify the visible message. There is no CuaDriver fallback
-  and no second actual-send attempt. An adapter timeout or uncertain read-back
-  is reported with its specific reason while the approval remains pending.
+- Per-room automatic sends are capped at 300 per 30 minutes. Global automatic
+  sends are capped at 100 per ten minutes.
+- Sends call MCP `send_message` exactly once with `dry_run=false` for the
+  adapter-verified direct-room `chat_id`; there is no pre-send MCP dry-run.
+  The controller then asks Jarvis for an MCP preview to verify the visible
+  message. There is no CuaDriver fallback and no second actual-send attempt.
+  An adapter timeout or uncertain read-back is reported with its specific
+  reason while the approval remains pending.
 - The KakaoTalk MCP resolves a send destination from only the 20 most recent
   rooms with `kmsg chats --limit 20 --json`. Do not increase the timeout as the
   first response to a send failure. Use the returned `error`, `phase`,
@@ -180,9 +186,10 @@ directly:
 only through MCP `auth_status`; it does not launch KakaoTalk or invoke a login
 command itself. If login is unavailable, it fails closed, disables the
 assistant, and requests manual action in Discord. After the user completes the
-interactive login, `메신저 시작` rechecks MCP read access. Send readiness and
-the resolved destination are checked through MCP dry-runs immediately before
-each send.
+interactive login, `메신저 시작` rechecks MCP read access. Each send uses the
+adapter-verified direct-room `chat_id` in its single actual MCP call and is
+checked afterward through the read-back preview; there is no pre-send readiness
+dry-run.
 
 Device approval, OTP, and other second-factor steps are never collected by
 Jarvis. A failed MCP poll does not advance the message cursor and is reported
@@ -206,18 +213,18 @@ scp scripts/hermes/messenger_assistant.py \
 ssh bobeen '/Users/bobeenlee/.hermes/hermes-agent/venv/bin/python \
   /tmp/install_messenger_assistant.py \
   --controller /tmp/messenger_assistant.py \
-  --allowed-chat-id <adapter-chat-id> --dry-run'
+  --allow-all-direct-chats --dry-run'
 
 ssh bobeen '/Users/bobeenlee/.hermes/hermes-agent/venv/bin/python \
   /tmp/install_messenger_assistant.py \
   --controller /tmp/messenger_assistant.py \
-  --allowed-chat-id <adapter-chat-id>'
+  --allow-all-direct-chats'
 ```
 
-On later upgrades, omitting `--allowed-chat-id` preserves the non-empty list
-from the installed config. A first install or an existing config without the
-list requires the flag. The installer backs up the previous config before
-writing the new one.
+On later upgrades, omitting `--allow-all-direct-chats` preserves an enabled
+value from the installed config. A deployment may instead keep the setting
+false and pass one or more `--allowed-chat-id` values. The installer backs up
+the previous config before writing the new one.
 
 The installer:
 
@@ -268,9 +275,10 @@ Before live use, confirm in the private Discord channel:
 6. Confidence `0.70` sends automatically, while `0.69`, fallback-model use,
    ambiguous weather, and MCP send uncertainty produce approval or failure
    audit according to their operational path.
-7. A message in a different direct room, including a user-authored
-   `is_from_me=true` message, creates no buffer or approval card; a direct send
-   attempt to its `chat_id` is rejected before the KakaoTalk MCP call.
+7. A message in a newly discovered adapter-verified direct room, including a
+   user-authored `is_from_me=true` message, is buffered; a group room or a final
+   send without cached `NTUser.directChatId` evidence is rejected before the
+   KakaoTalk send MCP call.
 8. A forced read-only preview argument mismatch leaves the room buffer present;
    a subsequent successful run consumes it exactly once.
 9. A forced destination scan failure reports `phase=resolve_destination` and

@@ -28,6 +28,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         for invalid in (None, [], ["room-1"], [""]):
             with self.subTest(invalid=invalid), self.assertRaises(RuntimeError):
                 module.parse_allowed_chat_ids(invalid)
+        self.assertEqual(module.parse_allowed_chat_ids(None, allow_empty=True), set())
+        self.assertEqual(module.parse_allowed_chat_ids([], allow_empty=True), set())
 
     def test_gateway_identity_supports_json_pid_record(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -425,16 +427,23 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
     def test_room_and_global_rate_limits(self):
         state = module.default_state()
-        state["rate"]["rooms"]["r1"] = [module.iso_now()] * 3
+        state["rate"]["rooms"]["r1"] = [module.iso_now()] * (module.ROOM_AUTO_REPLY_LIMIT - 1)
+        allowed, reason = module.rate_allowed(state, "r1")
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "")
+
+        state["rate"]["rooms"]["r1"].append(module.iso_now())
         allowed, reason = module.rate_allowed(state, "r1")
         self.assertFalse(allowed)
         self.assertIn("채팅방", reason)
+        self.assertIn("300회", reason)
 
         state = module.default_state()
-        state["rate"]["global"] = [module.iso_now()] * 10
+        state["rate"]["global"] = [module.iso_now()] * module.GLOBAL_AUTO_REPLY_LIMIT
         allowed, reason = module.rate_allowed(state, "r2")
         self.assertFalse(allowed)
         self.assertIn("전체", reason)
+        self.assertIn("100회", reason)
 
     def test_kakao_operations_are_routed_through_jarvis_agent_interface(self):
         client = module.JarvisKakaoAgent.__new__(module.JarvisKakaoAgent)
@@ -443,7 +452,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         client.auth_status()
         client.list_since("from", "until")
         client.preview("친구", "123")
-        client.send("친구", "답장", dry_run=True, chat_id="chat-1")
+        client.send("친구", "답장", dry_run=False, chat_id="chat-1")
 
         self.assertEqual(
             [call.args[0] for call in client._call_tool.call_args_list],
@@ -761,6 +770,90 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertEqual(set(assistant.state["room_buffers"]), {"128426307555607"})
         self.assertNotIn("999", assistant.state["rooms"])
 
+    def test_poll_all_direct_scope_buffers_only_adapter_verified_direct_rooms(self):
+        class FakeKakao:
+            @staticmethod
+            def list_since(_since, _until):
+                return {
+                    "rooms": [
+                        {
+                            "chat_id": "direct-2",
+                            "display_name": "새 친구",
+                            "new_messages": [
+                                {
+                                    "entity_id": "direct-message",
+                                    "timestamp": "2026-07-19T12:00:00+00:00",
+                                    "is_from_me": False,
+                                    "snippet": "안녕",
+                                }
+                            ],
+                        },
+                        {
+                            "chat_id": "group-2",
+                            "display_name": "단체방",
+                            "new_messages": [
+                                {
+                                    "entity_id": "group-message",
+                                    "timestamp": "2026-07-19T12:00:01+00:00",
+                                    "is_from_me": False,
+                                    "snippet": "안녕",
+                                }
+                            ],
+                        },
+                    ]
+                }
+
+            @staticmethod
+            def is_direct_chat(chat_id, _display_name):
+                return chat_id == "direct-2"
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["baseline_at"] = "2026-07-19T11:59:00+00:00"
+        assistant.allow_all_direct_chats = True
+        assistant.allowed_chat_ids = set()
+        assistant.kakao = FakeKakao()
+        assistant.discord = mock.Mock()
+        assistant._invalidate_pending_for_room = mock.Mock()
+
+        assistant._poll_kakao()
+
+        self.assertEqual(set(assistant.state["room_buffers"]), {"direct-2"})
+        self.assertTrue(assistant.state["rooms"]["direct-2"]["is_direct"])
+        self.assertFalse(assistant._room_is_sendable("group-2"))
+
+    def test_ready_buffer_waits_exactly_five_seconds_after_latest_message(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["room_buffers"] = {
+            "123": {
+                "room_name": "친구",
+                "entity_ids": ["message-1"],
+                "first_at": "2026-07-19T12:00:00+00:00",
+                "last_at": "2026-07-19T12:00:00+00:00",
+            }
+        }
+        assistant.discord = mock.Mock()
+        assistant._process_room_buffer = mock.Mock()
+
+        with mock.patch.object(
+            module,
+            "now_utc",
+            return_value=dt.datetime(2026, 7, 19, 12, 0, 4, tzinfo=dt.timezone.utc),
+        ):
+            assistant._process_ready_buffers()
+        assistant._process_room_buffer.assert_not_called()
+        self.assertIn("123", assistant.state["room_buffers"])
+
+        with mock.patch.object(
+            module,
+            "now_utc",
+            return_value=dt.datetime(2026, 7, 19, 12, 0, 5, tzinfo=dt.timezone.utc),
+        ):
+            assistant._process_ready_buffers()
+        assistant._process_room_buffer.assert_called_once()
+        self.assertNotIn("123", assistant.state["room_buffers"])
+
     def test_processing_failure_keeps_buffer_for_next_cron_retry(self):
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
         assistant.state = module.default_state()
@@ -810,7 +903,6 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertEqual(
             assistant.kakao.calls,
             [
-                ("친구", "답장", True, "123"),
                 ("친구", "답장", False, "123"),
             ],
         )
@@ -840,8 +932,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
             @staticmethod
             def send(_target, _message, *, dry_run, chat_id=None):
                 FakeKakao.calls += 1
-                if dry_run:
-                    return {"ok": True, "chat_id_validated": True}
+                assert dry_run is False
                 return {
                     "ok": False,
                     "operation": "send_message",
@@ -857,14 +948,13 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "stage=message_send.*reason=command_failed"):
             assistant._send_verified("친구", "123", "답장")
-        self.assertEqual(FakeKakao.calls, 2)
+        self.assertEqual(FakeKakao.calls, 1)
 
     def test_verified_send_distinguishes_read_back_mismatch(self):
         class FakeKakao:
             @staticmethod
             def send(_target, _message, *, dry_run, chat_id=None):
-                if dry_run:
-                    return {"ok": True, "chat_id_validated": True}
+                assert dry_run is False
                 return {
                     "ok": True,
                     "operation": "send_message",
@@ -920,11 +1010,25 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant.kakao = mock.Mock()
         assistant._verify_sent = mock.Mock()
 
-        with self.assertRaisesRegex(RuntimeError, "allowlist 거부"):
+        with self.assertRaisesRegex(RuntimeError, "1:1 방 정책 거부"):
             assistant._send_verified("다른 사람", "999", "답장")
 
         assistant._verify_sent.assert_not_called()
         assistant.kakao.send.assert_not_called()
+
+    def test_verified_send_all_direct_scope_requires_cached_adapter_evidence(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.allow_all_direct_chats = True
+        assistant.allowed_chat_ids = set()
+        assistant.state = module.default_state()
+        assistant.kakao = mock.Mock()
+        assistant._verify_sent = mock.Mock(return_value=True)
+
+        with self.assertRaisesRegex(RuntimeError, "1:1 방 정책 거부"):
+            assistant._send_verified("검증 전 방", "999", "답장")
+
+        assistant.state["rooms"]["999"] = {"name": "검증된 친구", "is_direct": True}
+        self.assertTrue(assistant._send_verified("검증된 친구", "999", "답장"))
 
 
 if __name__ == "__main__":

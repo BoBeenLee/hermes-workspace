@@ -17,6 +17,66 @@
   secret is handled by Jarvis or committed
 - Completion mode: `review-required`
 
+## Five-second buffer and no pre-send MCP dry-run
+
+- HIL status: completed in the Codex task; Discord thread id: none. The
+  approved scope changes the newest-message quiet period from 60 seconds to
+  five seconds and removes the MCP `dry_run=true` step from every shared send
+  path: automatic replies, approved or edited replies, and corrections.
+- Each send still requires the final verified-direct-room policy guard, calls
+  MCP `send_message` once with `dry_run=false`, and performs a read-back preview
+  afterward. There is no second actual-send attempt. The two-minute polling
+  schedule remains unchanged, so five seconds is not a polling SLA.
+- Existing uncommitted work on `main` was preserved. No branch or worktree was
+  created, matching the user's earlier explicit main-branch instruction.
+- Local verification: 45 controller tests passed, including the four-second
+  wait/five-second process boundary and a one-call `dry_run=false` send
+  assertion. OKF validation and `git diff --check` passed. No live KakaoTalk
+  message was sent for testing.
+- Remote controller backup:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-buffer-5-no-dry-run-20260720-004628`.
+  Deployed SHA-256:
+  `1500d6134f1d50a88a33c756d3da922179ac852871080bc1a74d09fd9ae4af04`.
+- The dedicated Discord listener restarted as PID `69533`; the Jarvis gateway
+  remained PID `56537` and was not restarted. The first post-deployment cron
+  completed `ok` at `2026-07-20T00:48:15+09:00`, advanced the poll cursor to
+  `2026-07-20T00:47:51+09:00`, and left no buffered room pending. The assistant
+  remained enabled and automatic sending was not paused.
+- Completion mode: `review-required` because recurring automatic-send behavior
+  was changed and pre-send validation was intentionally relaxed.
+
+## All verified direct rooms and raised automatic-send limits
+
+- HIL status: completed in the Codex task; Discord thread id: none. The
+  approved scope enables every adapter-verified 1:1 room, raises the per-room
+  automatic-send limit from 3 to 300 per 30 minutes, and raises the global
+  limit from 10 to 100 per ten minutes.
+- `allow_all_direct_chats=true` expands discovery beyond `allowed_chat_ids`,
+  but buffering and final sends still require cached evidence that the exact
+  `chat_id` came from `NTUser.directChatId`. Group and unverified rooms remain
+  blocked before a KakaoTalk send call. Per-room exclusion and approval-only
+  controls remain available.
+- Existing uncommitted controller, test, task-note, and runbook changes on
+  `main` were preserved. The user explicitly requested that this change also
+  be made on `main`; no branch or worktree was created.
+- Local verification: 44 controller tests passed, both Python entry points
+  compiled, installer help parsing passed, OKF validation passed, and
+  `git diff --check` passed. No live KakaoTalk message was sent for testing.
+- Remote config is version 3 with `allow_all_direct_chats=true`. Backups:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-all-direct-rates-20260720-004001`
+  and
+  `/Users/bobeenlee/.hermes/profiles/jarvis/messenger-assistant/config.json.bak-all-direct-rates-20260720-004001`.
+- Deployed controller SHA-256:
+  `34bdf275f4bba3ac14cf2ca4ed32a8f735451df1d44035800c0e67ae496f4e3d`.
+  The dedicated Discord listener restarted as PID `68792`; the Jarvis gateway
+  remained PID `56537` and was not restarted.
+- The first post-deployment cron execution completed `ok` at
+  `2026-07-20T00:42:18+09:00`. The assistant remained enabled, automatic
+  sending was not paused, and the poll cursor advanced to
+  `2026-07-20T00:41:50+09:00` with no buffered room left pending.
+- Completion mode: `review-required` because the remote config and recurring
+  automatic-send policy were changed.
+
 ## Automatic-reply threshold 0.70
 
 - The primary model's reported confidence now permits automatic sending at
