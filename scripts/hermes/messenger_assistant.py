@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail-closed KakaoTalk messenger assistant controller for Jarvis.
 
-The controller is intended to run from a Hermes ``--no-agent`` cron job.  It
+The controller is intended to run from a single-instance scheduled service. It
 maintains one private Discord control channel and durable non-secret state,
 while every KakaoTalk operation is delegated to a Jarvis one-shot agent that
 directly calls the configured KakaoTalk MCP toolset.  The same Jarvis profile
@@ -29,6 +29,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any, Iterable
 import urllib.error
 import urllib.parse
@@ -37,7 +38,16 @@ import urllib.request
 
 KST = dt.timezone(dt.timedelta(hours=9))
 UTC = dt.timezone.utc
-STATE_VERSION = 1
+STATE_VERSION = 2
+MEMORY_VERSION = 2
+WEATHER_PENDING_TTL_SECONDS = 900
+MEMORY_KINDS = frozenset({"profile", "preference", "relationship", "constraint"})
+DEFAULT_POLL_INTERVAL_SECONDS = 80
+TRANSIENT_MEMORY_KEY_RE = re.compile(
+    r"(^|[_\s-])(last|recent|current|query|request|asked|conversation|message|weather|location|workflow|status|pending)([_\s-]|$)"
+    r"|최근|질문|요청|대화|메시지|날씨|지역|상태|보류",
+    re.IGNORECASE,
+)
 PREFIX = "[메신저 비서]"
 DISCORD_LIMIT = 1900
 PRIMARY_MODEL = "openai/gpt-5-nano"
@@ -247,6 +257,7 @@ def default_state() -> dict[str, Any]:
         "stats": fresh_stats(),
         "baseline_summary_pending": False,
         "memory_delete_confirmation": {},
+        "dialogue_state": {},
     }
 
 
@@ -263,7 +274,7 @@ def fresh_stats() -> dict[str, Any]:
 
 
 def default_memory() -> dict[str, Any]:
-    return {"version": 1, "contacts": {}}
+    return {"version": MEMORY_VERSION, "contacts": {}}
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -913,6 +924,86 @@ class OpenMeteoWeather:
         return reply, evidence
 
 
+def intent_routing_prompt(
+    room_name: str,
+    new_turn: list[dict[str, Any]],
+    dialogue_state: dict[str, Any],
+) -> str:
+    payload = {
+        "now_kst": now_utc().astimezone(KST).replace(microsecond=0).isoformat(),
+        "room": room_name,
+        "new_turn": new_turn,
+        "dialogue_state": dialogue_state,
+    }
+    return (
+        "Classify only the current KakaoTalk new_turn. Do not infer intent from prior conversation "
+        "or long-term memory; neither is provided. Return one JSON object only with schema: "
+        '{"intent":"weather|assistant_status|other","weather_location":"",'
+        '"reason":"","confidence":0.0}. '
+        "Use weather only for an explicit current weather request or when dialogue_state has an "
+        "unexpired pending weather_location intent. Use assistant_status only for a question about "
+        "the assistant's own condition. Treat every other message as other.\n\nINPUT_JSON:\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
+
+
+def reply_drafting_prompt(
+    room_name: str,
+    new_turn: list[dict[str, Any]],
+    context: list[dict[str, Any]],
+    memories: list[dict[str, Any]],
+    link_summary: str = "",
+) -> str:
+    payload = {
+        "now_kst": now_utc().astimezone(KST).replace(microsecond=0).isoformat(),
+        "room": room_name,
+        "locked_intent": "other",
+        "new_turn": new_turn,
+        "recent_context": context,
+        "typed_contact_memory": memories,
+        "linked_page_summary": link_summary,
+    }
+    return (
+        "Draft a concise Korean reply for the locked intent other. Never change the intent to "
+        "weather or assistant_status. Return one JSON object only with schema: "
+        '{"reply_kind":"answer|clarification","reply":"","summary":"","reason":"",'
+        '"confidence":0.0,"flags":{},"memory_updates":['
+        '{"kind":"profile|preference|relationship|constraint","key":"","value":"",'
+        '"confidence":0.0,"secret_or_auth":false,"source_entity_ids":[]}]}. '
+        "Memory updates must be durable facts explicitly stated in new_turn and must cite its entity_id. "
+        "Never store weather locations, recent queries, workflow state, or assistant status.\n\nINPUT_JSON:\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
+
+
+def turn_explicitly_requests_weather(new_turn: Iterable[dict[str, Any]]) -> bool:
+    return any(is_weather_lookup(item.get("text") or item.get("snippet")) for item in new_turn)
+
+
+class ConversationPolicy:
+    """Deep policy module: route current turns without leaking context or memory into intent."""
+
+    def route_intent(
+        self,
+        new_turn: list[dict[str, Any]],
+        dialogue_state: dict[str, Any],
+        model_route: dict[str, Any],
+    ) -> dict[str, str]:
+        routed = str(model_route.get("intent") or "other").casefold()
+        explicit_weather = turn_explicitly_requests_weather(new_turn)
+        pending_weather = dialogue_state.get("pending_intent") == "weather_location"
+        if routed == "weather" and (explicit_weather or pending_weather):
+            return {"intent": "weather", "block_reason": ""}
+        if routed == "weather":
+            return {
+                "intent": "other",
+                "block_reason": "현재 처리 턴에 날씨 근거 또는 유효한 지역 확인 상태가 없음",
+            }
+        if routed == "assistant_status":
+            return {"intent": "assistant_status", "block_reason": ""}
+        return {"intent": "other", "block_reason": ""}
+
+
 def classification_prompt(
     room_name: str,
     new_turn: list[dict[str, Any]],
@@ -1084,12 +1175,26 @@ def classification_audit(model_result: dict[str, Any]) -> str:
     )
 
 
-def sanitize_memory_update(item: Any) -> dict[str, Any] | None:
+def sanitize_memory_update(
+    item: Any,
+    allowed_source_ids: Iterable[str] = (),
+) -> dict[str, Any] | None:
     if not isinstance(item, dict) or item.get("secret_or_auth"):
         return None
+    kind = compact(item.get("kind"), 40).casefold()
     key = compact(item.get("key"), 80)
     value = compact(item.get("value"), 300)
-    if not key or not value or AUTH_SECRET_RE.search(key + " " + value):
+    sources = [str(value).strip() for value in item.get("source_entity_ids") or [] if str(value).strip()]
+    allowed = {str(value) for value in allowed_source_ids}
+    if (
+        kind not in MEMORY_KINDS
+        or not key
+        or not value
+        or not sources
+        or not set(sources).issubset(allowed)
+        or TRANSIENT_MEMORY_KEY_RE.search(key)
+        or AUTH_SECRET_RE.search(key + " " + value)
+    ):
         return None
     try:
         confidence = min(1.0, max(0.0, float(item.get("confidence") or 0)))
@@ -1097,7 +1202,13 @@ def sanitize_memory_update(item: Any) -> dict[str, Any] | None:
         confidence = 0
     if confidence < 0.75:
         return None
-    return {"key": key, "value": value, "confidence": confidence}
+    return {
+        "kind": kind,
+        "key": key,
+        "value": value,
+        "confidence": confidence,
+        "source_entity_ids": sources,
+    }
 
 
 class MessengerAssistant:
@@ -1117,6 +1228,7 @@ class MessengerAssistant:
         self.lock_path = state_dir / "controller.lock"
         self.state = load_json(self.state_path, default_state())
         self.memory = load_json(self.memory_path, default_memory())
+        self.conversation_policy = ConversationPolicy()
         self.hermes_bin = Path(str(self.config.get("hermes_bin") or "~/.local/bin/hermes")).expanduser()
         token = os.getenv("DISCORD_BOT_TOKEN") or dotenv_value(self.profile_dir / ".env", "DISCORD_BOT_TOKEN")
         self.discord = DiscordClient(token, str(self.config.get("discord_channel_id") or ""))
@@ -1136,6 +1248,7 @@ class MessengerAssistant:
 
     def save(self) -> None:
         self.state["version"] = STATE_VERSION
+        self.memory["version"] = MEMORY_VERSION
         self._prune_state()
         atomic_write_json(self.state_path, self.state)
         atomic_write_json(self.memory_path, self.memory)
@@ -1163,6 +1276,14 @@ class MessengerAssistant:
             for key, value in (self.state.get("audit_cards") or {}).items()
             if self._room_is_sendable(value.get("room_id"))
         }
+        dialogue = self.state.setdefault("dialogue_state", {})
+        self.state["dialogue_state"] = {
+            room_id: value
+            for room_id, value in dialogue.items()
+            if self._room_is_sendable(room_id)
+            and parse_time(value.get("expires_at")) is not None
+            and parse_time(value.get("expires_at")) > now_utc()
+        }
         contacts = self.memory.setdefault("contacts", {})
         memory_cutoff = now_utc() - dt.timedelta(days=365)
         for room_id, contact in list(contacts.items()):
@@ -1172,6 +1293,8 @@ class MessengerAssistant:
                 for key, value in facts.items()
                 if parse_time(value.get("confirmed_at")) is not None
                 and parse_time(value.get("confirmed_at")) >= memory_cutoff
+                and str(value.get("kind") or "") in MEMORY_KINDS
+                and bool(value.get("source_entity_ids"))
             }
             if not contact["facts"]:
                 contacts.pop(room_id, None)
@@ -1474,10 +1597,31 @@ class MessengerAssistant:
                 self.state.setdefault("stats", fresh_stats())["failed"] += 1
                 self.discord.send(
                     f"❌ **메신저 처리 실패**\n방: {compact(buffer.get('room_name'), 100)}\n"
-                    f"오류: {compact(exc, 300)}\n다음 cron 주기에 같은 메시지를 다시 처리합니다."
+                    f"오류: {compact(exc, 300)}\n다음 폴링 주기에 같은 메시지를 다시 처리합니다."
                 )
             else:
                 buffers.pop(room_id, None)
+
+    def _active_dialogue_state(self, room_id: str) -> dict[str, Any]:
+        dialogue = self.state.setdefault("dialogue_state", {})
+        value = dialogue.get(room_id) or {}
+        expires_at = parse_time(value.get("expires_at"))
+        if not expires_at or expires_at <= now_utc():
+            dialogue.pop(room_id, None)
+            return {}
+        return dict(value)
+
+    def _set_weather_pending(self, room_id: str, source_entity_id: str) -> None:
+        created = now_utc().replace(microsecond=0)
+        self.state.setdefault("dialogue_state", {})[room_id] = {
+            "pending_intent": "weather_location",
+            "source_entity_id": source_entity_id,
+            "created_at": created.isoformat(),
+            "expires_at": (created + dt.timedelta(seconds=WEATHER_PENDING_TTL_SECONDS)).isoformat(),
+        }
+
+    def _clear_dialogue_state(self, room_id: str) -> None:
+        self.state.setdefault("dialogue_state", {}).pop(room_id, None)
 
     def _process_room_buffer(self, room_id: str, buffer: dict[str, Any]) -> None:
         if not self._room_is_sendable(room_id):
@@ -1490,22 +1634,59 @@ class MessengerAssistant:
         if not new_turn:
             raise RuntimeError("새 메시지 원문을 최근 문맥에서 다시 찾지 못했습니다")
         new_turn.sort(key=lambda item: item.get("timestamp") or "")
-        memories = self._contact_memories(room_id)
-        links = [match.group(0) for item in new_turn for match in URL_RE.finditer(str(item.get("text") or ""))]
-        link_summary = ""
-        if links:
-            link_summary = self._summarize_links(links[:3])
-        result, usage = run_hermes_json(
+        dialogue_state = self._active_dialogue_state(room_id)
+        route, route_usage = run_hermes_json(
             self.hermes_bin,
             str(self.config.get("profile") or "jarvis"),
-            classification_prompt(room_name, new_turn, context, memories, link_summary),
+            intent_routing_prompt(room_name, new_turn, dialogue_state),
             toolsets="",
         )
-        intent = str(result.get("intent") or "other").casefold()
+        policy = getattr(self, "conversation_policy", ConversationPolicy())
+        decision = policy.route_intent(new_turn, dialogue_state, route)
+        intent = decision["intent"]
+        grounding_reason = decision["block_reason"]
+
+        if intent == "other" and not grounding_reason:
+            memories = self._contact_memories(room_id)
+            links = [
+                match.group(0)
+                for item in new_turn
+                for match in URL_RE.finditer(str(item.get("text") or ""))
+            ]
+            link_summary = self._summarize_links(links[:3]) if links else ""
+            result, usage = run_hermes_json(
+                self.hermes_bin,
+                str(self.config.get("profile") or "jarvis"),
+                reply_drafting_prompt(room_name, new_turn, context, memories, link_summary),
+                toolsets="",
+            )
+            result["intent"] = "other"
+            result["weather_location"] = ""
+            if is_weather_lookup(result.get("reply")) and not turn_explicitly_requests_weather(new_turn):
+                grounding_reason = "작성된 답변이 잠긴 현재 의도와 불일치함"
+        else:
+            result = dict(route)
+            result["intent"] = intent
+            result.setdefault("reply_kind", "answer")
+            result.setdefault("reply", "")
+            result.setdefault("summary", "")
+            result.setdefault("flags", {})
+            result.setdefault("memory_updates", [])
+            usage = route_usage
+
         reply_kind = str(result.get("reply_kind") or "answer").casefold()
-        if intent not in {"weather", "assistant_status"} and reply_kind != "clarification":
-            self._apply_memory_updates(room_id, room_name, result.get("memory_updates") or [])
-        resolution_reason = ""
+        if (
+            intent not in {"weather", "assistant_status"}
+            and reply_kind != "clarification"
+            and not grounding_reason
+        ):
+            self._apply_memory_updates(
+                room_id,
+                room_name,
+                result.get("memory_updates") or [],
+                wanted,
+            )
+        resolution_reason = grounding_reason
         evidence: dict[str, Any] | None = None
         if intent == "weather":
             location = compact(result.get("weather_location"), 100)
@@ -1513,7 +1694,9 @@ class MessengerAssistant:
                 result["reply_kind"] = "clarification"
                 result["reply"] = WEATHER_LOCATION_QUESTION
                 result["summary"] = compact(result.get("summary") or "날씨 조회 지역 확인", 500)
+                self._set_weather_pending(room_id, str(new_turn[-1].get("entity_id") or ""))
             else:
+                self._clear_dialogue_state(room_id)
                 try:
                     reply, evidence = self.weather.resolve(location)
                 except Exception as exc:
@@ -1523,9 +1706,12 @@ class MessengerAssistant:
                     result["reply"] = reply
                     result["summary"] = f"{evidence['location']} 현재 날씨"
         elif intent == "assistant_status":
+            self._clear_dialogue_state(room_id)
             result["reply_kind"] = "answer"
             result["reply"] = ASSISTANT_STATUS_REPLY
             result["summary"] = compact(result.get("summary") or "메신저 비서 상태 응답", 500)
+        else:
+            self._clear_dialogue_state(room_id)
 
         reason = resolution_reason or automatic_reply_block_reason(result, usage)
         audit = classification_audit(result)
@@ -1579,25 +1765,40 @@ class MessengerAssistant:
         contact = (self.memory.get("contacts") or {}).get(room_id) or {}
         facts = contact.get("facts") or {}
         return [
-            {"key": key, "value": value.get("value"), "confirmed_at": value.get("confirmed_at")}
+            {
+                "kind": value.get("kind"),
+                "key": key,
+                "value": value.get("value"),
+                "confirmed_at": value.get("confirmed_at"),
+                "source_entity_ids": value.get("source_entity_ids"),
+            }
             for key, value in facts.items()
+            if str(value.get("kind") or "") in MEMORY_KINDS and bool(value.get("source_entity_ids"))
         ]
 
-    def _apply_memory_updates(self, room_id: str, room_name: str, updates: Iterable[Any]) -> None:
+    def _apply_memory_updates(
+        self,
+        room_id: str,
+        room_name: str,
+        updates: Iterable[Any],
+        source_entity_ids: Iterable[str],
+    ) -> None:
         contacts = self.memory.setdefault("contacts", {})
         contact = contacts.setdefault(room_id, {"name": room_name, "facts": {}})
         contact["name"] = room_name
         facts = contact.setdefault("facts", {})
         stats = self.state.setdefault("stats", fresh_stats())
         for raw in updates:
-            item = sanitize_memory_update(raw)
+            item = sanitize_memory_update(raw, source_entity_ids)
             if not item:
                 continue
             existed = item["key"] in facts
             facts[item["key"]] = {
+                "kind": item["kind"],
                 "value": item["value"],
                 "confidence": item["confidence"],
                 "confirmed_at": iso_now(),
+                "source_entity_ids": item["source_entity_ids"],
             }
             stats["memory_updated" if existed else "memory_created"] += 1
 
@@ -1903,7 +2104,13 @@ class MessengerAssistant:
             if not key or not value or AUTH_SECRET_RE.search(key + " " + value):
                 self.discord.send("⛔ 비밀·인증정보이거나 잘못된 형식이라 저장하지 않았습니다.", reply_to=message_id)
                 return
-            facts[compact(key, 80)] = {"value": compact(value, 300), "confidence": 1.0, "confirmed_at": iso_now()}
+            facts[compact(key, 80)] = {
+                "kind": "profile",
+                "value": compact(value, 300),
+                "confidence": 1.0,
+                "confirmed_at": iso_now(),
+                "source_entity_ids": [f"discord:{message_id}"],
+            }
             self.discord.send("✅ 장기 기억을 저장했습니다.", reply_to=message_id)
             return
         if content.startswith("기억 삭제:"):
@@ -1940,7 +2147,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--discord-listen",
         action="store_true",
-        help="Run the persistent Discord Gateway listener; Kakao polling remains cron-driven",
+        help="Run the persistent Discord Gateway listener; Kakao polling remains separately scheduled",
+    )
+    parser.add_argument(
+        "--poll-loop",
+        action="store_true",
+        help="Run persistent Kakao polling on a fixed monotonic interval",
+    )
+    parser.add_argument(
+        "--poll-interval-seconds",
+        type=int,
+        default=DEFAULT_POLL_INTERVAL_SECONDS,
+        help="Fixed poll-loop start interval in seconds",
     )
     return parser
 
@@ -2040,6 +2258,27 @@ def run_discord_listener(config_path: Path) -> int:
     return 0
 
 
+def next_poll_deadline(previous_deadline: float, now: float, interval_seconds: int) -> float:
+    deadline = previous_deadline + interval_seconds
+    while deadline <= now:
+        deadline += interval_seconds
+    return deadline
+
+
+def run_kakao_poll_loop(config_path: Path, interval_seconds: int) -> int:
+    """Run polls on fixed start-time boundaries, skipping a boundary only if a poll overruns it."""
+    if interval_seconds < 5:
+        raise RuntimeError("Poll interval must be at least five seconds")
+    deadline = time.monotonic()
+    while True:
+        try:
+            MessengerAssistant(config_path).run(process_discord=False, process_kakao=True)
+        except Exception as exc:
+            print(f"Kakao poll failed: {compact(exc, 500)}", file=sys.stderr, flush=True)
+        deadline = next_poll_deadline(deadline, time.monotonic(), interval_seconds)
+        time.sleep(max(0.0, deadline - time.monotonic()))
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config_path = Path(args.config).expanduser()
@@ -2047,6 +2286,8 @@ def main(argv: list[str] | None = None) -> int:
         return check_config(config_path)
     if args.discord_listen:
         return run_discord_listener(config_path)
+    if args.poll_loop:
+        return run_kakao_poll_loop(config_path, args.poll_interval_seconds)
     assistant = MessengerAssistant(config_path)
     assistant.run(process_discord=False, process_kakao=True)
     return 0

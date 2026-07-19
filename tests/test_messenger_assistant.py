@@ -15,13 +15,51 @@ assert SPEC and SPEC.loader
 module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 
+INSTALLER_PATH = Path(__file__).resolve().parents[1] / "scripts/hermes/install_messenger_assistant.py"
+INSTALLER_SPEC = importlib.util.spec_from_file_location("install_messenger_assistant", INSTALLER_PATH)
+assert INSTALLER_SPEC and INSTALLER_SPEC.loader
+installer = importlib.util.module_from_spec(INSTALLER_SPEC)
+INSTALLER_SPEC.loader.exec_module(installer)
+
 
 class MessengerAssistantPolicyTests(unittest.TestCase):
+    def test_kakao_poller_uses_persistent_eighty_second_fixed_interval(self):
+        payload = installer.kakao_poller_payload(
+            Path("/profile/scripts/messenger_assistant.py"),
+            Path("/profile/messenger-assistant/config.json"),
+            Path("/profile/messenger-assistant"),
+        )
+
+        self.assertTrue(payload["RunAtLoad"])
+        self.assertTrue(payload["KeepAlive"])
+        self.assertNotIn("--discord-listen", payload["ProgramArguments"])
+        interval_index = payload["ProgramArguments"].index("--poll-interval-seconds")
+        self.assertEqual(payload["ProgramArguments"][interval_index + 1], "80")
+
+    def test_fixed_poll_deadline_preserves_start_interval_and_skips_overrun(self):
+        self.assertEqual(module.next_poll_deadline(100.0, 140.0, 80), 180.0)
+        self.assertEqual(module.next_poll_deadline(100.0, 181.0, 80), 260.0)
+
+    def test_legacy_cron_record_finds_job_id_and_state(self):
+        listed = mock.Mock(
+            stdout="""
+  643add69262e [active]
+    Name:      jarvis-messenger-assistant
+    Schedule:  every 2m
+"""
+        )
+
+        with mock.patch.object(installer, "run", return_value=listed):
+            record = installer.legacy_cron_record()
+
+        self.assertEqual(record, ("643add69262e", "active"))
+
     def test_default_state_is_fail_closed(self):
         state = module.default_state()
         self.assertFalse(state["enabled"])
         self.assertFalse(state["automatic_paused"])
         self.assertEqual(state["pending"], {})
+        self.assertEqual(state["dialogue_state"], {})
 
     def test_chat_id_allowlist_requires_nonempty_numeric_ids(self):
         self.assertEqual(module.parse_allowed_chat_ids(["128426307555607"]), {"128426307555607"})
@@ -94,6 +132,16 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertIn('"reply_kind":"answer|clarification"', prompt)
         self.assertIn('"weather_location":""', prompt)
         self.assertIn("0.70", prompt)
+
+    def test_intent_router_prompt_excludes_recent_context_and_memory(self):
+        prompt = module.intent_routing_prompt(
+            "친구",
+            [{"entity_id": "new-1", "text": "비빔밥..?"}],
+            {},
+        )
+        self.assertIn("비빔밥", prompt)
+        self.assertNotIn("recent_context", prompt)
+        self.assertNotIn("long_term_memory", prompt)
 
     def test_weather_lookup_recognizes_any_current_location_question(self):
         self.assertTrue(module.is_weather_lookup("하남 오늘 날씨"))
@@ -296,6 +344,12 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
             "snippet": "서울",
         }
         assistant = self._assistant_for_events([earlier, question, answer])
+        assistant.state["dialogue_state"]["room-1"] = {
+            "pending_intent": "weather_location",
+            "source_entity_id": "message-1",
+            "created_at": (module.now_utc() - dt.timedelta(minutes=1)).isoformat(),
+            "expires_at": (module.now_utc() + dt.timedelta(minutes=14)).isoformat(),
+        }
         assistant.weather.resolve.return_value = (
             "서울특별시 현재 날씨는 맑음, 25°C(체감 26°C)야.",
             {"location": "서울특별시", "source_name": "Open-Meteo", "observed_at": module.iso_now()},
@@ -320,6 +374,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant.weather.resolve.assert_called_once_with("Seoul")
         self.assertIn("서울특별시 현재 날씨는", assistant._send_automatic.call_args.args[3])
         self.assertIn("출처=Open-Meteo", assistant._send_automatic.call_args.args[5])
+        self.assertNotIn("room-1", assistant.state["dialogue_state"])
 
     def test_weather_resolution_failure_creates_approval(self):
         event = {
@@ -350,6 +405,160 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         assistant._send_automatic.assert_not_called()
         self.assertIn("지역 불명확", assistant._create_approval_card.call_args.args[5])
+
+    def test_bibimbap_turn_cannot_be_routed_to_weather_from_old_memory(self):
+        event = {
+            "entity_id": "bibimbap-message",
+            "timestamp": module.iso_now(),
+            "sender_name": "나",
+            "is_from_me": True,
+            "message_type": "text",
+            "snippet": "비빔밥..?",
+        }
+        assistant = self._assistant_for_events([event])
+        assistant.memory = {
+            "version": 1,
+            "contacts": {
+                "room-1": {
+                    "name": "친구",
+                    "facts": {
+                        "weather_location": {
+                            "value": "Hanam",
+                            "confidence": 1.0,
+                            "confirmed_at": module.iso_now(),
+                        }
+                    },
+                }
+            },
+        }
+        assistant.weather.resolve.return_value = (
+            "하남 현재 날씨는 맑음이야.",
+            {"location": "하남", "source_name": "Open-Meteo", "observed_at": module.iso_now()},
+        )
+        wrong = {
+            "intent": "weather",
+            "reply_kind": "answer",
+            "reply": "하남 날씨를 확인할게.",
+            "summary": "하남 날씨",
+            "reason": "과거 기억에서 하남을 찾음",
+            "confidence": 0.72,
+            "weather_location": "Hanam",
+            "flags": {},
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER}
+
+        with mock.patch.object(module, "run_hermes_json", return_value=(wrong, usage)):
+            assistant._process_room_buffer(
+                "room-1",
+                {"room_name": "친구", "entity_ids": ["bibimbap-message"], "last_at": event["timestamp"]},
+            )
+
+        assistant.weather.resolve.assert_not_called()
+        assistant._send_automatic.assert_not_called()
+        self.assertIn("날씨 근거", assistant._create_approval_card.call_args.args[5])
+
+    def test_other_turn_routes_first_then_drafts_with_locked_intent(self):
+        event = {
+            "entity_id": "bibimbap-message",
+            "timestamp": module.iso_now(),
+            "sender_name": "나",
+            "is_from_me": True,
+            "message_type": "text",
+            "snippet": "비빔밥..?",
+        }
+        assistant = self._assistant_for_events([event])
+        route = {"intent": "other", "weather_location": "", "confidence": 0.9, "reason": "현재 턴"}
+        draft = {
+            "reply_kind": "answer",
+            "reply": "비빔밥 좋지!",
+            "summary": "비빔밥 선택",
+            "reason": "현재 턴 응답",
+            "confidence": 0.9,
+            "flags": {},
+            "memory_updates": [
+                {
+                    "kind": "preference",
+                    "key": "좋아하는 음식",
+                    "value": "비빔밥",
+                    "confidence": 0.9,
+                    "secret_or_auth": False,
+                    "source_entity_ids": ["bibimbap-message"],
+                }
+            ],
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER}
+
+        with mock.patch.object(
+            module,
+            "run_hermes_json",
+            side_effect=[(route, usage), (draft, usage)],
+        ) as run:
+            assistant._process_room_buffer(
+                "room-1",
+                {"room_name": "친구", "entity_ids": ["bibimbap-message"], "last_at": event["timestamp"]},
+            )
+
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("Classify only the current", run.call_args_list[0].args[2])
+        self.assertIn("locked intent other", run.call_args_list[1].args[2])
+        self.assertEqual(assistant._send_automatic.call_args.args[3], "비빔밥 좋지!")
+
+    def test_weather_word_does_not_override_router_other_intent(self):
+        policy = module.ConversationPolicy()
+
+        decision = policy.route_intent(
+            [{"entity_id": "message-1", "text": "날씨 말고 비빔밥 먹을까?"}],
+            {},
+            {"intent": "other"},
+        )
+
+        self.assertEqual(decision, {"intent": "other", "block_reason": ""})
+
+    def test_locked_other_draft_cannot_smuggle_weather_reply(self):
+        event = {
+            "entity_id": "bibimbap-message",
+            "timestamp": module.iso_now(),
+            "sender_name": "나",
+            "is_from_me": True,
+            "message_type": "text",
+            "snippet": "비빔밥..?",
+        }
+        assistant = self._assistant_for_events([event])
+        route = {"intent": "other", "weather_location": "", "confidence": 0.9, "reason": "현재 턴"}
+        draft = {
+            "reply_kind": "answer",
+            "reply": "하남 날씨는 맑아.",
+            "summary": "하남 날씨",
+            "reason": "과거 문맥 오염",
+            "confidence": 0.9,
+            "flags": {},
+            "memory_updates": [
+                {
+                    "kind": "preference",
+                    "key": "좋아하는 음식",
+                    "value": "비빔밥",
+                    "confidence": 0.9,
+                    "secret_or_auth": False,
+                    "source_entity_ids": ["bibimbap-message"],
+                }
+            ],
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER}
+
+        with mock.patch.object(
+            module,
+            "run_hermes_json",
+            side_effect=[(route, usage), (draft, usage)],
+        ):
+            assistant._process_room_buffer(
+                "room-1",
+                {"room_name": "친구", "entity_ids": ["bibimbap-message"], "last_at": event["timestamp"]},
+            )
+
+        assistant.weather.resolve.assert_not_called()
+        assistant._send_automatic.assert_not_called()
+        self.assertIn("잠긴 현재 의도", assistant._create_approval_card.call_args.args[5])
+        self.assertEqual(assistant.memory["contacts"], {})
 
     def test_assistant_status_is_friendly_and_hides_operations(self):
         event = {
@@ -397,6 +606,63 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                 }
             )
         )
+
+    def test_typed_memory_requires_allowed_kind_and_current_turn_source(self):
+        valid = {
+            "kind": "preference",
+            "key": "좋아하는 음식",
+            "value": "비빔밥",
+            "confidence": 0.9,
+            "secret_or_auth": False,
+            "source_entity_ids": ["message-1"],
+        }
+        self.assertIsNotNone(module.sanitize_memory_update(valid, {"message-1"}))
+        self.assertIsNone(module.sanitize_memory_update(valid, {"different-message"}))
+        self.assertIsNone(
+            module.sanitize_memory_update(
+                {**valid, "kind": "weather", "key": "weather_location"},
+                {"message-1"},
+            )
+        )
+        self.assertIsNone(
+            module.sanitize_memory_update(
+                {
+                    **valid,
+                    "kind": "relationship",
+                    "key": "watch_request_from_user",
+                    "value": "User asked if AI watched the linked video.",
+                },
+                {"message-1"},
+            )
+        )
+
+    def test_prune_migrates_legacy_memory_and_expires_dialogue_state(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.allowed_chat_ids = {"room-1"}
+        assistant.state = module.default_state()
+        assistant.state["dialogue_state"]["room-1"] = {
+            "pending_intent": "weather_location",
+            "expires_at": (module.now_utc() - dt.timedelta(seconds=1)).isoformat(),
+        }
+        assistant.memory = {
+            "version": 1,
+            "contacts": {
+                "room-1": {
+                    "name": "친구",
+                    "facts": {
+                        "weather_location": {
+                            "value": "Hanam",
+                            "confirmed_at": module.iso_now(),
+                        }
+                    },
+                }
+            },
+        }
+
+        assistant._prune_state()
+
+        self.assertEqual(assistant.state["dialogue_state"], {})
+        self.assertEqual(assistant.memory["contacts"], {})
 
     def test_memory_expiry_window_is_365_days(self):
         with tempfile.TemporaryDirectory() as temp_dir:

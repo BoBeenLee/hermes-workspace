@@ -5,8 +5,8 @@ Run this script *on the remote host* after copying it and
 ``messenger_assistant.py`` to a temporary directory.  It creates/reuses one
 private Discord channel, installs the controller under ``~/.hermes/scripts``,
 adds the channel to Jarvis' Discord ignore list so only the deterministic
-controller consumes commands, appends a managed SOUL section, and creates a
-two-minute script-only cron job.
+controller consumes commands, appends a managed SOUL section, and installs an
+80-second KakaoTalk polling launch agent.
 
 The Discord token and other secrets are read from the existing Jarvis .env and
 are never printed or copied into generated config.
@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,8 @@ HERMES_BIN = Path.home() / ".local/bin/hermes"
 CHANNEL_NAME = "메신저-비서"
 CRON_NAME = "jarvis-messenger-assistant"
 LISTENER_LABEL = "ai.hermes.jarvis-messenger-assistant-discord"
+POLLER_LABEL = "ai.hermes.jarvis-messenger-assistant-poll"
+POLL_INTERVAL_SECONDS = 80
 HERMES_PYTHON = Path.home() / ".hermes/hermes-agent/venv/bin/python"
 SOUL_START = "<!-- messenger-assistant:managed:start -->"
 SOUL_END = "<!-- messenger-assistant:managed:end -->"
@@ -189,7 +192,7 @@ def update_soul(path: Path) -> None:
 - The deterministic controller, not ordinary Jarvis conversation, processes
   `메신저 시작`, `메신저 종료`, approval replies, corrections, room controls,
   and contact-memory commands in that channel.
-- The two-minute controller delegates every KakaoTalk read and send to a
+- The 80-second polling controller delegates every KakaoTalk read and send to a
   Jarvis one-shot that directly calls the `openhuman-kakaotalk-mac` MCP
   toolset. Do not add direct adapter, `kmsg`, `kakaocli`, or CuaDriver calls to
   the controller.
@@ -219,9 +222,89 @@ def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProces
     )
 
 
-def cron_exists() -> bool:
+def legacy_cron_record() -> tuple[str, str] | None:
     result = run([str(HERMES_BIN), "--profile", "jarvis", "cron", "list", "--all"])
-    return CRON_NAME in result.stdout
+    current: tuple[str, str] | None = None
+    for raw_line in result.stdout.splitlines():
+        line = re.sub(r"\x1b\[[0-9;]*m", "", raw_line)
+        match = re.match(r"^\s*(\S+)\s+\[([^]]+)]", line)
+        if match:
+            current = (match.group(1), match.group(2))
+            continue
+        if current and line.strip().startswith("Name:"):
+            if line.split(":", 1)[1].strip() == CRON_NAME:
+                return current
+            current = None
+    return None
+
+
+def pause_legacy_cron() -> tuple[str, bool]:
+    record = legacy_cron_record()
+    if not record:
+        return "", False
+    job_id, state = record
+    if state == "paused":
+        return job_id, False
+    run([str(HERMES_BIN), "--profile", "jarvis", "cron", "pause", job_id])
+    updated = legacy_cron_record()
+    if not updated or updated[0] != job_id or updated[1] != "paused":
+        raise RuntimeError("Legacy Hermes cron did not pause after poller installation")
+    return job_id, True
+
+
+def kakao_poller_payload(controller_path: Path, config_path: Path, state_dir: Path) -> dict[str, Any]:
+    return {
+        "Label": POLLER_LABEL,
+        "ProgramArguments": [
+            str(HERMES_PYTHON),
+            str(controller_path),
+            "--config",
+            str(config_path),
+            "--poll-loop",
+            "--poll-interval-seconds",
+            str(POLL_INTERVAL_SECONDS),
+        ],
+        "WorkingDirectory": str(PROFILE_DIR),
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": 5,
+        "ProcessType": "Background",
+        "Umask": 0o077,
+        "StandardOutPath": str(state_dir / "poller.log"),
+        "StandardErrorPath": str(state_dir / "poller.error.log"),
+    }
+
+
+def install_kakao_poller(
+    controller_path: Path,
+    config_path: Path,
+    state_dir: Path,
+    stamp: str,
+) -> tuple[Path, Path | None]:
+    if not HERMES_PYTHON.is_file():
+        raise RuntimeError("Hermes profile Python is missing")
+    launch_agents = Path.home() / "Library/LaunchAgents"
+    launch_agents.mkdir(parents=True, exist_ok=True)
+    plist_path = launch_agents / f"{POLLER_LABEL}.plist"
+    plist_backup = backup(plist_path, stamp) if plist_path.exists() else None
+    temporary = plist_path.with_suffix(".plist.tmp")
+    with temporary.open("wb") as handle:
+        plistlib.dump(
+            kakao_poller_payload(controller_path, config_path, state_dir),
+            handle,
+            sort_keys=False,
+        )
+    temporary.chmod(0o600)
+    os.replace(temporary, plist_path)
+
+    domain = f"gui/{os.getuid()}"
+    run(["/bin/launchctl", "bootout", f"{domain}/{POLLER_LABEL}"], check=False)
+    run(["/bin/launchctl", "bootstrap", domain, str(plist_path)])
+    run(["/bin/launchctl", "enable", f"{domain}/{POLLER_LABEL}"])
+    loaded = run(["/bin/launchctl", "print", f"{domain}/{POLLER_LABEL}"], check=False)
+    if loaded.returncode != 0:
+        raise RuntimeError("KakaoTalk fixed-interval poller was not loaded by launchd")
+    return plist_path, plist_backup
 
 
 def install_discord_listener(
@@ -309,7 +392,10 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
             "dry_run": True,
             "would_create_or_reuse_channel": CHANNEL_NAME,
             "would_install_controller": str(PROFILE_DIR / "scripts/messenger_assistant.py"),
-            "would_create_cron": not cron_exists(),
+            "would_install_kakao_poller": str(
+                Path.home() / "Library/LaunchAgents" / f"{POLLER_LABEL}.plist"
+            ),
+            "would_pause_legacy_cron": legacy_cron_record() is not None,
             "would_install_discord_listener": str(
                 Path.home() / "Library/LaunchAgents" / f"{LISTENER_LABEL}.plist"
             ),
@@ -358,36 +444,12 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
     if not json.loads(check.stdout).get("ok"):
         raise RuntimeError("Installed controller configuration check failed")
 
-    cron_created = False
-    if not cron_exists():
-        run(
-            [
-                str(HERMES_BIN),
-                "--profile",
-                "jarvis",
-                "cron",
-                "create",
-                "every 2m",
-                "Jarvis KakaoTalk messenger assistant controller",
-                "--name",
-                CRON_NAME,
-                "--script",
-                controller_target.name,
-                "--no-agent",
-                "--deliver",
-                "local",
-            ]
-        )
-        if not cron_exists():
-            raise RuntimeError("Hermes cron create returned without registering the job")
-        cron_created = True
-
     state_path = state_dir / "state.json"
     if not state_path.exists():
         state_path.write_text(
             json.dumps(
                 {
-                    "version": 1,
+                    "version": 2,
                     "enabled": False,
                     "started_at": "",
                     "baseline_at": "",
@@ -406,6 +468,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
                     "stats": {"automatic": 0, "approved": 0, "held": 0, "failed": 0, "rooms": [], "memory_created": 0, "memory_updated": 0},
                     "baseline_summary_pending": False,
                     "memory_delete_confirmation": {},
+                    "dialogue_state": {},
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -415,6 +478,13 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
         )
         state_path.chmod(0o600)
 
+    poller_plist, poller_plist_backup = install_kakao_poller(
+        controller_target,
+        config_path,
+        state_dir,
+        stamp,
+    )
+    legacy_cron_id, legacy_cron_paused = pause_legacy_cron()
     listener_plist, listener_plist_backup = install_discord_listener(
         controller_target,
         config_path,
@@ -433,7 +503,11 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
         "config_backup": str(config_backup) if config_backup else "",
         "allowed_chat_ids": allowed_chat_ids,
         "allow_all_direct_chats": allow_all_direct_chats,
-        "cron_created": cron_created,
+        "kakao_poller": str(poller_plist),
+        "kakao_poller_backup": str(poller_plist_backup) if poller_plist_backup else "",
+        "poll_interval_seconds": POLL_INTERVAL_SECONDS,
+        "legacy_cron_id": legacy_cron_id,
+        "legacy_cron_paused": legacy_cron_paused,
         "discord_listener": str(listener_plist),
         "discord_listener_backup": str(listener_plist_backup) if listener_plist_backup else "",
         "env_backup": str(env_backup),

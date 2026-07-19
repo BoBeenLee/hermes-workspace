@@ -4,7 +4,7 @@ title: Jarvis Messenger Assistant
 description: Fail-closed KakaoTalk messenger assistant operated by the existing Jarvis profile through a private Discord control channel.
 resource: repo://hermes-workspace/knowledge/runbooks/jarvis-messenger-assistant.md
 tags: [hermes, jarvis, kakaotalk, discord, gateway, cron, human-in-the-loop]
-timestamp: 2026-07-20T01:10:00+09:00
+timestamp: 2026-07-20T02:05:00+09:00
 ---
 
 # Jarvis Messenger Assistant
@@ -12,7 +12,7 @@ timestamp: 2026-07-20T01:10:00+09:00
 ## Purpose
 
 The existing `jarvis` profile acts as a KakaoTalk messenger assistant. It reads
-1:1 messages every two minutes while explicitly enabled, drafts replies with
+1:1 messages every 80 seconds while explicitly enabled, drafts replies with
 `openai/gpt-5-nano`, and sends replies with a visible `[메신저 비서]` prefix
 when the model reports confidence of at least `0.70`. Lower-confidence and
 operationally unverifiable replies go to a private Discord approval channel.
@@ -25,11 +25,19 @@ gateway restart, and future policy changes remain `review-required`.
 - `scripts/hermes/messenger_assistant.py` is the deterministic controller and
   is installed into Jarvis' profile-specific `~/.hermes/profiles/jarvis/scripts/`
   directory.
-- A Hermes script-only cron job wakes the controller every two minutes. The
+- A user-level launchd service named
+  `ai.hermes.jarvis-messenger-assistant-poll` keeps the controller's
+  `--poll-loop --poll-interval-seconds 80` process alive. The loop uses a
+  monotonic fixed-rate deadline, so normal request duration does not extend the
+  next start interval; an overrun skips only the already-missed boundary. The
   controller delegates each KakaoTalk read to a Jarvis one-shot restricted to
   the `openhuman-kakaotalk-mac` toolset. Jarvis directly calls the MCP tool and
   the controller consumes the verified tool result from that same Hermes
-  session. The cron does not consume Discord commands.
+  session. The poller does not consume Discord commands.
+- Hermes 0.18.2 accepts only integer-minute recurring intervals, so its legacy
+  `every 2m` job is retained in paused state for rollback rather than used as
+  an imprecise 80-second scheduler. The controller lock prevents the realtime
+  listener and poller from executing state mutations concurrently.
 - A user-level launchd service keeps `--discord-listen` connected to Discord
   Gateway and dispatches control-channel messages immediately. It catches up
   through the REST cursor after reconnecting, so a temporary disconnect does
@@ -52,11 +60,28 @@ gateway restart, and future policy changes remain `review-required`.
 - Two-minute scans and previews use bounded result sizes so Hermes can retain
   the complete MCP tool result. A truncated or malformed session result fails
   closed instead of being reconstructed from model text.
-- A Hermes one-shot call with tools disabled performs JSON classification and
-  drafting. If the usage report does not show the configured primary nano
-  model, automatic sending is prohibited. Its interface reports `intent`,
-  `reply_kind`, `reply`, `summary`, `reason`, `confidence`, and
-  `weather_location`; semantic risk flags are retained only for Discord audit.
+- `ConversationPolicy` separates intent routing from reply drafting. The intent
+  router receives only the current `new_turn` and the room's explicit dialogue
+  state; recent context and long-term memory cannot influence its decision.
+  `weather` is accepted only when the router selects it and the current turn
+  explicitly asks about weather, or an unexpired weather-location state exists.
+- The reply drafter runs only after `other` is locked as the intent. It may use
+  recent context and typed contact memory to phrase the answer, but it cannot
+  change the locked intent. A weather reply generated for a non-weather turn is
+  held for approval instead of being sent automatically.
+- Explicit dialogue state is stored separately in state schema v2. A weather
+  request with no location creates `pending_intent=weather_location` for 15
+  minutes. Resolution, another completed intent, or expiry clears that state.
+- Long-term memory schema v2 permits only typed `profile`, `preference`,
+  `relationship`, and `constraint` facts. Every fact must cite entity IDs from
+  the current turn. Untyped legacy entries, weather locations, recent queries,
+  and workflow state are removed rather than exposed to the intent router.
+  Transient key families such as `query`, `request`, `recent`, `status`, and
+  `weather` are rejected deterministically even if the model assigns an
+  otherwise allowed memory type.
+- Hermes one-shot calls run with tools disabled. If the usage report does not
+  show the configured primary nano model, automatic sending is prohibited.
+  Semantic risk flags are retained only for Discord audit.
 - Linked pages are read with a separate Camofox identity named
   `hermes-messenger-isolated`. A failed isolated read is passed to the model as
   unavailable context instead of independently forcing approval.
@@ -127,10 +152,10 @@ Reply to an approval or audit card with:
   outstanding draft for the same room. Messages beginning with the visible
   `[메신저 비서]` prefix are never candidates, preventing reply loops.
 - Consecutive messages are buffered until five seconds after the newest
-  message. Because KakaoTalk polling remains scheduled every two minutes, this
+  message. Because KakaoTalk polling remains scheduled every 80 seconds, this
   is a post-message quiet-period gate rather than a five-second polling SLA.
 - A buffered-message processing exception retains that room buffer. The next
-  two-minute cron run retries the same entity IDs, and the buffer is removed
+  80-second poll retries the same entity IDs, and the buffer is removed
   only after processing succeeds. The Discord failure notice states that the
   retry remains scheduled.
 - Unknown/fallback model use, confidence below `0.70`, an empty reply, weather
@@ -143,8 +168,14 @@ Reply to an approval or audit card with:
   gate.
 - Missing required details produce a short automatic clarification at
   confidence `0.70` or above. A weather question without a location sends
-  `어느 지역 날씨를 알려줄까?`; the next turn is joined through the same
-  room's recent context without persisting raw clarification state.
+  `어느 지역 날씨를 알려줄까?` and creates a typed, 15-minute explicit
+  dialogue state. Only a router-confirmed follow-up during that window can
+  complete the weather request; recent context and contact memory cannot open
+  or prolong the state.
+- A model-selected weather intent without an explicit current weather request
+  or valid pending location state fails closed before Open-Meteo is called. It
+  becomes a Discord approval card with a grounding reason and cannot be sent
+  automatically.
 - `assistant_status` replies are replaced with the fixed friendly text
   `응, 지금 정상적으로 작동 중이야 🙂`; internal process, gateway, MCP,
   Discord, model, and polling information is never exposed in KakaoTalk.
@@ -237,12 +268,11 @@ The installer:
    private thread under the configured home channel when the bot lacks
    server-level channel-management permission;
 2. backs up Jarvis `.env` and `SOUL.md` with a timestamp;
-3. installs the controller and non-secret config (for a named profile, the cron
-   `--script` value is the filename relative to
-   `~/.hermes/profiles/jarvis/scripts`);
+3. installs the controller and non-secret config;
 4. adds the control channel to `DISCORD_IGNORED_CHANNELS`;
-5. creates the disabled-state file and a two-minute Kakao-only script cron;
-6. installs and starts the user launchd service
+5. creates the disabled-state file, installs the 80-second Kakao-only launchd
+   poller, and pauses the legacy Hermes cron if it exists;
+6. installs and starts the separate user launchd service
    `ai.hermes.jarvis-messenger-assistant-discord` for realtime Discord commands.
 
 Restart the Jarvis gateway only after inspecting the installer result:
@@ -264,13 +294,14 @@ ssh bobeen '/Users/bobeenlee/.hermes/hermes-agent/venv/bin/python \
 
 ssh bobeen '/Users/bobeenlee/.local/bin/hermes --profile jarvis cron list --all'
 ssh bobeen '/Users/bobeenlee/.local/bin/hermes --profile jarvis cron status'
+ssh bobeen '/bin/launchctl print gui/$(id -u)/ai.hermes.jarvis-messenger-assistant-poll'
 ssh bobeen '/bin/launchctl print gui/$(id -u)/ai.hermes.jarvis-messenger-assistant-discord'
 bin/hermes-remote status
 ```
 
 Before live use, confirm in the private Discord channel:
 
-1. `메신저 상태` receives a response without waiting for the two-minute cron
+1. `메신저 상태` receives a response without waiting for the 80-second poller
    and reports `종료`.
 2. A gateway restart still leaves it `종료`.
 3. `메신저 시작` establishes a new baseline.
@@ -294,15 +325,16 @@ Before live use, confirm in the private Discord channel:
     recognizes an outgoing match after that trigger and does not resend.
 
 For controller-only updates, back up and replace the installed script, then
-restart only `ai.hermes.jarvis-messenger-assistant-discord`. The script-only
-cron loads the new file on its next two-minute run; the Jarvis gateway does not
-need a restart unless profile configuration, environment, or tool registration
-also changed.
+restart only `ai.hermes.jarvis-messenger-assistant-discord`. The poller loads
+the new file on its next 80-second run; the Jarvis gateway does not need a
+restart unless profile configuration, environment, or tool registration also
+changed.
 
 ## Rollback
 
-Keep the assistant stopped, boot out the realtime launchd service, pause or
-remove its cron job, restore the timestamped Jarvis `.env` and `SOUL.md`
-backups, and restart only the Jarvis gateway. Do not delete or reset the `kmsg`
+Keep the assistant stopped, boot out both messenger-assistant launchd services,
+resume the paused legacy cron only when rolling back to the old scheduler,
+restore the timestamped Jarvis `.env` and `SOUL.md` backups, and restart only
+the Jarvis gateway. Do not delete or reset the `kmsg`
 encrypted credential cache unless the user explicitly asks; that is a separate
 credential action.

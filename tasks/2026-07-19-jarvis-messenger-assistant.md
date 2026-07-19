@@ -17,6 +17,117 @@
   secret is handled by Jarvis or committed
 - Completion mode: `review-required`
 
+## Intent router, explicit dialogue state, and typed memory
+
+- HIL status: completed in the originating Codex task; Discord thread id: none.
+  The user approved the architectural fix after an `이보빈` turn containing
+  `비빔밥..?` was incorrectly answered with old `하남` weather information.
+- Production trace confirmed that the current turn was exactly `비빔밥..?`,
+  while the model route selected `weather` and `Hanam` by prioritizing recent
+  context and the legacy `weather_location` memory. The weather resolver then
+  produced the unrelated automatic-send card.
+- `ConversationPolicy` now routes intent from only the current turn and
+  explicit dialogue state. Recent context and memory are supplied only to a
+  second reply-drafting call after intent `other` is locked. Ungrounded weather
+  routes and weather content smuggled through a locked non-weather draft are
+  held for approval before any Open-Meteo lookup or automatic send.
+- State schema v2 has a separate, expiring dialogue-state map. Missing-location
+  weather questions create `pending_intent=weather_location` for 15 minutes;
+  completion, expiry, or another completed intent clears it.
+- Memory schema v2 accepts only `profile`, `preference`, `relationship`, and
+  `constraint` facts that cite entity IDs from the current turn. The legacy
+  `weather_location`, `weather_location_hanam`, and untyped label entries were
+  removed during migration; production memory is now empty.
+- Local verification: all 55 controller tests passed, including the exact
+  bibimbap regression, explicit weather follow-up, router/drafter separation,
+  intent-lock enforcement, typed-memory provenance, and v1 migration. Both
+  Python entry points compiled, installer help parsing passed, OKF validation
+  passed, and `git diff --check` passed.
+- Remote backups:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-conversation-policy-20260720-013950`,
+  `/Users/bobeenlee/.hermes/profiles/jarvis/messenger-assistant/state.json.bak-conversation-policy-20260720-013950`,
+  and
+  `/Users/bobeenlee/.hermes/profiles/jarvis/messenger-assistant/memory.json.bak-conversation-policy-20260720-013950`.
+  The final boundary-deepening controller update was additionally backed up at
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-conversation-policy-v2-20260720-014321`.
+  Deployed SHA-256:
+  `9fd3dfa0e1c8589dc8552b7ba8929b977f9a750029d15d7dedd91a7f0b3c9732`.
+- The dedicated Discord listener restarted as PID `75473`; the Jarvis gateway
+  remained PID `56537` and was not restarted. The first post-deployment cron
+  execution for the final controller, `436d01f301544a18bd079f7ffa79cd53`,
+  completed `ok` at `2026-07-20T01:44:23+09:00`, advanced the poll cursor to
+  `2026-07-20T01:43:58+09:00`, and left no room buffer. State and memory are
+  version 2, the assistant remains enabled, and automatic sending is not
+  paused. Automatic/approval/failure counters were unchanged, so deployment
+  verification sent no KakaoTalk message.
+- Branch/worktree: `main` at
+  `/Users/mac_al03241161/Documents/mygit/bbl-ai-lab/hermes-workspace`.
+- Completion mode: `review-required` because recurring intent routing, state,
+  and memory behavior changed.
+
+## Eighty-second KakaoTalk polling
+
+- HIL status: completed in the originating Codex task; Discord thread id: none.
+  The user explicitly requested changing the KakaoTalk polling interval from
+  two minutes to one minute twenty seconds.
+- Hermes Agent v0.18.2's installed `parse_schedule` accepts recurring interval
+  durations only as integer minutes, hours, or days. It cannot represent
+  `80s` or `1m20s`, and a standard cron expression cannot provide a reliable
+  sub-minute offset. The exact interval is therefore implemented by the
+  dedicated user launchd service
+  `ai.hermes.jarvis-messenger-assistant-poll`, which keeps
+  `--poll-loop --poll-interval-seconds 80` running.
+- The existing Hermes cron job `643add69262e` was retained but paused after the
+  launchd poller loaded successfully. This preserves a direct rollback path
+  while preventing duplicate polling. The controller's existing file lock
+  serializes the poller with the realtime Discord listener.
+- The installer now creates and verifies the 80-second poller, then pauses a
+  matching legacy Hermes cron. Dry-run output reports both actions. Its managed
+  SOUL text and the controller's operational messages no longer describe the
+  polling path as a two-minute cron. A first `StartInterval=80` implementation
+  was rejected during production verification because launchd coalesced actual
+  starts to about 120 seconds; the final persistent loop uses monotonic
+  fixed-rate deadlines and skips only an overrun boundary.
+- Local verification: all 58 tests passed, including the persistent 80-second
+  launch-agent contract, fixed-deadline/overrun behavior, and legacy cron
+  discovery. Both Python entry points compiled, installer help parsing passed,
+  OKF validation passed, and `git diff --check` passed.
+- Remote backups:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/cron/jobs.json.bak-poll-80s-20260720-014944`,
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-poll-80s-20260720-014944`,
+  and
+  `/Users/bobeenlee/.hermes/profiles/jarvis/messenger-assistant/state.json.bak-poll-80s-20260720-014944`.
+  The final fixed-rate controller was additionally backed up at
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-poll-fixed-80s-20260720-015500`,
+  and the rejected launchd plist at
+  `/Users/bobeenlee/Library/LaunchAgents/ai.hermes.jarvis-messenger-assistant-poll.plist.bak-messenger-assistant-20260720-015500`.
+  A final transient-memory hardening deployment backed up the controller and
+  memory at
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-transient-memory-20260720-020353`
+  and
+  `/Users/bobeenlee/.hermes/profiles/jarvis/messenger-assistant/memory.json.bak-transient-memory-20260720-020353`.
+  Deployed controller SHA-256:
+  `d616c273156b5777d99147237dd394902252d6a5f8561384dc0e17d45fa1b75c`.
+- The fixed-rate poller recorded consecutive Kakao polling boundaries at
+  `2026-07-20T01:55:18+09:00` and
+  `2026-07-20T01:56:38+09:00`, an exact 80-second difference. The poller logs
+  initially remained empty. A later boundary failed closed on a Jarvis
+  exact-one-tool-call mismatch without advancing the cursor; the persistent
+  loop stayed alive and recovered on the following boundary.
+- During that extended observation, a real new user message arrived asking
+  whether a linked YouTube video had been watched. The enabled production
+  workflow sent one automatic reply; this was not a test message. Its drafter
+  also attempted to save the one-off question as relationship memory under
+  `watch_request_from_user`. That transient entry was backed up and removed,
+  and query/request/recent/status/weather key families are now rejected
+  deterministically. Production memory is empty again.
+- The final poller runs as PID `78360`. The assistant remains enabled,
+  automatic sending is not paused, and no room buffer remains.
+- The Discord listener remained PID `75473` and the Jarvis gateway remained
+  PID `56537`; neither was restarted. Branch/worktree remains `main` at
+  `/Users/mac_al03241161/Documents/mygit/bbl-ai-lab/hermes-workspace`.
+- Completion mode: `review-required` because the recurring scheduler changed.
+
 ## Fresh-send verification boundary
 
 - HIL status: completed in the Codex task; Discord thread id: none. The user
