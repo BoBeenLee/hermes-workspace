@@ -4,7 +4,7 @@ title: Jarvis Messenger Assistant
 description: Fail-closed KakaoTalk messenger assistant operated by the existing Jarvis profile through a private Discord control channel.
 resource: repo://hermes-workspace/knowledge/runbooks/jarvis-messenger-assistant.md
 tags: [hermes, jarvis, kakaotalk, discord, gateway, cron, human-in-the-loop]
-timestamp: 2026-07-20T00:09:00+09:00
+timestamp: 2026-07-20T00:28:00+09:00
 ---
 
 # Jarvis Messenger Assistant
@@ -14,7 +14,7 @@ timestamp: 2026-07-20T00:09:00+09:00
 The existing `jarvis` profile acts as a KakaoTalk messenger assistant. It reads
 1:1 messages every two minutes while explicitly enabled, drafts replies with
 `openai/gpt-5-nano`, and sends replies with a visible `[메신저 비서]` prefix
-when the model reports confidence of at least `0.80`. Lower-confidence and
+when the model reports confidence of at least `0.70`. Lower-confidence and
 operationally unverifiable replies go to a private Discord approval channel.
 
 This is a `remote-config` and recurring-automation change. Installation,
@@ -127,7 +127,7 @@ Reply to an approval or audit card with:
   two-minute cron run retries the same entity IDs, and the buffer is removed
   only after processing succeeds. The Discord failure notice states that the
   retry remains scheduled.
-- Unknown/fallback model use, confidence below `0.80`, an empty reply, weather
+- Unknown/fallback model use, confidence below `0.70`, an empty reply, weather
   lookup failure, or an ambiguous weather location requires approval.
 - Money/contracts, schedule changes, business commitments, medical/legal or
   emergency content, credentials, links, attachments, responsibility or
@@ -136,7 +136,7 @@ Reply to an approval or audit card with:
   audit card, and the selected policy uses model confidence as the sole content
   gate.
 - Missing required details produce a short automatic clarification at
-  confidence `0.80` or above. A weather question without a location sends
+  confidence `0.70` or above. A weather question without a location sends
   `어느 지역 날씨를 알려줄까?`; the next turn is joined through the same
   room's recent context without persisting raw clarification state.
 - `assistant_status` replies are replaced with the fixed friendly text
@@ -150,6 +150,13 @@ Reply to an approval or audit card with:
   an MCP preview to verify the visible message. There is no CuaDriver fallback
   and no second actual-send attempt. An adapter timeout or uncertain read-back
   is reported with its specific reason while the approval remains pending.
+- The KakaoTalk MCP resolves a send destination from only the 20 most recent
+  rooms with `kmsg chats --limit 20 --json`. Do not increase the timeout as the
+  first response to a send failure. Use the returned `error`, `phase`,
+  `scan_limit`, `elapsed_ms`, and `candidate_count` to distinguish destination
+  scan timeout, unresponsive UI, missing/ambiguous recent target, actual send
+  failure, and read-back mismatch. The controller includes these diagnostics
+  in its Discord failure report.
 - Explicit-location current-weather questions and approved weather edits use
   Open-Meteo geocoding followed by a forecast lookup. Multiple plausible
   populated locations, mismatched coordinates, out-of-range fields, altered
@@ -258,7 +265,7 @@ Before live use, confirm in the private Discord channel:
 4. `오늘 날씨 어때?` automatically asks for a region; replying `서울` produces
    a validated current-weather answer.
 5. `너의 상태는 어때?` produces only the friendly fixed status text.
-6. Confidence `0.80` sends automatically, while `0.79`, fallback-model use,
+6. Confidence `0.70` sends automatically, while `0.69`, fallback-model use,
    ambiguous weather, and MCP send uncertainty produce approval or failure
    audit according to their operational path.
 7. A message in a different direct room, including a user-authored
@@ -266,6 +273,9 @@ Before live use, confirm in the private Discord channel:
    attempt to its `chat_id` is rejected before the KakaoTalk MCP call.
 8. A forced read-only preview argument mismatch leaves the room buffer present;
    a subsequent successful run consumes it exactly once.
+9. A forced destination scan failure reports `phase=resolve_destination` and
+   `scan_limit=20`; a recent-target miss is distinguishable from a scan timeout
+   and from an actual `kmsg send` failure.
 
 For controller-only updates, back up and replace the installed script, then
 restart only `ai.hermes.jarvis-messenger-assistant-discord`. The script-only

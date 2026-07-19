@@ -17,6 +17,65 @@
   secret is handled by Jarvis or committed
 - Completion mode: `review-required`
 
+## Automatic-reply threshold 0.70
+
+- The primary model's reported confidence now permits automatic sending at
+  `0.70` and above. Exactly `0.69` still creates an approval card.
+- The classifier prompt, controller constant, boundary tests, and live runbook
+  use the same threshold. Existing operational gates remain unchanged.
+- All 42 controller tests, OKF validation, and `git diff --check` passed.
+- The deployed controller SHA-256 is
+  `bde7bfdce27c1793578c5e08865c5f23bf4d03ca05a35f4b0652bf0e9d82824f`;
+  backup:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-confidence-070-20260720-002813`.
+- The dedicated Discord listener reconnected as PID `67747`. Jarvis gateway
+  PID `56537` was not restarted. The following two-minute cron completed `ok`
+  at `2026-07-20T00:28:41+09:00` with no recorded error.
+- Completion mode remains `review-required` because the recurring automatic
+  send policy was relaxed.
+
+## Bounded send-destination scan and failure diagnostics
+
+- KakaoTalk MCP send resolution is bounded to the 20 most recent rooms through
+  `kmsg chats --limit 20 --json`. This keeps the approval target search narrow
+  without extending the existing timeout.
+- The installed MCP distinguishes destination scan timeout, unresponsive UI,
+  missing or ambiguous recent targets, and the actual send command. It returns
+  `phase`, `scan_limit`, `elapsed_ms`, and `candidate_count` alongside its
+  specific error code.
+- The Jarvis controller now preserves those MCP diagnostics in Discord failure
+  reports. It also accepts the source adapter's equivalent
+  `failure_stage`/`failure_reason` fields, so neither adapter form is collapsed
+  into a generic send failure.
+- Deterministic tests cover the recent-20 command, destination-list timeout,
+  target-not-found distinction, and controller rendering of both diagnostic
+  shapes. All 137 KakaoTalk skill-repository tests and all 42 controller tests
+  passed; OKF validation and `git diff --check` also passed.
+- The local KakaoTalk skill checkout was fast-forwarded to `origin/main`
+  `eca0008` (`Harden KakaoTalk send destination lookup`). Existing uncommitted
+  image-send work was preserved and reconciled with the new bounded-scan code;
+  the pre-sync stash remains as `pre-origin-main-sync-20260720-0023` for
+  recovery.
+- The remote MCP installation already contained the bounded scan and specific
+  error codes, so it was neither overwritten nor restarted. Only the controller
+  was deployed, with backup
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-kmsg-scan-diagnostics-20260720-001722`.
+  A follow-up stage-classification deployment was backed up at
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-kmsg-stage-fix-20260720-002221`.
+  Installed controller SHA-256:
+  `90256b02cfedf78e31a4bba747b2736162706d51b82880443c9eee8c5871465b`.
+- The dedicated Discord listener reconnected as PID `66914`; Jarvis gateway
+  PID `56537` was not restarted. The controller `--check` passed with all
+  checks true, including the KakaoTalk MCP and chat-ID allowlist.
+- The first following two-minute cron completed `ok` at
+  `2026-07-20T00:19:55+09:00`. A no-send MCP dry-run then validated the target
+  through `phase=resolve_destination`, `scan_limit=20`, `candidate_count=20`,
+  and `elapsed_ms=1730`; no KakaoTalk message was sent. After the final
+  controller deployment, cron completed `ok` again at
+  `2026-07-20T00:24:50+09:00` and remained scheduled every two minutes.
+- Completion mode remains `review-required` because recurring controller and
+  KakaoTalk send-routing behavior changed.
+
 ## Read-only MCP argument and retry hardening
 
 - Incident session `20260719_234946_7c577d` called the expected
@@ -101,7 +160,7 @@
 ## Confidence-based automatic replies
 
 - The content gate now uses the primary model's reported confidence only:
-  `0.80` and above sends automatically, while lower or non-finite values create
+  `0.70` and above sends automatically, while lower or non-finite values create
   an approval card. Semantic risk flags remain visible in Discord audit cards
   but no longer independently block sending.
 - The classifier interface is `intent`, `reply_kind`, `reply`, `summary`,
@@ -115,7 +174,7 @@
   fallback models, empty replies, and uncertain Kakao sends still fail closed.
 - `assistant_status` always replaces the draft with the friendly fixed response
   and exposes no process, Discord, MCP, polling, model, or token details.
-- Local regression suite: 33 tests passed, including the `0.79`/`0.80`
+- The original regression suite covered the `0.79`/`0.80`
   boundary, all semantic audit flags, missing-location follow-up, Seoul weather,
   ambiguous/stale weather, exact terminal evidence, status redaction, and the
   Hermes 0.18.2 JSON gateway PID record.

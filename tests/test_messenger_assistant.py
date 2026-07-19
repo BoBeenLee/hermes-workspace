@@ -59,12 +59,12 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         )
         self.assertIn("fallback", reason)
 
-    def test_confidence_below_point_eight_requires_approval(self):
+    def test_confidence_below_point_seven_requires_approval(self):
         reason = module.automatic_reply_block_reason(
-            {"reply": "답장", "confidence": 0.79, "flags": {}},
+            {"reply": "답장", "confidence": 0.69, "flags": {}},
             {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER},
         )
-        self.assertIn("0.79", reason)
+        self.assertIn("0.69", reason)
 
     def test_non_finite_confidence_requires_approval(self):
         reason = module.automatic_reply_block_reason(
@@ -73,15 +73,15 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         )
         self.assertIn("0.00", reason)
 
-    def test_confidence_point_eight_allows_every_flag(self):
+    def test_confidence_point_seven_allows_every_flag(self):
         flags = {name: True for name in module.POLICY_FLAG_NAMES}
         reason = module.automatic_reply_block_reason(
-            {"reply": "확인했어", "confidence": 0.80, "flags": flags},
+            {"reply": "확인했어", "confidence": 0.70, "flags": flags},
             {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER},
         )
         self.assertEqual(reason, "")
         audit = module.classification_audit(
-            {"intent": "other", "reply_kind": "answer", "confidence": 0.80, "flags": flags}
+            {"intent": "other", "reply_kind": "answer", "confidence": 0.70, "flags": flags}
         )
         self.assertIn("money_contract", audit)
         self.assertIn("auth_secret", audit)
@@ -91,7 +91,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertIn('"intent":"weather|assistant_status|other"', prompt)
         self.assertIn('"reply_kind":"answer|clarification"', prompt)
         self.assertIn('"weather_location":""', prompt)
-        self.assertIn("0.80", prompt)
+        self.assertIn("0.70", prompt)
 
     def test_weather_lookup_recognizes_any_current_location_question(self):
         self.assertTrue(module.is_weather_lookup("하남 오늘 날씨"))
@@ -832,6 +832,87 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "kmsg_chats_timeout"):
             assistant._send_verified("친구", "123", "답장")
         self.assertEqual(FakeKakao.calls, 1)
+
+    def test_verified_send_distinguishes_send_failure_from_destination_scan(self):
+        class FakeKakao:
+            calls = 0
+
+            @staticmethod
+            def send(_target, _message, *, dry_run, chat_id=None):
+                FakeKakao.calls += 1
+                if dry_run:
+                    return {"ok": True, "chat_id_validated": True}
+                return {
+                    "ok": False,
+                    "operation": "send_message",
+                    "dry_run": False,
+                    "phase": "resolve_destination",
+                    "scan_limit": 20,
+                }
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.allowed_chat_ids = {"123"}
+        assistant.kakao = FakeKakao()
+        assistant._verify_sent = mock.Mock(return_value=False)
+
+        with self.assertRaisesRegex(RuntimeError, "stage=message_send.*reason=command_failed"):
+            assistant._send_verified("친구", "123", "답장")
+        self.assertEqual(FakeKakao.calls, 2)
+
+    def test_verified_send_distinguishes_read_back_mismatch(self):
+        class FakeKakao:
+            @staticmethod
+            def send(_target, _message, *, dry_run, chat_id=None):
+                if dry_run:
+                    return {"ok": True, "chat_id_validated": True}
+                return {
+                    "ok": True,
+                    "operation": "send_message",
+                    "dry_run": False,
+                    "phase": "resolve_destination",
+                    "scan_limit": 20,
+                }
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.allowed_chat_ids = {"123"}
+        assistant.kakao = FakeKakao()
+        assistant._verify_sent = mock.Mock(return_value=False)
+
+        with self.assertRaisesRegex(RuntimeError, "stage=delivery_verify.*reason=read_back_mismatch"):
+            assistant._send_verified("친구", "123", "답장")
+
+    def test_kakao_failure_detail_preserves_resolution_stage_and_reason(self):
+        detail = module.kakao_failure_detail(
+            {
+                "error": "kmsg_destination_not_found",
+                "failure_stage": "destination_match",
+                "failure_reason": "target_not_in_recent_chats",
+                "message": "No target matched the recent 20 chats.",
+            }
+        )
+
+        self.assertIn("kmsg_destination_not_found", detail)
+        self.assertIn("stage=destination_match", detail)
+        self.assertIn("reason=target_not_in_recent_chats", detail)
+        self.assertIn("recent 20 chats", detail)
+
+    def test_kakao_failure_detail_preserves_installed_mcp_scan_diagnostics(self):
+        detail = module.kakao_failure_detail(
+            {
+                "error": "destination_scan_timeout",
+                "phase": "resolve_destination",
+                "scan_limit": 20,
+                "elapsed_ms": 30001,
+                "candidate_count": 0,
+                "message": "Recent KakaoTalk destination scan timed out.",
+            }
+        )
+
+        self.assertIn("destination_scan_timeout", detail)
+        self.assertIn("stage=resolve_destination", detail)
+        self.assertIn("scan_limit=20", detail)
+        self.assertIn("elapsed_ms=30001", detail)
+        self.assertIn("candidate_count=0", detail)
 
     def test_verified_send_rejects_non_allowlisted_room_before_any_mcp_call(self):
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)

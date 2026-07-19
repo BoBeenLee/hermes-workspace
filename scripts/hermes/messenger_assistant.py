@@ -42,7 +42,7 @@ PREFIX = "[메신저 비서]"
 DISCORD_LIMIT = 1900
 PRIMARY_MODEL = "openai/gpt-5-nano"
 PRIMARY_PROVIDER = "custom"
-AUTO_CONFIDENCE_THRESHOLD = 0.80
+AUTO_CONFIDENCE_THRESHOLD = 0.70
 KAKAO_TOOLSET = "openhuman-kakaotalk-mac"
 KAKAO_TOOL_PREFIX = "mcp__openhuman_kakaotalk_mac__kakaotalk_mac_"
 URL_RE = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
@@ -123,6 +123,30 @@ def parse_time(value: Any) -> dt.datetime | None:
 def compact(value: Any, limit: int = 500) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def kakao_failure_detail(result: dict[str, Any], fallback: str = "원인 정보 없음") -> str:
+    error = compact(result.get("error"), 100)
+    stage = compact(result.get("failure_stage") or result.get("phase"), 100)
+    reason = compact(result.get("failure_reason"), 100)
+    message = compact(result.get("message"), 300)
+    parts = [error or ("" if message else fallback)]
+    if stage:
+        parts.append(f"stage={stage}")
+    if reason and reason != error:
+        parts.append(f"reason={reason}")
+    scan_limit = result.get("scan_limit")
+    if scan_limit is not None:
+        parts.append(f"scan_limit={scan_limit}")
+    elapsed_ms = result.get("elapsed_ms")
+    if elapsed_ms is not None:
+        parts.append(f"elapsed_ms={elapsed_ms}")
+    candidate_count = result.get("candidate_count")
+    if candidate_count is not None:
+        parts.append(f"candidate_count={candidate_count}")
+    if message and message != error:
+        parts.append(message)
+    return " · ".join(item for item in parts if item) or fallback
 
 
 def is_weather_lookup(value: Any) -> bool:
@@ -903,7 +927,7 @@ JSON schema:
 
 Draft the best concise Korean response for every 1:1 turn. Confidence is the probability that
 the proposed response is appropriate and accurate. The controller automatically sends every
-topic, including high-risk topics, when confidence is at least 0.80, so report confidence
+topic, including high-risk topics, when confidence is at least 0.70, so report confidence
 honestly. Set reply_kind=clarification and ask one short question whenever location, target,
 time, quantity, or another required detail is missing. Do not invent missing details.
 
@@ -1637,12 +1661,19 @@ class MessengerAssistant:
             return True
         validated = self.kakao.send(room_name, message, dry_run=True, chat_id=room_id)
         if not validated.get("ok") or not validated.get("chat_id_validated"):
-            detail = validated.get("error") or validated.get("message") or "목적지 검증 실패"
+            detail = kakao_failure_detail(validated, "목적지 검증 실패")
             raise RuntimeError(f"Jarvis KakaoTalk MCP dry-run 실패: {compact(detail, 300)}")
         result = self.kakao.send(room_name, message, dry_run=False, chat_id=room_id)
         if self._verify_sent(room_name, room_id, message):
             return True
-        detail = result.get("error") or result.get("message") or "발신 후 read-back 불일치"
+        diagnosed = dict(result)
+        if result.get("ok"):
+            diagnosed["failure_stage"] = "delivery_verify"
+            diagnosed["failure_reason"] = "read_back_mismatch"
+        else:
+            diagnosed.setdefault("failure_stage", "message_send")
+            diagnosed.setdefault("failure_reason", result.get("error") or "command_failed")
+        detail = kakao_failure_detail(diagnosed, "발신 후 read-back 불일치")
         raise RuntimeError(f"Jarvis KakaoTalk MCP 발신 상태 불명: {compact(detail, 300)}")
 
     def _verify_sent(self, room_name: str, room_id: str, message: str) -> bool:
