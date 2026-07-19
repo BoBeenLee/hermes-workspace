@@ -4,7 +4,7 @@ title: Jarvis Messenger Assistant
 description: Fail-closed KakaoTalk messenger assistant operated by the existing Jarvis profile through a private Discord control channel.
 resource: repo://hermes-workspace/knowledge/runbooks/jarvis-messenger-assistant.md
 tags: [hermes, jarvis, kakaotalk, discord, gateway, cron, human-in-the-loop]
-timestamp: 2026-07-19T23:57:00+09:00
+timestamp: 2026-07-20T00:09:00+09:00
 ---
 
 # Jarvis Messenger Assistant
@@ -45,6 +45,10 @@ gateway restart, and future policy changes remain `review-required`.
   model/provider, exact tool name, required arguments, one-call count, and raw
   tool result recorded in the same Jarvis session. It does not import the MCP
   SDK or adapter modules and does not invoke `kakaocli`, `kmsg`, or CuaDriver.
+- The Jarvis execution prompt requires every supplied argument to remain exact,
+  including intentional empty strings. In particular, it prohibits inferring
+  or substituting local paths for `skill_dir` and `script_path`; the controller
+  still rejects any recorded argument mutation instead of relaxing validation.
 - Two-minute scans and previews use bounded result sizes so Hermes can retain
   the complete MCP tool result. A truncated or malformed session result fails
   closed instead of being reconstructed from model text.
@@ -119,6 +123,10 @@ Reply to an approval or audit card with:
   outstanding draft for the same room. Messages beginning with the visible
   `[메신저 비서]` prefix are never candidates, preventing reply loops.
 - Consecutive messages are buffered until 60 seconds after the newest message.
+- A buffered-message processing exception retains that room buffer. The next
+  two-minute cron run retries the same entity IDs, and the buffer is removed
+  only after processing succeeds. The Discord failure notice states that the
+  retry remains scheduled.
 - Unknown/fallback model use, confidence below `0.80`, an empty reply, weather
   lookup failure, or an ambiguous weather location requires approval.
 - Money/contracts, schedule changes, business commitments, medical/legal or
@@ -172,6 +180,9 @@ each send.
 Device approval, OTP, and other second-factor steps are never collected by
 Jarvis. A failed MCP poll does not advance the message cursor and is reported
 to Discord; the next scheduled poll retries through the same MCP path.
+Likewise, a failure after polling but before buffered classification or reply
+completion retains the buffer so advancing the scan cursor cannot lose the
+message.
 
 ## Installation
 
@@ -253,6 +264,8 @@ Before live use, confirm in the private Discord channel:
 7. A message in a different direct room, including a user-authored
    `is_from_me=true` message, creates no buffer or approval card; a direct send
    attempt to its `chat_id` is rejected before the KakaoTalk MCP call.
+8. A forced read-only preview argument mismatch leaves the room buffer present;
+   a subsequent successful run consumes it exactly once.
 
 For controller-only updates, back up and replace the installed script, then
 restart only `ai.hermes.jarvis-messenger-assistant-discord`. The script-only

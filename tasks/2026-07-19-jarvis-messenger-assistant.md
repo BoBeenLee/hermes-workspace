@@ -17,6 +17,51 @@
   secret is handled by Jarvis or committed
 - Completion mode: `review-required`
 
+## Read-only MCP argument and retry hardening
+
+- Incident session `20260719_234946_7c577d` called the expected
+  `preview_messages` tool once for adapter chat ID `128426307555607`, but the
+  Jarvis model replaced intentional empty `skill_dir` and `script_path` values
+  with legacy local paths. The MCP read itself succeeded; the controller's
+  exact-argument verifier correctly rejected the changed call before any send.
+- The Jarvis tool prompt now puts the exact argument JSON before the call
+  instruction and explicitly requires all keys, including empty strings, to be
+  copied unchanged. It prohibits omitted/default-filled values, additional
+  arguments, and inferred filesystem paths. Exact post-call verification is
+  unchanged.
+- A buffered-message exception no longer removes the room buffer in a
+  `finally` block. The same entity IDs remain eligible for the next two-minute
+  cron run, and only a successful processing path removes the buffer.
+- The lost incident entity
+  `kakaotalk_mac:128426307555607:3888414853475194881` was restored under the
+  controller lock. An intermediate malformed multi-call attempt failed closed
+  and left the buffer intact, demonstrating the retry path.
+- The successful retry preview session `20260720_000612_d57418` called
+  `preview_messages` exactly once with the expected target, chat ID,
+  `skill_dir=""`, and `script_path=""`. Dry-run session
+  `20260720_000625_0c10b1`, actual-send session
+  `20260720_000703_30b7da`, and read-back session
+  `20260720_000807_232f38` each used one exact MCP call. The restored weather
+  question was recorded as processed, its buffer was removed, and one
+  automatic weather reply was visibly verified.
+- Local checks: Python compilation passed; all 38 unit tests passed, including
+  prompt ordering/empty-value preservation and failure-retains-buffer followed
+  by success-consumes-buffer; OKF validation and `git diff --check` passed.
+- Installed controller SHA-256:
+  `9656fd0a49790eec38a6f0265932bfdd6272ae0fc15c41a9c3430bfc0b7b04c3`.
+  Backups:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-read-retry-20260720-000014`,
+  `/Users/bobeenlee/.hermes/profiles/jarvis/messenger-assistant/state.json.bak-read-retry-20260720-000014`,
+  and
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-read-retry-v2-20260720-000600`.
+- The dedicated Discord listener reconnected as PID `60443`; Jarvis gateway
+  PID `56537` was not restarted. Cron execution
+  `463728c4ac41446c9922df0a11a771d2` completed successfully and the two-minute
+  schedule remains active.
+- Completion mode remains `review-required` because recurring controller code
+  was changed and deployed, and the recovered message produced an external
+  KakaoTalk reply.
+
 ## Direct-room chat ID allowlist
 
 - The controller now requires a non-empty numeric `allowed_chat_ids` config

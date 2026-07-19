@@ -477,6 +477,19 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
             {"user_id": "", "kakaocli_bin": ""},
         )
 
+    def test_kakao_tool_prompt_requires_empty_arguments_to_stay_empty(self):
+        arguments = {"target": "이보빈", "skill_dir": "", "script_path": ""}
+        prompt = module.jarvis_kakao_tool_prompt(
+            "preview_messages",
+            arguments,
+        )
+
+        self.assertIn("empty string", prompt)
+        self.assertIn("Do not omit", prompt)
+        self.assertIn("infer or substitute filesystem paths", prompt)
+        exact_json = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+        self.assertLess(prompt.index(exact_json), prompt.index("Call kakaotalk_mac.preview_messages"))
+
     def test_jarvis_session_result_requires_one_exact_tool_call_and_arguments(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             profile = Path(temp_dir)
@@ -747,6 +760,35 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         self.assertEqual(set(assistant.state["room_buffers"]), {"128426307555607"})
         self.assertNotIn("999", assistant.state["rooms"])
+
+    def test_processing_failure_keeps_buffer_for_next_cron_retry(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["room_buffers"] = {
+            "128426307555607": {
+                "room_name": "이보빈",
+                "entity_ids": ["message-1"],
+                "first_at": "2026-07-19T14:46:12+00:00",
+                "last_at": "2026-07-19T14:46:12+00:00",
+            }
+        }
+        assistant.discord = mock.Mock()
+        assistant._process_room_buffer = mock.Mock(
+            side_effect=RuntimeError("Jarvis가 MCP 호출 인자 skill_dir를 변경했습니다")
+        )
+
+        with mock.patch.object(module, "now_utc", return_value=dt.datetime(2026, 7, 19, 15, 0, tzinfo=dt.timezone.utc)):
+            assistant._process_ready_buffers()
+
+        self.assertIn("128426307555607", assistant.state["room_buffers"])
+        self.assertEqual(assistant.state["stats"]["failed"], 1)
+        assistant.discord.send.assert_called_once()
+
+        assistant._process_room_buffer = mock.Mock(return_value=None)
+        with mock.patch.object(module, "now_utc", return_value=dt.datetime(2026, 7, 19, 15, 2, tzinfo=dt.timezone.utc)):
+            assistant._process_ready_buffers()
+
+        self.assertNotIn("128426307555607", assistant.state["room_buffers"])
 
     def test_verified_send_uses_actual_room_id_and_never_retries_actual_send(self):
         class FakeKakao:
