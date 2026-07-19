@@ -82,6 +82,82 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         )
         self.assertEqual(reason, "")
 
+    def test_hanam_current_weather_query_is_recognized_without_accepting_generic_text(self):
+        self.assertTrue(module.is_hanam_weather_lookup("하남 오늘 날씨"))
+        self.assertTrue(module.is_hanam_weather_lookup("하남시 현재 날씨 알려줘"))
+        self.assertFalse(module.is_hanam_weather_lookup("서울 오늘 날씨"))
+        self.assertFalse(module.is_hanam_weather_lookup("하남 맛집"))
+        self.assertIn("timeout=30", module.hanam_weather_prompt(module.now_utc().astimezone(module.KST)))
+
+    def test_hanam_weather_resolution_requires_fresh_primary_model_data(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.hermes_bin = Path("/tmp/hermes")
+        assistant.profile_dir = Path("/tmp/profile")
+        assistant.config = {"profile": "jarvis"}
+        requested = module.now_utc().astimezone(module.KST).replace(microsecond=0)
+        observed = (requested - dt.timedelta(minutes=5)).isoformat()
+        result = {
+            "ok": True,
+            "location": "Hanam-si, Gyeonggi-do",
+            "requested_at_kst": requested.isoformat(),
+            "observed_at_kst": observed,
+            "weather_code": 2,
+            "temperature_c": 28.5,
+            "apparent_temperature_c": 33.0,
+            "humidity_percent": 72,
+            "precipitation_mm": 0,
+            "today_high_c": 31,
+            "today_low_c": 24,
+            "precipitation_probability_max_percent": 60,
+            "source_name": "Open-Meteo",
+            "source_url": module.HANAM_WEATHER_URL,
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER, "session_id": "weather-session"}
+
+        with mock.patch.object(module, "run_hermes_json", return_value=(result, usage)) as run, mock.patch.object(
+            module, "hermes_session_used_tool", return_value=True
+        ) as used_tool:
+            reply, evidence = assistant._resolve_hanam_weather("하남 오늘 날씨")
+
+        self.assertIn("하남은 현재 구름 조금, 28.5°C", reply)
+        self.assertIn("최대 강수확률 60%", reply)
+        self.assertEqual(evidence["source_url"], module.HANAM_WEATHER_URL)
+        self.assertEqual(run.call_args.kwargs["toolsets"], "terminal")
+        used_tool.assert_called_once_with(Path("/tmp/profile"), "weather-session", "terminal")
+
+    def test_stale_hanam_weather_resolution_fails_closed(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.hermes_bin = Path("/tmp/hermes")
+        assistant.profile_dir = Path("/tmp/profile")
+        assistant.config = {"profile": "jarvis"}
+        stale = (module.now_utc().astimezone(module.KST) - dt.timedelta(hours=2)).isoformat()
+        result = {
+            "ok": True,
+            "observed_at_kst": stale,
+            "source_name": "Open-Meteo",
+            "source_url": module.HANAM_WEATHER_URL,
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER, "session_id": "weather-session"}
+
+        with mock.patch.object(module, "run_hermes_json", return_value=(result, usage)), mock.patch.object(
+            module, "hermes_session_used_tool", return_value=True
+        ):
+            with self.assertRaisesRegex(RuntimeError, "현재 시각"):
+                assistant._resolve_hanam_weather("하남 오늘 날씨")
+
+    def test_hanam_weather_resolution_rejects_missing_terminal_tool_evidence(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.hermes_bin = Path("/tmp/hermes")
+        assistant.profile_dir = Path("/tmp/profile")
+        assistant.config = {"profile": "jarvis"}
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER, "session_id": "weather-session"}
+
+        with mock.patch.object(module, "run_hermes_json", return_value=({"ok": True}, usage)), mock.patch.object(
+            module, "hermes_session_used_tool", return_value=False
+        ):
+            with self.assertRaisesRegex(RuntimeError, "실제 날씨 조회 도구 호출"):
+                assistant._resolve_hanam_weather("하남 오늘 날씨")
+
     def test_auth_memory_is_rejected(self):
         self.assertIsNone(
             module.sanitize_memory_update(

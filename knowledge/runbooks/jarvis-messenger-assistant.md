@@ -102,9 +102,21 @@ Reply to an approval or audit card with:
 - Per-room automatic sends are capped at three per 30 minutes. Global automatic
   sends are capped at ten per ten minutes.
 - Sends first resolve one destination with MCP `send_message(dry_run=true)`,
-  then revalidate the returned `send_chat_id` with a second MCP dry-run.
-  Ambiguous destinations fail closed. Actual send is attempted exactly once;
-  read-back verification never triggers another send.
+  using the adapter-provided actual direct-room ID. The same room ID is used
+  for the one actual send and for MCP read-back verification. If the KakaoTalk
+  adapter cannot confirm the send, the Discord listener may use Hermes
+  CuaDriver MCP only when an already-open, on-screen KakaoTalk window title
+  exactly equals the approved room name. It then performs MCP read-back and
+  never retries a verified message.
+- The special approved edit `수정: 하남 오늘 날씨` is resolved by a Jarvis
+  one-shot restricted to the `terminal` toolset. Jarvis runs one fixed,
+  read-only `/usr/bin/curl --fail --max-time 20` request against the Open-Meteo
+  current-weather endpoint for Hanam. The controller verifies the same Hermes
+  session recorded exactly one terminal tool result, and rejects a non-primary
+  model, a different source URL, out-of-range fields, or an observation older
+  than 30 minutes. The edit text itself is never sent as the answer. The
+  validated values are formatted deterministically and only then sent through
+  Hermes MCP.
 - KakaoTalk read state is never changed intentionally.
 
 ## KakaoTalk Recovery
