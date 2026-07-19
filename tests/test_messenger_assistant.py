@@ -215,6 +215,114 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         assistant._process_discord_commands.assert_not_called()
 
+    def test_poll_buffers_direct_room_from_adapter_evidence_even_with_member_count_one(self):
+        class FakeKakao:
+            @staticmethod
+            def list_since(_since, _until):
+                return {
+                    "rooms": [
+                        {
+                            "chat_id": "direct-1",
+                            "display_name": "친구",
+                            "new_messages": [
+                                {
+                                    "entity_id": "message-1",
+                                    "timestamp": "2026-07-19T12:00:00+00:00",
+                                    "is_from_me": False,
+                                }
+                            ],
+                        }
+                    ]
+                }
+
+            @staticmethod
+            def list_chats():
+                return {
+                    "chats": [
+                        {
+                            "chat_id": "direct-1",
+                            "display_name": "친구",
+                            "member_count": 1,
+                        }
+                    ]
+                }
+
+            @staticmethod
+            def find_chat(_query):
+                return {
+                    "matches": [
+                        {
+                            "chat_id": "direct-1",
+                            "sources": ["visible_chats", "NTUser.directChatId"],
+                        }
+                    ]
+                }
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["baseline_at"] = "2026-07-19T11:59:00+00:00"
+        assistant.kakao = FakeKakao()
+        assistant.discord = mock.Mock()
+        assistant._invalidate_pending_for_room = mock.Mock()
+
+        assistant._poll_kakao()
+
+        self.assertEqual(assistant.state["room_buffers"]["direct-1"]["entity_ids"], ["message-1"])
+
+    def test_poll_rejects_member_count_two_without_adapter_direct_evidence(self):
+        class FakeKakao:
+            @staticmethod
+            def list_since(_since, _until):
+                return {
+                    "rooms": [
+                        {
+                            "chat_id": "group-1",
+                            "display_name": "세 명 방",
+                            "new_messages": [
+                                {
+                                    "entity_id": "message-2",
+                                    "timestamp": "2026-07-19T12:00:00+00:00",
+                                    "is_from_me": False,
+                                }
+                            ],
+                        }
+                    ]
+                }
+
+            @staticmethod
+            def list_chats():
+                return {
+                    "chats": [
+                        {
+                            "chat_id": "group-1",
+                            "display_name": "세 명 방",
+                            "member_count": 2,
+                        }
+                    ]
+                }
+
+            @staticmethod
+            def find_chat(_query):
+                return {
+                    "matches": [
+                        {
+                            "chat_id": "group-1",
+                            "sources": ["visible_chats", "NTChatRoom/NTOpenLink"],
+                        }
+                    ]
+                }
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["baseline_at"] = "2026-07-19T11:59:00+00:00"
+        assistant.kakao = FakeKakao()
+        assistant.discord = mock.Mock()
+        assistant._invalidate_pending_for_room = mock.Mock()
+
+        assistant._poll_kakao()
+
+        self.assertNotIn("group-1", assistant.state["room_buffers"])
+
 
 if __name__ == "__main__":
     unittest.main()

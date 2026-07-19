@@ -6,7 +6,7 @@ Run this script *on the remote host* after copying it and
 private Discord channel, installs the controller under ``~/.hermes/scripts``,
 adds the channel to Jarvis' Discord ignore list so only the deterministic
 controller consumes commands, appends a managed SOUL section, and creates a
-three-minute script-only cron job.
+two-minute script-only cron job.
 
 The Discord token and other secrets are read from the existing Jarvis .env and
 are never printed or copied into generated config.
@@ -334,7 +334,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
                 "jarvis",
                 "cron",
                 "create",
-                "every 3m",
+                "every 2m",
                 "Jarvis KakaoTalk messenger assistant controller",
                 "--name",
                 CRON_NAME,

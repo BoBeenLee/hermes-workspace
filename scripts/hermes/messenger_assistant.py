@@ -38,7 +38,7 @@ UTC = dt.timezone.utc
 STATE_VERSION = 1
 PREFIX = "[메신저 비서]"
 DISCORD_LIMIT = 1900
-DIRECT_MEMBER_COUNT = 2
+DIRECT_CHAT_SOURCE = "NTUser.directChatId"
 PRIMARY_MODEL = "openai/gpt-5-nano"
 PRIMARY_PROVIDER = "custom"
 TEXT_TYPES = {"text", "1", "unknown"}
@@ -278,8 +278,8 @@ class KakaoClient:
     def auth_status(self) -> dict[str, Any]:
         return self.module.auth_status_impl()
 
-    def list_chats(self) -> dict[str, Any]:
-        return self.module.list_chats_impl(limit=500, include_unknown=True)
+    def find_chat(self, query: str) -> dict[str, Any]:
+        return self.module.find_chat_impl(query, limit=50, scan_limit=500)
 
     def list_since(self, since: str, until: str) -> dict[str, Any]:
         return self.module.list_new_messages_since_impl(
@@ -832,7 +832,7 @@ class MessengerAssistant:
                 "last_at": pending.get("latest_at") or stamp,
             }
         self.discord.send(
-            "✅ **메신저 비서 시작**\n시작 시점을 기준선으로 설정했습니다. 이후 1:1 카카오톡 메시지를 3분 주기로 확인합니다. "
+            "✅ **메신저 비서 시작**\n시작 시점을 기준선으로 설정했습니다. 이후 1:1 카카오톡 메시지를 2분 주기로 확인합니다. "
             "기존 승인 대기 건은 최신 문맥으로 새 카드를 생성합니다."
         )
 
@@ -902,8 +902,9 @@ class MessengerAssistant:
     def _send_baseline_summary(self) -> None:
         result = self.kakao.unread_baseline()
         rooms = []
-        direct = self._direct_chat_map()
-        for room in result.get("rooms") or []:
+        baseline_rooms = result.get("rooms") or []
+        direct = self._direct_chat_map(baseline_rooms)
+        for room in baseline_rooms:
             room_id = str(room.get("chat_id") or "")
             if room_id not in direct:
                 continue
@@ -917,13 +918,29 @@ class MessengerAssistant:
         text += "\n이 메시지들은 자동 답변 대상이 아닙니다."
         self.discord.send(text)
 
-    def _direct_chat_map(self) -> dict[str, dict[str, Any]]:
-        result = self.kakao.list_chats()
-        return {
-            str(chat.get("chat_id") or ""): chat
-            for chat in result.get("chats") or []
-            if int(chat.get("member_count") or 0) == DIRECT_MEMBER_COUNT
-        }
+    def _direct_chat_map(self, rooms: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        direct: dict[str, dict[str, Any]] = {}
+        lookups: dict[str, dict[str, Any]] = {}
+        for room in rooms:
+            room_id = str(room.get("chat_id") or "")
+            room_name = str(room.get("display_name") or "").strip()
+            if not room_id or not room_name:
+                continue
+            if room_name not in lookups:
+                try:
+                    lookups[room_name] = self.kakao.find_chat(room_name)
+                except Exception:
+                    lookups[room_name] = {"matches": []}
+            for match in lookups[room_name].get("matches") or []:
+                if str(match.get("chat_id") or "") != room_id:
+                    continue
+                sources = match.get("sources")
+                if not isinstance(sources, list):
+                    sources = [match.get("source")]
+                if DIRECT_CHAT_SOURCE in sources:
+                    direct[room_id] = room
+                    break
+        return direct
 
     def _poll_kakao(self) -> None:
         until = iso_now()
@@ -936,10 +953,11 @@ class MessengerAssistant:
             )
         else:
             self.state["last_scan_at"] = until
-        direct = self._direct_chat_map()
+        result_rooms = result.get("rooms") or []
+        direct = self._direct_chat_map(result_rooms)
         processed = set(self.state.get("processed") or [])
         buffers = self.state.setdefault("room_buffers", {})
-        for room in result.get("rooms") or []:
+        for room in result_rooms:
             room_id = str(room.get("chat_id") or "")
             if room_id not in direct:
                 continue

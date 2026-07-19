@@ -4,7 +4,7 @@ title: Jarvis Messenger Assistant
 description: Fail-closed KakaoTalk messenger assistant operated by the existing Jarvis profile through a private Discord control channel.
 resource: repo://hermes-workspace/knowledge/runbooks/jarvis-messenger-assistant.md
 tags: [hermes, jarvis, kakaotalk, discord, gateway, cron, human-in-the-loop]
-timestamp: 2026-07-19T20:30:00+09:00
+timestamp: 2026-07-19T20:47:00+09:00
 ---
 
 # Jarvis Messenger Assistant
@@ -12,7 +12,7 @@ timestamp: 2026-07-19T20:30:00+09:00
 ## Purpose
 
 The existing `jarvis` profile acts as a KakaoTalk messenger assistant. It reads
-1:1 messages every three minutes while explicitly enabled, drafts replies with
+1:1 messages every two minutes while explicitly enabled, drafts replies with
 `openai/gpt-5-nano`, sends low-risk replies with a visible `[메신저 비서]`
 prefix, and routes every other reply through a private Discord approval
 channel.
@@ -25,7 +25,7 @@ gateway restart, and future policy changes remain `review-required`.
 - `scripts/hermes/messenger_assistant.py` is the deterministic controller and
   is installed into Jarvis' profile-specific `~/.hermes/profiles/jarvis/scripts/`
   directory.
-- A Hermes script-only cron job polls KakaoTalk every three minutes. It does not
+- A Hermes script-only cron job polls KakaoTalk every two minutes. It does not
   consume Discord commands.
 - A user-level launchd service keeps `--discord-listen` connected to Discord
   Gateway and dispatches control-channel messages immediately. It catches up
@@ -83,7 +83,8 @@ Reply to an approval or audit card with:
 - A Jarvis gateway PID/start-time change disables the assistant.
 - Start creates a new baseline; messages received before it are summary-only.
 - Stop blocks approvals and corrections as well as automatic replies.
-- Only `member_count == 2` rooms are treated as 1:1 rooms.
+- Only rooms whose adapter lookup reports the same `chat_id` from
+  `NTUser.directChatId` are treated as 1:1 rooms; `member_count` is not used.
 - A new inbound message invalidates an outstanding draft for the same room.
 - Consecutive messages are buffered until 60 seconds after the newest message.
 - Unknown/fallback model use, low confidence, links, attachments, emergencies,
@@ -149,7 +150,7 @@ The installer:
    `--script` value is the filename relative to
    `~/.hermes/profiles/jarvis/scripts`);
 4. adds the control channel to `DISCORD_IGNORED_CHANNELS`;
-5. creates the disabled-state file and a three-minute Kakao-only script cron;
+5. creates the disabled-state file and a two-minute Kakao-only script cron;
 6. installs and starts the user launchd service
    `ai.hermes.jarvis-messenger-assistant-discord` for realtime Discord commands.
 
@@ -178,7 +179,7 @@ bin/hermes-remote status
 
 Before live use, confirm in the private Discord channel:
 
-1. `메신저 상태` receives a response without waiting for the three-minute cron
+1. `메신저 상태` receives a response without waiting for the two-minute cron
    and reports `종료`.
 2. A gateway restart still leaves it `종료`.
 3. `메신저 시작` establishes a new baseline.
