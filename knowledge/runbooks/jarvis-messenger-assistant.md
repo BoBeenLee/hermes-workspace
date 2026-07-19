@@ -4,7 +4,7 @@ title: Jarvis Messenger Assistant
 description: Fail-closed KakaoTalk messenger assistant operated by the existing Jarvis profile through a private Discord control channel.
 resource: repo://hermes-workspace/knowledge/runbooks/jarvis-messenger-assistant.md
 tags: [hermes, jarvis, kakaotalk, discord, gateway, cron, human-in-the-loop]
-timestamp: 2026-07-20T00:48:00+09:00
+timestamp: 2026-07-20T01:10:00+09:00
 ---
 
 # Jarvis Messenger Assistant
@@ -156,6 +156,11 @@ Reply to an approval or audit card with:
   message. There is no CuaDriver fallback and no second actual-send attempt.
   An adapter timeout or uncertain read-back is reported with its specific
   reason while the approval remains pending.
+- Duplicate suppression and post-send read-back require both exact message
+  text and an outgoing timestamp at or after the triggering boundary. The
+  boundary is the latest incoming turn for automatic replies, the pending
+  turn for approved or edited replies, and the audit-card creation time for
+  corrections. An older identical fixed response cannot satisfy a newer send.
 - The KakaoTalk MCP resolves a send destination from only the 20 most recent
   rooms with `kmsg chats --limit 20 --json`. Do not increase the timeout as the
   first response to a send failure. Use the returned `error`, `phase`,
@@ -284,6 +289,9 @@ Before live use, confirm in the private Discord channel:
 9. A forced destination scan failure reports `phase=resolve_destination` and
    `scan_limit=20`; a recent-target miss is distinguishable from a scan timeout
    and from an actual `kmsg send` failure.
+10. Repeating an `assistant_status` request after an older identical fixed
+    response still performs one new actual send; retrying the same trigger
+    recognizes an outgoing match after that trigger and does not resend.
 
 For controller-only updates, back up and replace the installed script, then
 restart only `ai.hermes.jarvis-messenger-assistant-discord`. The script-only

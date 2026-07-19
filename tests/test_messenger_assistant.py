@@ -907,6 +907,120 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
             ],
         )
 
+    def test_verified_send_does_not_treat_old_identical_message_as_current_send(self):
+        message = f"{module.PREFIX} 응, 지금 정상적으로 작동 중이야 🙂"
+
+        class FakeKakao:
+            def __init__(self):
+                self.send_calls = 0
+
+            def preview(self, _target, _chat_id):
+                events = [
+                    {
+                        "entity_id": "old-send",
+                        "timestamp": "2026-07-19T12:00:00+00:00",
+                        "is_from_me": True,
+                        "snippet": message,
+                    }
+                ]
+                if self.send_calls:
+                    events.append(
+                        {
+                            "entity_id": "current-send",
+                            "timestamp": "2026-07-19T13:00:01+00:00",
+                            "is_from_me": True,
+                            "snippet": message,
+                        }
+                    )
+                return {"observed": [{"events": events}]}
+
+            def send(self, _target, _message, *, dry_run, chat_id=None):
+                self.send_calls += 1
+                return {"ok": True, "message_sent": True, "dry_run": dry_run, "chat_id": chat_id}
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.allowed_chat_ids = {"123"}
+        assistant.kakao = FakeKakao()
+
+        with mock.patch.object(
+            module,
+            "now_utc",
+            return_value=dt.datetime(2026, 7, 19, 13, 0, tzinfo=dt.timezone.utc),
+        ):
+            self.assertTrue(assistant._send_verified("친구", "123", message))
+
+        self.assertEqual(assistant.kakao.send_calls, 1)
+
+    def test_verified_send_preserves_idempotency_after_trigger_time(self):
+        message = f"{module.PREFIX} 동일 요청 답변"
+
+        class FakeKakao:
+            send_calls = 0
+
+            @staticmethod
+            def preview(_target, _chat_id):
+                return {
+                    "observed": [
+                        {
+                            "events": [
+                                {
+                                    "entity_id": "current-send",
+                                    "timestamp": "2026-07-19T13:00:01+00:00",
+                                    "is_from_me": True,
+                                    "snippet": message,
+                                }
+                            ]
+                        }
+                    ]
+                }
+
+            @staticmethod
+            def send(_target, _message, *, dry_run, chat_id=None):
+                FakeKakao.send_calls += 1
+                return {"ok": True, "dry_run": dry_run, "chat_id": chat_id}
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.allowed_chat_ids = {"123"}
+        assistant.kakao = FakeKakao()
+
+        self.assertTrue(
+            assistant._send_verified(
+                "친구",
+                "123",
+                message,
+                not_before="2026-07-19T13:00:00+00:00",
+            )
+        )
+        self.assertEqual(FakeKakao.send_calls, 0)
+
+    def test_automatic_send_uses_latest_incoming_timestamp_as_verification_boundary(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant._send_verified = mock.Mock(return_value=True)
+        assistant._touch_room_stats = mock.Mock()
+        assistant.discord = mock.Mock()
+        assistant.discord.send.return_value = {"id": "audit-1"}
+        latest = "2026-07-19T13:00:05+00:00"
+
+        assistant._send_automatic(
+            "123",
+            "친구",
+            [
+                {"timestamp": "2026-07-19T13:00:00+00:00", "text": "첫 메시지"},
+                {"timestamp": latest, "text": "마지막 메시지"},
+            ],
+            "답장",
+            "요약",
+            "감사",
+        )
+
+        assistant._send_verified.assert_called_once_with(
+            "친구",
+            "123",
+            f"{module.PREFIX} 답장",
+            not_before=module.parse_time(latest),
+        )
+
     def test_verified_send_fails_closed_with_jarvis_mcp_reason_and_no_fallback(self):
         class FakeKakao:
             calls = 0

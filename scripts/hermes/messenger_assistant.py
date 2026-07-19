@@ -1652,8 +1652,12 @@ class MessengerAssistant:
         audit: str,
     ) -> None:
         message = f"{PREFIX} {reply.strip()}"
+        triggered_at = max(
+            (timestamp for item in new_turn if (timestamp := parse_time(item.get("timestamp"))) is not None),
+            default=now_utc(),
+        )
         try:
-            self._send_verified(room_name, room_id, message)
+            self._send_verified(room_name, room_id, message, not_before=triggered_at)
         except Exception as exc:
             self.state.setdefault("stats", fresh_stats())["failed"] += 1
             self.discord.send(
@@ -1679,13 +1683,21 @@ class MessengerAssistant:
                 "room_name": room_name,
             }
 
-    def _send_verified(self, room_name: str, room_id: str, message: str) -> bool:
+    def _send_verified(
+        self,
+        room_name: str,
+        room_id: str,
+        message: str,
+        *,
+        not_before: Any | None = None,
+    ) -> bool:
         if not self._room_is_sendable(room_id):
             raise RuntimeError(f"KakaoTalk 검증된 1:1 방 정책 거부: {compact(room_id, 80)}")
-        if self._verify_sent(room_name, room_id, message):
+        verification_start = (parse_time(not_before) or now_utc()).replace(microsecond=0)
+        if self._verify_sent(room_name, room_id, message, not_before=verification_start):
             return True
         result = self.kakao.send(room_name, message, dry_run=False, chat_id=room_id)
-        if self._verify_sent(room_name, room_id, message):
+        if self._verify_sent(room_name, room_id, message, not_before=verification_start):
             return True
         diagnosed = dict(result)
         if result.get("ok"):
@@ -1697,10 +1709,23 @@ class MessengerAssistant:
         detail = kakao_failure_detail(diagnosed, "발신 후 read-back 불일치")
         raise RuntimeError(f"Jarvis KakaoTalk MCP 발신 상태 불명: {compact(detail, 300)}")
 
-    def _verify_sent(self, room_name: str, room_id: str, message: str) -> bool:
+    def _verify_sent(
+        self,
+        room_name: str,
+        room_id: str,
+        message: str,
+        *,
+        not_before: dt.datetime,
+    ) -> bool:
         preview = self.kakao.preview(room_name, room_id)
         for item in reversed(recent_context(preview)[-10:]):
-            if item.get("is_from_me") and compact(item.get("text"), 4000) == compact(message, 4000):
+            sent_at = parse_time(item.get("timestamp"))
+            if (
+                item.get("is_from_me")
+                and sent_at is not None
+                and sent_at >= not_before
+                and compact(item.get("text"), 4000) == compact(message, 4000)
+            ):
                 return True
         return False
 
@@ -1746,7 +1771,10 @@ class MessengerAssistant:
             if correction:
                 try:
                     self._send_verified(
-                        audit["room_name"], audit["room_id"], f"{PREFIX} 정정드립니다. {correction}"
+                        audit["room_name"],
+                        audit["room_id"],
+                        f"{PREFIX} 정정드립니다. {correction}",
+                        not_before=audit.get("created_at"),
                     )
                 except Exception as exc:
                     self.discord.send(
@@ -1795,7 +1823,12 @@ class MessengerAssistant:
                 pending["draft"] = reply
                 pending["resolution"] = resolution
             try:
-                sent = self._send_verified(pending["room_name"], pending["room_id"], f"{PREFIX} {reply}")
+                sent = self._send_verified(
+                    pending["room_name"],
+                    pending["room_id"],
+                    f"{PREFIX} {reply}",
+                    not_before=pending.get("latest_at") or pending.get("created_at"),
+                )
             except Exception as exc:
                 self.state.setdefault("stats", fresh_stats())["failed"] += 1
                 self.discord.send(

@@ -17,6 +17,40 @@
   secret is handled by Jarvis or committed
 - Completion mode: `review-required`
 
+## Fresh-send verification boundary
+
+- HIL status: completed in the Codex task; Discord thread id: none. The user
+  reported an `assistant_status` automatic-send audit card for `이보빈` without
+  a corresponding new visible KakaoTalk message and approved a controller fix.
+- Production diagnosis reproduced the exact mismatch: the latest audit card
+  was created at `2026-07-20T00:59:59+09:00`, while the latest identical
+  KakaoTalk outgoing event was from `2026-07-20T00:24:33+09:00`, a 2,126-second
+  gap. The relevant Jarvis sessions contained preview calls but no
+  `send_message` call, proving that pre-send duplicate detection accepted the
+  stale fixed response and skipped the actual send.
+- Duplicate suppression and post-send read-back now require an exact text match
+  whose outgoing timestamp is at or after the triggering boundary. Automatic
+  replies use the latest incoming turn, approved or edited replies use the
+  pending turn, and corrections use the audit-card creation time. A retry for
+  the same trigger remains idempotent, while an older identical status response
+  cannot satisfy a new request.
+- The regression test failed before the fix with `send_calls=0` and passed
+  afterward with one actual `dry_run=false` call. Two additional tests preserve
+  same-trigger idempotency and verify that automatic sends use the latest
+  incoming timestamp. All 48 controller tests, OKF validation, and
+  `git diff --check` passed. No live KakaoTalk message was sent for testing.
+- Remote controller backup:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-fresh-send-boundary-20260720-010708`.
+  Deployed SHA-256:
+  `32ea425347c07aff3c2cfc4cd3992103beae667502522aae47ef71d0135cd49f`.
+- The dedicated Discord listener restarted as PID `71694`; the Jarvis gateway
+  remained PID `56537` and was not restarted. The first post-deployment cron
+  completed `ok` at `2026-07-20T01:10:44+09:00`, advanced the poll cursor to
+  `2026-07-20T01:08:54+09:00`, and left no buffered room pending. The assistant
+  remained enabled and automatic sending was not paused.
+- Completion mode: `review-required` because recurring automatic-send
+  verification behavior changed.
+
 ## Five-second buffer and no pre-send MCP dry-run
 
 - HIL status: completed in the Codex task; Discord thread id: none. The
