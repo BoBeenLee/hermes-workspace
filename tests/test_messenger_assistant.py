@@ -1,9 +1,7 @@
 import datetime as dt
 import importlib.util
 import json
-import os
 from pathlib import Path
-import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -136,30 +134,40 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("전체", reason)
 
-    def test_recovery_reuses_kmsg_cache_without_reading_or_prompting_for_secrets(self):
+    def test_kakao_operations_are_routed_to_namespaced_mcp_tools(self):
         client = module.KakaoClient.__new__(module.KakaoClient)
-        completed = subprocess.CompletedProcess([], 0)
-        with mock.patch.dict(os.environ, {"KMSG_BIN": "/safe/kmsg"}, clear=False):
-            with mock.patch.object(module.subprocess, "run", return_value=completed) as run:
-                ok, reason = client.stored_login()
+        client._call_tool = mock.Mock(return_value={"ok": True})
 
-        self.assertTrue(ok)
-        self.assertEqual(reason, "submitted")
-        args, kwargs = run.call_args
-        self.assertEqual(args[0], ["/safe/kmsg", "auth", "login", "--auto"])
-        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
-        self.assertNotIn("input", kwargs)
+        client.auth_status()
+        client.list_since("from", "until")
+        client.preview("친구", "123")
+        client.send("친구", "답장", dry_run=True, chat_id="chat-1")
 
-    def test_send_backend_accepts_kmsg_chats_envelope(self):
-        completed = subprocess.CompletedProcess(
-            [],
-            0,
-            stdout=json.dumps({"chats": [], "count": 0}),
-            stderr="",
+        self.assertEqual(
+            [call.args[0] for call in client._call_tool.call_args_list],
+            ["auth_status", "list_new_messages_since", "preview_messages", "send_message"],
         )
-        with mock.patch.dict(os.environ, {"KMSG_BIN": "/safe/kmsg"}, clear=False):
-            with mock.patch.object(module.subprocess, "run", return_value=completed):
-                self.assertTrue(module.KakaoClient.send_backend_ready())
+        send_arguments = client._call_tool.call_args_list[-1].args[1]
+        self.assertEqual(send_arguments["chat_id"], "chat-1")
+
+    def test_direct_room_requires_adapter_direct_evidence_over_mcp(self):
+        client = module.KakaoClient.__new__(module.KakaoClient)
+        client._call_tool = mock.Mock(
+            return_value={
+                "matches": [
+                    {
+                        "chat_id": "123",
+                        "sources": ["visible_chats", "NTUser.directChatId"],
+                    }
+                ]
+            }
+        )
+
+        self.assertTrue(client.is_direct_chat("123", "친구"))
+        client._call_tool.assert_called_once_with(
+            "find_chat",
+            {"query": "친구", "limit": 20, "scan_limit": 500},
+        )
 
     def test_auth_complete_command_is_dispatched(self):
         class FakeDiscord:
@@ -189,10 +197,6 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
             def auth_status():
                 return {"ok": True}
 
-            @staticmethod
-            def send_backend_ready():
-                return True
-
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
         assistant.kakao = FakeKakao()
         assistant.discord = mock.Mock()
@@ -200,7 +204,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant._authentication_completed("42")
 
         assistant.discord.send.assert_called_once()
-        self.assertIn("읽기·발신 로그인을 확인", assistant.discord.send.call_args.args[0])
+        self.assertIn("MCP를 통한 카카오톡 읽기 로그인을 확인", assistant.discord.send.call_args.args[0])
         self.assertEqual(assistant.discord.send.call_args.kwargs["reply_to"], "42")
 
     def test_cron_poll_does_not_consume_discord_commands(self):
@@ -214,6 +218,25 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
             assistant._run_locked(process_discord=False, process_kakao=True)
 
         assistant._process_discord_commands.assert_not_called()
+
+    def test_cron_poll_uses_message_mcp_without_redundant_auth_status(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.profile_dir = Path("/tmp/profile")
+        assistant.state = {
+            "gateway_identity": "same",
+            "enabled": True,
+            "baseline_summary_pending": False,
+        }
+        assistant.discord = mock.Mock()
+        assistant.kakao = mock.Mock()
+        assistant._poll_kakao = mock.Mock()
+        assistant._process_ready_buffers = mock.Mock()
+
+        with mock.patch.object(module, "gateway_identity", return_value="same"):
+            assistant._run_locked(process_discord=False, process_kakao=True)
+
+        assistant.kakao.auth_status.assert_not_called()
+        assistant._poll_kakao.assert_called_once_with()
 
     def test_poll_buffers_manual_from_me_message_in_direct_room(self):
         class FakeKakao:
@@ -237,20 +260,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                 }
 
             @staticmethod
-            def list_chats():
-                return {
-                    "chats": [
-                        {
-                            "chat_id": "direct-1",
-                            "display_name": "친구",
-                            "member_count": 1,
-                        }
-                    ]
-                }
-
-            @staticmethod
-            def direct_chat_ids():
-                return {"direct-1"}
+            def is_direct_chat(chat_id, _display_name):
+                return chat_id == "direct-1"
 
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
         assistant.state = module.default_state()
@@ -304,20 +315,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                 }
 
             @staticmethod
-            def list_chats():
-                return {
-                    "chats": [
-                        {
-                            "chat_id": "group-1",
-                            "display_name": "세 명 방",
-                            "member_count": 2,
-                        }
-                    ]
-                }
-
-            @staticmethod
-            def direct_chat_ids():
-                return set()
+            def is_direct_chat(_chat_id, _display_name):
+                return False
 
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
         assistant.state = module.default_state()
@@ -329,6 +328,33 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant._poll_kakao()
 
         self.assertNotIn("group-1", assistant.state["room_buffers"])
+
+    def test_verified_send_uses_mcp_resolved_chat_id_and_never_retries_actual_send(self):
+        class FakeKakao:
+            def __init__(self):
+                self.calls = []
+
+            def send(self, target, message, *, dry_run, chat_id=None):
+                self.calls.append((target, message, dry_run, chat_id))
+                if dry_run and chat_id is None:
+                    return {"ok": True, "kmsg_match_count": 1, "send_chat_id": "chat-1"}
+                if dry_run:
+                    return {"ok": True, "chat_id_validated": True}
+                return {"ok": True, "message_sent": True}
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.kakao = FakeKakao()
+        assistant._verify_sent = mock.Mock(return_value=True)
+
+        self.assertTrue(assistant._send_verified("친구", "123", "답장"))
+        self.assertEqual(
+            assistant.kakao.calls,
+            [
+                ("친구", "답장", True, None),
+                ("친구", "답장", True, "chat-1"),
+                ("친구", "답장", False, "chat-1"),
+            ],
+        )
 
 
 if __name__ == "__main__":

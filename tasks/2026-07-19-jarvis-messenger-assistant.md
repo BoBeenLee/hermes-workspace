@@ -93,11 +93,30 @@
   outgoing message was registered once, consumed by direct cron execution
   `eb5e6d7dc09a43c08c07883f305aaddf`, recorded as processed, and routed to one
   pending Discord approval card with zero failures and no automatic send.
+- MCP-only KakaoTalk path — auth checks, direct-room lookup, recent-message
+  polling, baseline reads, previews, send dry-runs, and sends now call the
+  Hermes-configured `openhuman-kakaotalk-mac` MCP tools. The controller no
+  longer imports the adapter or invokes `kakaocli`, `kmsg`, `pgrep`, or
+  `open -a KakaoTalk` directly.
+- Send resolution fix — a target-name dry-run now resolves `send_chat_id`, a
+  second MCP dry-run validates that exact ID, and actual send is attempted only
+  once. The previous requirement that the first name-based dry-run already have
+  `chat_id_validated=true` rejected valid unique targets.
+- MCP live verification — the existing pending room returned
+  `NTUser.directChatId` evidence through MCP, the two-stage send dry-run passed
+  without an actual send, and direct cron execution
+  `d23181dc6efb401a81ac6346a7b3cf49` advanced the Kakao poll cursor.
+- Scheduled verification — builtin execution
+  `74fe385d21cc45bcb0317b097c0d1015` completed on the two-minute schedule and
+  advanced both the poll and scan cursors while leaving the assistant enabled.
+- MCP controller backups:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-mcp-protocol-20260719-211521`
+  and
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-mcp-poll-20260719-211720`.
 - Human review/action still required:
-  - enter the KakaoTalk ID and changed password in the interactive `kmsg`
-    prompts already opened on the remote Mac
-  - complete any KakaoTalk device/OTP approval manually
-  - issue `메신저 상태` and then `메신저 시작` in the private Discord thread
+  - reply `승인` again to the still-pending Discord card if the draft should be
+    sent through the corrected MCP path; deployment verification performed no
+    actual KakaoTalk send
 - Source ledger: Context7 `/discord/discord-api-docs` for Discord Gateway
   MESSAGE_CREATE, heartbeat/resume, and message-content intent requirements;
   Context7 `/nousresearch/hermes-agent` plus installed v0.18.2 CLI help for

@@ -36,7 +36,9 @@ gateway restart, and future policy changes remain `review-required`.
 - The private channel or private-thread fallback is added to
   `DISCORD_IGNORED_CHANNELS`, preventing the
   ordinary Jarvis conversational gateway from double-processing control replies.
-- KakaoTalk reads and sends call the installed `openhuman-kakaotalk-mac` adapter.
+- Every KakaoTalk operation uses the Hermes-configured
+  `openhuman-kakaotalk-mac` MCP stdio server. The controller does not import
+  adapter Python modules or invoke `kakaocli`/`kmsg` directly.
 - A Hermes one-shot call with tools disabled performs JSON classification and
   drafting. If the usage report does not show the configured primary nano
   model, automatic sending is prohibited.
@@ -85,9 +87,10 @@ Reply to an approval or audit card with:
 - Stop blocks approvals and corrections as well as automatic replies.
 - Only rooms whose adapter lookup reports the same `chat_id` from
   `NTUser.directChatId` are treated as 1:1 rooms; `member_count` is not used.
-- Direct-room IDs are read in one adapter DB query rather than through
-  `find_chat`, whose preview-followup guard can intentionally suppress repeated
-  lookups after a successful message preview.
+- Direct-room evidence is obtained through the MCP `find_chat` tool and cached
+  only when the same `chat_id` includes the adapter source
+  `NTUser.directChatId`. A preview-followup guard produces no new evidence and
+  therefore fails closed for an uncached room.
 - A new incoming message or user-authored outgoing message invalidates an
   outstanding draft for the same room. Messages beginning with the visible
   `[메신저 비서]` prefix are never candidates, preventing reply loops.
@@ -98,31 +101,34 @@ Reply to an approval or audit card with:
   or remembered facts in the reply require approval.
 - Per-room automatic sends are capped at three per 30 minutes. Global automatic
   sends are capped at ten per ten minutes.
-- Sends perform a dry-run destination check. Ambiguous destination matches fail
-  closed. A failed send is retried only once after read-back does not find it.
+- Sends first resolve one destination with MCP `send_message(dry_run=true)`,
+  then revalidate the returned `send_chat_id` with a second MCP dry-run.
+  Ambiguous destinations fail closed. Actual send is attempted exactly once;
+  read-back verification never triggers another send.
 - KakaoTalk read state is never changed intentionally.
 
 ## KakaoTalk Recovery
 
-The controller starts KakaoTalk when the process is absent. Jarvis never reads,
-stores, or types the Kakao account, password, OTP, or device-approval value.
-The user performs the initial `kmsg` login in an interactive terminal on the
-remote Mac and enters all authentication values directly:
+Jarvis never reads, stores, or types the Kakao account, password, OTP, or
+device-approval value. The user performs the initial `kmsg` login in an
+interactive terminal on the remote Mac and enters all authentication values
+directly:
 
 ```bash
 /opt/homebrew/bin/kmsg auth login
 ```
 
-`kmsg` owns its encrypted credential cache. On later recovery attempts the
-Hermes cron controller invokes `kmsg auth login --auto` with standard input
-closed. If no cached login is available, or a device/OTP/security check is
-required, it fails closed, disables the assistant, and requests manual action
-in Discord. After the user completes the interactive login, `메신저 시작`
-rechecks both Kakao read access and the send backend before enabling polling.
+`kmsg` owns its encrypted credential cache. The controller checks read auth
+only through MCP `auth_status`; it does not launch KakaoTalk or invoke a login
+command itself. If login is unavailable, it fails closed, disables the
+assistant, and requests manual action in Discord. After the user completes the
+interactive login, `메신저 시작` rechecks MCP read access. Send readiness and
+the resolved destination are checked through MCP dry-runs immediately before
+each send.
 
 Device approval, OTP, and other second-factor steps are never collected by
-Jarvis. After two failed recovery attempts the controller disables itself and
-reports to Discord.
+Jarvis. A failed MCP poll does not advance the message cursor and is reported
+to Discord; the next scheduled poll retries through the same MCP path.
 
 ## Installation
 

@@ -15,6 +15,7 @@ timestamps, routing metadata, and drafts that are already visible in Discord.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import contextlib
 import datetime as dt
 import fcntl
@@ -26,7 +27,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import time
 from typing import Any, Iterable
 import urllib.error
 import urllib.parse
@@ -248,172 +248,139 @@ class KakaoClient:
     def __init__(self, profile_dir: Path, assistant_config: dict[str, Any]) -> None:
         self.profile_dir = profile_dir
         self.assistant_config = assistant_config
-        self._module: Any = None
-        self._load_environment()
+        self.server = self._load_server_config()
 
-    def _load_environment(self) -> None:
+    def _load_server_config(self) -> dict[str, Any]:
         config_path = self.profile_dir / "config.yaml"
         try:
             import yaml
 
             config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            mcp = (config.get("mcp_servers") or {}).get("openhuman-kakaotalk-mac") or {}
-            for key, value in (mcp.get("env") or {}).items():
-                os.environ.setdefault(str(key), str(value))
-            server_args = list(mcp.get("args") or [])
-            directory = ""
-            if "--directory" in server_args:
-                index = server_args.index("--directory")
-                if index + 1 < len(server_args):
-                    directory = str(server_args[index + 1])
-        except Exception:
-            directory = ""
-        directory = directory or str(
-            Path.home() / ".hermes/mcp-servers/openhuman-kakaotalk-mac/server"
+        except Exception as exc:
+            raise RuntimeError(f"Hermes MCP config를 읽지 못했습니다: {compact(exc, 200)}") from exc
+        server = (config.get("mcp_servers") or {}).get("openhuman-kakaotalk-mac") or {}
+        if not server.get("enabled", True):
+            raise RuntimeError("Hermes KakaoTalk MCP server가 비활성화되어 있습니다")
+        if not str(server.get("command") or "").strip():
+            raise RuntimeError("Hermes KakaoTalk MCP server command가 없습니다")
+        return server
+
+    async def _call_tool_async(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("Hermes MCP Python SDK를 찾지 못했습니다") from exc
+
+        env = os.environ.copy()
+        env.update({str(key): str(value) for key, value in (self.server.get("env") or {}).items()})
+        params = StdioServerParameters(
+            command=str(self.server["command"]),
+            args=[str(value) for value in (self.server.get("args") or [])],
+            env=env,
+            cwd=self.server.get("cwd"),
         )
-        if directory not in sys.path:
-            sys.path.insert(0, directory)
+        async with stdio_client(params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                result = await session.call_tool(tool_name, arguments=arguments)
 
-    @property
-    def module(self) -> Any:
-        if self._module is None:
-            from adapters.kakaotalk import mcp_server
+        if getattr(result, "isError", False):
+            detail = " ".join(
+                str(getattr(block, "text", ""))
+                for block in result.content
+                if getattr(block, "type", "") == "text"
+            )
+            raise RuntimeError(f"KakaoTalk MCP tool error: {compact(detail, 300)}")
+        for block in result.content:
+            if getattr(block, "type", "") != "text":
+                continue
+            try:
+                payload = json.loads(str(getattr(block, "text", "")))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
+        raise RuntimeError("KakaoTalk MCP tool이 JSON 객체를 반환하지 않았습니다")
 
-            self._module = mcp_server
-        return self._module
+    def _call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        return asyncio.run(self._call_tool_async(f"kakaotalk_mac.{name}", arguments or {}))
 
     def auth_status(self) -> dict[str, Any]:
-        return self.module.auth_status_impl()
+        return self._call_tool("auth_status")
 
-    def direct_chat_ids(self) -> set[str]:
-        rows = self.module.run_kakaocli_json(
-            None,
-            ["query", "select distinct directChatId from NTUser where directChatId != 0"],
-            user_id=self.module._resolve_user_id(None),
+    def is_direct_chat(self, chat_id: str, display_name: str) -> bool | None:
+        result = self._call_tool(
+            "find_chat",
+            {"query": display_name, "limit": 20, "scan_limit": 500},
         )
-        if not isinstance(rows, list):
-            return set()
-        return {
-            str(row[0])
-            for row in rows
-            if isinstance(row, list) and row and row[0] not in (None, "", 0)
-        }
+        if result.get("preview_already_succeeded"):
+            return None
+        for match in result.get("matches") or []:
+            if str(match.get("chat_id") or "") != str(chat_id):
+                continue
+            sources = match.get("sources") or [match.get("source")]
+            return "NTUser.directChatId" in sources
+        return False
 
     def list_since(self, since: str, until: str) -> dict[str, Any]:
-        return self.module.list_new_messages_since_impl(
-            since,
-            until=until,
-            chat_limit=500,
-            message_limit_per_chat=50,
-            include_unknown=True,
-            include_unread=False,
-            snippet_chars=4000,
+        return self._call_tool(
+            "list_new_messages_since",
+            {
+                "since": since,
+                "until": until,
+                "chat_limit": 500,
+                "message_limit_per_chat": 50,
+                "include_unknown": True,
+                "include_unread": False,
+                "snippet_chars": 4000,
+            },
         )
 
     def unread_baseline(self) -> dict[str, Any]:
         since = (now_utc() - dt.timedelta(days=7)).replace(microsecond=0).isoformat()
-        return self.module.list_new_messages_since_impl(
-            since,
-            chat_limit=500,
-            message_limit_per_chat=50,
-            include_unknown=True,
-            include_unread=True,
-            unread_message_limit=50,
-            snippet_chars=500,
+        return self._call_tool(
+            "list_new_messages_since",
+            {
+                "since": since,
+                "chat_limit": 500,
+                "message_limit_per_chat": 50,
+                "include_unknown": True,
+                "include_unread": True,
+                "unread_message_limit": 50,
+                "snippet_chars": 500,
+            },
         )
 
     def preview(self, target: str, chat_id: str) -> dict[str, Any]:
-        return self.module.preview_messages_impl(
-            target,
-            limit=50,
-            scan_limit=500,
-            chat_id=int(chat_id),
-            snippet_chars=4000,
+        return self._call_tool(
+            "preview_messages",
+            {
+                "target": target,
+                "limit": 50,
+                "scan_limit": 500,
+                "chat_id": int(chat_id),
+                "snippet_chars": 4000,
+            },
         )
 
-    def send(self, target: str, message: str, *, dry_run: bool) -> dict[str, Any]:
-        return self.module.send_message_impl(
-            message,
-            target=target,
-            dry_run=dry_run,
-            timeout_seconds=60,
-        )
-
-    @staticmethod
-    def app_running() -> bool:
-        result = subprocess.run(
-            ["/usr/bin/pgrep", "-x", "KakaoTalk"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        return result.returncode == 0
-
-    @staticmethod
-    def launch_app() -> bool:
-        subprocess.run(
-            ["/usr/bin/open", "-a", "KakaoTalk"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            if KakaoClient.app_running():
-                return True
-            time.sleep(1)
-        return False
-
-    @staticmethod
-    def send_backend_ready() -> bool:
-        kmsg_bin = os.getenv("KMSG_BIN", "").strip()
-        if not kmsg_bin:
-            return False
-        try:
-            result = subprocess.run(
-                [kmsg_bin, "chats", "--json"],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                check=False,
-                timeout=30,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        if result.returncode != 0:
-            return False
-        try:
-            payload = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return False
-        if isinstance(payload, list):
-            return True
-        return isinstance(payload, dict) and isinstance(payload.get("chats"), list)
-
-    def stored_login(self) -> tuple[bool, str]:
-        """Ask kmsg to reuse credentials entered by the user in its own login flow.
-
-        The controller never reads or submits an account, password, OTP, or device
-        approval value.  With stdin closed, ``--auto`` fails closed when kmsg has
-        no encrypted credential cache instead of prompting inside a cron job.
-        """
-        kmsg_bin = os.getenv("KMSG_BIN", "").strip()
-        if not kmsg_bin:
-            return False, "kmsg_not_configured"
-        try:
-            result = subprocess.run(
-                [kmsg_bin, "auth", "login", "--auto"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=90,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False, "kmsg_login_failed"
-        submitted = result.returncode == 0
-        return submitted, "submitted" if submitted else "user_input_or_verification_required"
+    def send(
+        self,
+        target: str,
+        message: str,
+        *,
+        dry_run: bool,
+        chat_id: str | None = None,
+    ) -> dict[str, Any]:
+        arguments: dict[str, Any] = {
+            "message": message,
+            "target": target,
+            "dry_run": dry_run,
+            "timeout_seconds": 60,
+        }
+        if chat_id:
+            arguments["chat_id"] = chat_id
+        return self._call_tool("send_message", arguments)
 
 
 def gateway_identity(profile_dir: Path) -> str:
@@ -754,10 +721,9 @@ class MessengerAssistant:
             return
         if not self.state.get("enabled"):
             return
-        if not self._ensure_kakao_ready():
-            return
-        if self.state.pop("baseline_summary_pending", False):
+        if self.state.get("baseline_summary_pending"):
             self._send_baseline_summary()
+            self.state["baseline_summary_pending"] = False
         self._poll_kakao()
         self._process_ready_buffers()
 
@@ -802,10 +768,10 @@ class MessengerAssistant:
             read_ready = not status.get("error") and status.get("ok", True)
         except Exception:
             read_ready = False
-        send_ready = self.kakao.send_backend_ready()
-        if read_ready and send_ready:
+        if read_ready:
             self.discord.send(
-                "✅ 카카오톡 읽기·발신 로그인을 확인했습니다. 메신저 비서는 아직 종료 상태입니다. "
+                "✅ MCP를 통한 카카오톡 읽기 로그인을 확인했습니다. 발신 대상은 실제 전송 직전 MCP dry-run으로 검증합니다. "
+                "메신저 비서는 아직 종료 상태입니다. "
                 "실제 운영을 시작하려면 `메신저 시작`을 입력하세요.",
                 reply_to=message_id,
             )
@@ -889,36 +855,10 @@ class MessengerAssistant:
             f"- 승인 전용 방: {', '.join(approval_only) or '-'}"
         )
 
-    def _ensure_kakao_ready(self) -> bool:
-        attempts = 0
-        while attempts < 2:
-            attempts += 1
-            if not self.kakao.app_running() and not self.kakao.launch_app():
-                continue
-            status = self.kakao.auth_status()
-            if not status.get("error") and status.get("ok", True) and self.kakao.send_backend_ready():
-                return True
-            submitted, reason = self.kakao.stored_login()
-            if submitted:
-                time.sleep(5)
-                status = self.kakao.auth_status()
-                if not status.get("error") and status.get("ok", True) and self.kakao.send_backend_ready():
-                    return True
-            if reason == "user_input_or_verification_required":
-                break
-        self.state["enabled"] = False
-        self.state.setdefault("stats", fresh_stats())["failed"] += 1
-        self.discord.send(
-            "🚨 **카카오톡 복구 실패 — 메신저 비서 종료**\n"
-            "앱 실행/로그인을 최대 2회 시도했지만 준비 상태를 확인하지 못했습니다. "
-            "원격 Mac 터미널에서 `kmsg auth login`을 실행해 계정·비밀번호를 직접 입력하고, "
-            "기기 인증이나 보안 확인도 직접 완료한 뒤 `메신저 시작`을 다시 입력하세요. "
-            "Jarvis는 인증정보를 읽거나 대신 입력하지 않습니다."
-        )
-        return False
-
     def _send_baseline_summary(self) -> None:
         result = self.kakao.unread_baseline()
+        if result.get("ok") is False or result.get("error"):
+            raise RuntimeError(f"KakaoTalk MCP baseline 조회 실패: {compact(result.get('error') or result.get('message'), 200)}")
         rooms = []
         baseline_rooms = result.get("rooms") or []
         direct = self._direct_chat_map(baseline_rooms)
@@ -937,21 +877,38 @@ class MessengerAssistant:
         self.discord.send(text)
 
     def _direct_chat_map(self, rooms: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-        try:
-            direct_ids = self.kakao.direct_chat_ids()
-        except Exception:
-            return {}
-        return {
-            room_id: room
-            for room in rooms
-            if (room_id := str(room.get("chat_id") or "")) in direct_ids
-        }
+        direct: dict[str, dict[str, Any]] = {}
+        for room in rooms:
+            room_id = str(room.get("chat_id") or "")
+            room_name = str(room.get("display_name") or room_id)
+            room_state = self.state.setdefault("rooms", {}).setdefault(room_id, {"name": room_name})
+            if room_state.get("is_direct") is True:
+                direct[room_id] = room
+                continue
+            try:
+                is_direct = self.kakao.is_direct_chat(room_id, room_name)
+            except Exception:
+                is_direct = None
+            if is_direct is True:
+                room_state["is_direct"] = True
+                room_state["direct_evidence"] = "NTUser.directChatId via Hermes MCP"
+                room_state["direct_verified_at"] = iso_now()
+                direct[room_id] = room
+        return direct
 
     def _poll_kakao(self) -> None:
         until = iso_now()
         since = str(self.state.get("last_scan_at") or self.state.get("baseline_at") or until)
         result = self.kakao.list_since(since, until)
         self.state["last_kakao_poll_at"] = until
+        if result.get("ok") is False or result.get("error"):
+            self.state.setdefault("stats", fresh_stats())["failed"] += 1
+            self.discord.send(
+                "🚨 **카카오톡 MCP 조회 실패**\n"
+                f"오류: {compact(result.get('error') or result.get('message'), 300)}\n"
+                "조회 커서는 이동하지 않았으며 다음 주기에 다시 확인합니다."
+            )
+            return
         if result.get("partial") and result.get("truncated_reason"):
             self.discord.send(
                 f"⚠️ 카카오톡 조회가 일부만 완료됐습니다: {compact(result.get('truncated_reason'), 120)}. 다음 주기에 중복 제거 후 재확인합니다."
@@ -1178,19 +1135,16 @@ class MessengerAssistant:
 
     def _send_verified(self, room_name: str, room_id: str, message: str) -> bool:
         dry = self.kakao.send(room_name, message, dry_run=True)
-        if not dry.get("ok") or not dry.get("chat_id_validated") or int(dry.get("kmsg_match_count") or 0) != 1:
+        send_chat_id = str(dry.get("send_chat_id") or "")
+        if not dry.get("ok") or int(dry.get("kmsg_match_count") or 0) != 1 or not send_chat_id:
             return False
-        for attempt in range(2):
-            result = self.kakao.send(room_name, message, dry_run=False)
-            if result.get("ok") and result.get("message_sent"):
-                if self._verify_sent(room_name, room_id, message):
-                    return True
-                return False
-            if self._verify_sent(room_name, room_id, message):
-                return True
-            if attempt == 0:
-                continue
-        return False
+        validated = self.kakao.send(room_name, message, dry_run=True, chat_id=send_chat_id)
+        if not validated.get("ok") or not validated.get("chat_id_validated"):
+            return False
+        result = self.kakao.send(room_name, message, dry_run=False, chat_id=send_chat_id)
+        if result.get("ok") and result.get("message_sent"):
+            return self._verify_sent(room_name, room_id, message)
+        return self._verify_sent(room_name, room_id, message)
 
     def _verify_sent(self, room_name: str, room_id: str, message: str) -> bool:
         preview = self.kakao.preview(room_name, room_id)
@@ -1362,10 +1316,18 @@ def check_config(config_path: Path) -> int:
         print(json.dumps({"ok": False, "missing": missing}, ensure_ascii=False))
         return 1
     profile_dir = Path(str(config.get("profile_dir") or "~/.hermes/profiles/jarvis")).expanduser()
+    try:
+        import mcp  # noqa: F401
+
+        KakaoClient(profile_dir, config)
+        mcp_ready = True
+    except Exception:
+        mcp_ready = False
     checks = {
         "config": True,
         "profile_dir": profile_dir.is_dir(),
         "profile_config": (profile_dir / "config.yaml").is_file(),
+        "kakaotalk_mcp": mcp_ready,
         "discord_token": bool(os.getenv("DISCORD_BOT_TOKEN") or dotenv_value(profile_dir / ".env", "DISCORD_BOT_TOKEN")),
         "hermes_bin": Path(str(config.get("hermes_bin") or "~/.local/bin/hermes")).expanduser().is_file(),
     }
