@@ -25,8 +25,11 @@ gateway restart, and future policy changes remain `review-required`.
 - `scripts/hermes/messenger_assistant.py` is the deterministic controller and
   is installed into Jarvis' profile-specific `~/.hermes/profiles/jarvis/scripts/`
   directory.
-- A Hermes script-only cron job polls KakaoTalk every two minutes. It does not
-  consume Discord commands.
+- A Hermes script-only cron job wakes the controller every two minutes. The
+  controller delegates each KakaoTalk read to a Jarvis one-shot restricted to
+  the `openhuman-kakaotalk-mac` toolset. Jarvis directly calls the MCP tool and
+  the controller consumes the verified tool result from that same Hermes
+  session. The cron does not consume Discord commands.
 - A user-level launchd service keeps `--discord-listen` connected to Discord
   Gateway and dispatches control-channel messages immediately. It catches up
   through the REST cursor after reconnecting, so a temporary disconnect does
@@ -36,9 +39,15 @@ gateway restart, and future policy changes remain `review-required`.
 - The private channel or private-thread fallback is added to
   `DISCORD_IGNORED_CHANNELS`, preventing the
   ordinary Jarvis conversational gateway from double-processing control replies.
-- Every KakaoTalk operation uses the Hermes-configured
-  `openhuman-kakaotalk-mac` MCP stdio server. The controller does not import
-  adapter Python modules or invoke `kakaocli`/`kmsg` directly.
+- Every KakaoTalk operation goes through `JarvisKakaoAgent`: a Jarvis one-shot
+  uses the Hermes-configured `openhuman-kakaotalk-mac` toolset and directly
+  calls exactly one namespaced MCP tool. The controller verifies the primary
+  model/provider, exact tool name, required arguments, one-call count, and raw
+  tool result recorded in the same Jarvis session. It does not import the MCP
+  SDK or adapter modules and does not invoke `kakaocli`, `kmsg`, or CuaDriver.
+- Two-minute scans and previews use bounded result sizes so Hermes can retain
+  the complete MCP tool result. A truncated or malformed session result fails
+  closed instead of being reconstructed from model text.
 - A Hermes one-shot call with tools disabled performs JSON classification and
   drafting. If the usage report does not show the configured primary nano
   model, automatic sending is prohibited.
@@ -101,13 +110,12 @@ Reply to an approval or audit card with:
   or remembered facts in the reply require approval.
 - Per-room automatic sends are capped at three per 30 minutes. Global automatic
   sends are capped at ten per ten minutes.
-- Sends first resolve one destination with MCP `send_message(dry_run=true)`,
-  using the adapter-provided actual direct-room ID. The same room ID is used
-  for the one actual send and for MCP read-back verification. If the KakaoTalk
-  adapter cannot confirm the send, the Discord listener may use Hermes
-  CuaDriver MCP only when an already-open, on-screen KakaoTalk window title
-  exactly equals the approved room name. It then performs MCP read-back and
-  never retries a verified message.
+- Sends first ask Jarvis to call MCP `send_message(dry_run=true)` for the
+  adapter-provided direct-room destination. After validation, Jarvis calls the
+  same MCP tool once with `dry_run=false`, and the controller asks Jarvis for
+  an MCP preview to verify the visible message. There is no CuaDriver fallback
+  and no second actual-send attempt. An adapter timeout or uncertain read-back
+  is reported with its specific reason while the approval remains pending.
 - The special approved edit `수정: 하남 오늘 날씨` is resolved by a Jarvis
   one-shot restricted to the `terminal` toolset. Jarvis runs one fixed,
   read-only `/usr/bin/curl --fail --max-time 20` request against the Open-Meteo

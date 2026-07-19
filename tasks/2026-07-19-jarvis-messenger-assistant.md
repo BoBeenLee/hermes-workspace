@@ -17,6 +17,40 @@
   secret is handled by Jarvis or committed
 - Completion mode: `review-required`
 
+## Jarvis-direct MCP refactor
+
+- The two-minute cron remains the only Kakao polling trigger. It wakes the
+  deterministic controller, which now delegates every Kakao read/send to a
+  Jarvis one-shot restricted to `openhuman-kakaotalk-mac`.
+- `JarvisKakaoAgent` is the single Kakao seam. The controller no longer opens
+  MCP stdio sessions itself and no longer contains a CuaDriver send fallback.
+- Each operation requires the primary Jarvis model/provider and verifies one
+  exact namespaced MCP tool call, required tool arguments, and the raw tool
+  result from the same Hermes session database before using it.
+- Live read-only evidence:
+  - auth session `20260719_225230_ad040a` called `auth_status` once and reported
+    read auth ready;
+  - preview session `20260719_225539_f7772e` called `preview_messages` once and
+    returned 20 events;
+  - poll session `20260719_225611_05683c` called
+    `list_new_messages_since` once for a five-minute interval, completed the
+    adapter scan in about 12 seconds, and was not partial.
+- Result sizes are bounded because the previous 50-message/4,000-character
+  preview produced a 115 KB tool response that Hermes truncated. Truncated or
+  malformed results now fail closed.
+- Send dry-run session `20260719_225940_c3c65b` proved the direct Jarvis MCP
+  route and preserved the adapter's exact `kmsg_chats_timeout` failure without
+  sending a message. No UI fallback or duplicate actual send was attempted.
+- Deployed controller backup:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-jarvis-agent-mcp-20260719-230218`.
+- The first confirmed scheduled production run completed at 23:05:34 KST.
+  Session `20260719_230510_842530` contains four records and exactly one
+  `list_new_messages_since` MCP tool result; the production scan cursor advanced
+  from 23:02:09 to 23:05:09 KST with zero added failures. The listener restarted
+  as PID `51620`; the Jarvis gateway was not restarted.
+- Completion mode remains `review-required` because this changes the recurring
+  controller and remote listener deployment.
+
 ## Checks
 
 - Private Discord control surface: private thread `메신저-비서`

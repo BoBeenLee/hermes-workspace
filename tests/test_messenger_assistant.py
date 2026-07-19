@@ -2,6 +2,7 @@ import datetime as dt
 import importlib.util
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 from unittest import mock
@@ -210,8 +211,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("전체", reason)
 
-    def test_kakao_operations_are_routed_to_namespaced_mcp_tools(self):
-        client = module.KakaoClient.__new__(module.KakaoClient)
+    def test_kakao_operations_are_routed_through_jarvis_agent_interface(self):
+        client = module.JarvisKakaoAgent.__new__(module.JarvisKakaoAgent)
         client._call_tool = mock.Mock(return_value={"ok": True})
 
         client.auth_status()
@@ -226,8 +227,66 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         send_arguments = client._call_tool.call_args_list[-1].args[1]
         self.assertEqual(send_arguments["chat_id"], "chat-1")
 
+    def test_jarvis_kakao_agent_uses_only_kakao_toolset_and_verified_session_result(self):
+        client = module.JarvisKakaoAgent(Path("/tmp/hermes"), "jarvis", Path("/tmp/profile"))
+        usage = {
+            "model": module.PRIMARY_MODEL,
+            "provider": module.PRIMARY_PROVIDER,
+            "session_id": "session-1",
+        }
+        with mock.patch.object(module, "run_hermes_json", return_value=({"ok": True}, usage)) as run, mock.patch.object(
+            module,
+            "hermes_session_tool_payload",
+            return_value={"ok": True, "auth_state": "ok"},
+        ) as session_result:
+            result = client.auth_status()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["hermes_session_id"], "session-1")
+        self.assertEqual(run.call_args.kwargs["toolsets"], module.KAKAO_TOOLSET)
+        self.assertIn("kakaotalk_mac.auth_status exactly once", run.call_args.args[2])
+        session_result.assert_called_once_with(
+            Path("/tmp/profile"),
+            "session-1",
+            module.KAKAO_TOOL_PREFIX + "auth_status",
+            {"user_id": "", "kakaocli_bin": ""},
+        )
+
+    def test_jarvis_session_result_requires_one_exact_tool_call_and_arguments(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile = Path(temp_dir)
+            database = profile / "state.db"
+            expected_tool = module.KAKAO_TOOL_PREFIX + "send_message"
+            arguments = {"target": "친구", "message": "답장", "dry_run": True}
+            calls = [{"function": {"name": expected_tool, "arguments": json.dumps(arguments, ensure_ascii=False)}}]
+            tool_content = '<untrusted_tool_result source="mcp">\n' + json.dumps(
+                {"result": json.dumps({"ok": True, "chat_id_validated": True})}
+            ) + "\n</untrusted_tool_result>"
+            with sqlite3.connect(database) as connection:
+                connection.execute(
+                    "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, "
+                    "content TEXT, tool_calls TEXT, tool_name TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO messages(session_id, role, tool_calls) VALUES(?,?,?)",
+                    ("session-1", "assistant", json.dumps(calls, ensure_ascii=False)),
+                )
+                connection.execute(
+                    "INSERT INTO messages(session_id, role, content, tool_name) VALUES(?,?,?,?)",
+                    ("session-1", "tool", tool_content, expected_tool),
+                )
+
+            result = module.hermes_session_tool_payload(
+                profile,
+                "session-1",
+                expected_tool,
+                arguments,
+            )
+
+        self.assertEqual(result, {"ok": True, "chat_id_validated": True})
+
     def test_direct_room_requires_adapter_direct_evidence_over_mcp(self):
-        client = module.KakaoClient.__new__(module.KakaoClient)
+        client = module.JarvisKakaoAgent.__new__(module.JarvisKakaoAgent)
         client._call_tool = mock.Mock(
             return_value={
                 "matches": [
@@ -242,7 +301,13 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertTrue(client.is_direct_chat("123", "친구"))
         client._call_tool.assert_called_once_with(
             "find_chat",
-            {"query": "친구", "limit": 20, "scan_limit": 500},
+            {
+                "query": "친구",
+                "limit": 20,
+                "scan_limit": 100,
+                "kakaocli_bin": "",
+                "user_id": "",
+            },
         )
 
     def test_auth_complete_command_is_dispatched(self):
@@ -429,53 +494,22 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
             ],
         )
 
-    def test_verified_send_falls_back_to_cua_mcp_and_reads_back(self):
+    def test_verified_send_fails_closed_with_jarvis_mcp_reason_and_no_fallback(self):
         class FakeKakao:
+            calls = 0
+
             @staticmethod
             def send(_target, _message, *, dry_run, chat_id=None):
-                if dry_run:
-                    return {"ok": True, "chat_id_validated": True}
-                return {"ok": False, "message_sent": False}
+                FakeKakao.calls += 1
+                return {"ok": False, "error": "kmsg_chats_timeout"}
 
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
         assistant.kakao = FakeKakao()
-        assistant.cua = mock.Mock()
-        assistant.cua.send_to_open_room.return_value = True
-        assistant._verify_sent = mock.Mock(side_effect=[False, False, True])
+        assistant._verify_sent = mock.Mock(return_value=False)
 
-        self.assertTrue(assistant._send_verified("친구", "123", "답장"))
-        assistant.cua.send_to_open_room.assert_called_once_with("친구", "답장")
-        self.assertEqual(assistant._verify_sent.call_count, 3)
-
-    def test_cua_fallback_requires_exact_open_room_and_types_relative_to_window(self):
-        client = module.CuaDriverClient.__new__(module.CuaDriverClient)
-        client._call_tool = mock.Mock(
-            side_effect=[
-                {
-                    "apps": [
-                        {
-                            "bundle_id": client.KAKAO_BUNDLE_ID,
-                            "running": True,
-                            "pid": 10,
-                        }
-                    ]
-                },
-                {
-                    "windows": [
-                        {"title": "친구", "is_on_screen": True, "window_id": 20},
-                    ]
-                },
-                {"screenshot_width": 1000, "screenshot_height": 800},
-                {"verified": True, "characters": 2},
-                {},
-            ]
-        )
-
-        self.assertTrue(client.send_to_open_room("친구", "답장"))
-        typed = client._call_tool.call_args_list[3]
-        self.assertEqual(typed.args[0], "type_text")
-        self.assertEqual(typed.args[1]["x"], 330)
-        self.assertEqual(typed.args[1]["y"], 688)
+        with self.assertRaisesRegex(RuntimeError, "kmsg_chats_timeout"):
+            assistant._send_verified("친구", "123", "답장")
+        self.assertEqual(FakeKakao.calls, 1)
 
 
 if __name__ == "__main__":
