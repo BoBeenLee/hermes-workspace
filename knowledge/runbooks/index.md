@@ -1,6 +1,7 @@
 # Runbooks
 
 - [DGX Spark Remote Access](dgx-spark-remote-access.md)
+- [Hallmark Product Profile Skill](hallmark-product-skill.md)
 - [Hermes Agent Bootstrap](hermes-agent-bootstrap.md)
 - [Hermes Agent Multi-Host Bootstrap](hermes-agent-multi-host.md)
 - [Hermes Workflow Optimization](hermes-workflow-optimization.md)

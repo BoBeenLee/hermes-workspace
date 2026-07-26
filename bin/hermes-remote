@@ -57,6 +57,7 @@ fi
 : "${HERMES_SSH_KEY:=}"
 
 RESEARCH_INTEL_SCRIPT="$ROOT_DIR/scripts/hermes/research_intel.py"
+HALLMARK_LOCK_FILE="$ROOT_DIR/config/skills/hallmark.lock"
 SSH_OPTS=(-o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}")
 if [[ -n "$HERMES_SSH_KEY" ]]; then
   SSH_OPTS=(-i "$HERMES_SSH_KEY" -o IdentitiesOnly=yes "${SSH_OPTS[@]}")
@@ -85,6 +86,61 @@ require_arg() {
 
 quote_value() {
   printf '%q' "$1"
+}
+
+hallmark_lock_value() {
+  local key="$1"
+  if [[ ! -f "$HALLMARK_LOCK_FILE" ]]; then
+    echo "missing Hallmark lock file: $HALLMARK_LOCK_FILE" >&2
+    exit 1
+  fi
+  awk -F= -v key="$key" '
+    $1 == key {
+      sub(/^[^=]*=/, "")
+      print
+      found = 1
+      exit
+    }
+    END {
+      if (!found) {
+        exit 1
+      }
+    }
+  ' "$HALLMARK_LOCK_FILE"
+}
+
+load_hallmark_lock() {
+  HALLMARK_REPO_URL="$(hallmark_lock_value repo_url)"
+  HALLMARK_VERSION="$(hallmark_lock_value version)"
+  HALLMARK_COMMIT="$(hallmark_lock_value commit)"
+  HALLMARK_TREE="$(hallmark_lock_value tree)"
+  HALLMARK_SKILL_FILE_COUNT="$(hallmark_lock_value skill_file_count)"
+
+  if [[ ! "$HALLMARK_REPO_URL" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git$ ]]; then
+    echo "invalid Hallmark repo_url in $HALLMARK_LOCK_FILE" >&2
+    exit 1
+  fi
+  if [[ ! "$HALLMARK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "invalid Hallmark version in $HALLMARK_LOCK_FILE" >&2
+    exit 1
+  fi
+  if [[ ! "$HALLMARK_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "invalid Hallmark commit in $HALLMARK_LOCK_FILE" >&2
+    exit 1
+  fi
+  if [[ ! "$HALLMARK_TREE" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "invalid Hallmark tree in $HALLMARK_LOCK_FILE" >&2
+    exit 1
+  fi
+  if [[ ! "$HALLMARK_SKILL_FILE_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "invalid Hallmark skill_file_count in $HALLMARK_LOCK_FILE" >&2
+    exit 1
+  fi
+}
+
+hallmark_remote_bash() {
+  load_hallmark_lock
+  ssh_remote "PATH=$(quote_value "$HERMES_REMOTE_PATH") HERMES_REMOTE_HOME=$(quote_value "$HERMES_REMOTE_HOME") HERMES_BIN=$(quote_value "$HERMES_BIN") HALLMARK_REPO_URL=$(quote_value "$HALLMARK_REPO_URL") HALLMARK_VERSION=$(quote_value "$HALLMARK_VERSION") HALLMARK_COMMIT=$(quote_value "$HALLMARK_COMMIT") HALLMARK_TREE=$(quote_value "$HALLMARK_TREE") HALLMARK_SKILL_FILE_COUNT=$(quote_value "$HALLMARK_SKILL_FILE_COUNT") bash -s"
 }
 
 redact_url() {
@@ -156,6 +212,9 @@ Commands:
   research-intel-enrich     Prepare Clay enrichment dry-run output.
   research-intel-report     Generate Research Intelligence review dashboard.
   research-intel-evaluate   Write pilot evaluation and next-step notes.
+  check-hallmark-update     Compare the pinned Hallmark skill with upstream main.
+  setup-hallmark            Apply the pinned Hallmark skill to the product profile.
+  verify-hallmark           Verify Hallmark integrity, isolation, and read-only use.
   gateway-restart           Restart the Hermes gateway service.
   dashboard-start           Start dashboard on the remote Hermes host at 127.0.0.1:9119.
   dashboard-status          Show dashboard status.
@@ -933,6 +992,464 @@ research_intel_evaluate() {
   research_intel_run evaluate "$@"
 }
 
+check_hallmark_update() {
+  hallmark_remote_bash <<'REMOTE'
+set -euo pipefail
+
+product_home="$HERMES_REMOTE_HOME/.hermes/profiles/product"
+checkout="$product_home/skill-sources/hallmark"
+temporary_checkout=""
+
+cleanup() {
+  if test -n "$temporary_checkout" && test -d "$temporary_checkout"; then
+    rm -rf "$temporary_checkout"
+  fi
+}
+trap cleanup EXIT
+
+if test -e "$checkout"; then
+  if ! git -C "$checkout" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "Hallmark checkout exists but is not a git repository: $checkout" >&2
+    exit 1
+  fi
+  dirty="$(git -C "$checkout" status --porcelain --untracked-files=all)"
+  if test -n "$dirty"; then
+    echo "Hallmark checkout is dirty; refusing update check:" >&2
+    printf '%s\n' "$dirty" >&2
+    exit 1
+  fi
+  actual_origin="$(git -C "$checkout" remote get-url origin)"
+  if test "$actual_origin" != "$HALLMARK_REPO_URL"; then
+    echo "unexpected Hallmark origin: $actual_origin" >&2
+    exit 1
+  fi
+  repo="$checkout"
+  git -C "$repo" fetch --quiet --no-tags origin main
+else
+  temporary_checkout="$(mktemp -d "${TMPDIR:-/tmp}/hallmark-update.XXXXXX")"
+  git clone --quiet --filter=blob:none --no-checkout --no-tags \
+    "$HALLMARK_REPO_URL" "$temporary_checkout/repo"
+  repo="$temporary_checkout/repo"
+  git -C "$repo" fetch --quiet --no-tags origin main
+fi
+
+if ! git -C "$repo" cat-file -e "$HALLMARK_COMMIT^{commit}" 2>/dev/null; then
+  echo "pinned Hallmark commit is unavailable: $HALLMARK_COMMIT" >&2
+  exit 1
+fi
+
+upstream_commit="$(git -C "$repo" rev-parse refs/remotes/origin/main)"
+upstream_tree="$(git -C "$repo" rev-parse "$upstream_commit:skills/hallmark")"
+upstream_version="$(
+  git -C "$repo" show "$upstream_commit:skills/hallmark/SKILL.md" |
+    awk -F: '$1 == "version" {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}'
+)"
+
+echo "profile=product"
+echo "locked_version=$HALLMARK_VERSION"
+echo "locked_commit=$HALLMARK_COMMIT"
+echo "locked_tree=$HALLMARK_TREE"
+echo "upstream_version=${upstream_version:-unknown}"
+echo "upstream_commit=$upstream_commit"
+echo "upstream_tree=$upstream_tree"
+if test "$upstream_commit" = "$HALLMARK_COMMIT"; then
+  echo "update_available=no"
+else
+  echo "update_available=yes"
+fi
+echo
+echo '== Hallmark skill diff stat =='
+git -C "$repo" diff --stat "$HALLMARK_COMMIT" "$upstream_commit" -- skills/hallmark
+echo
+echo '== Hallmark skill changed files =='
+git -C "$repo" diff --name-status "$HALLMARK_COMMIT" "$upstream_commit" -- skills/hallmark
+REMOTE
+}
+
+setup_hallmark() {
+  hallmark_remote_bash <<'REMOTE'
+set -Eeuo pipefail
+
+profile="product"
+product_home="$HERMES_REMOTE_HOME/.hermes/profiles/$profile"
+product_config="$product_home/config.yaml"
+source_parent="$product_home/skill-sources"
+checkout="$source_parent/hallmark"
+external_dir="skill-sources/hallmark/skills"
+timestamp="$(date +%Y%m%d%H%M%S)"
+stage=""
+checkout_backup="none"
+config_backup="none"
+rollback_enabled=false
+
+cleanup_stage() {
+  if test -n "$stage" && test -d "$stage"; then
+    rm -rf "$stage"
+  fi
+}
+
+rollback() {
+  status=$?
+  if test "$rollback_enabled" = true; then
+    echo "Hallmark setup failed; restoring previous product profile state." >&2
+    if test "$config_backup" != none && test -f "$config_backup"; then
+      cp "$config_backup" "$product_config"
+    fi
+    if test -e "$checkout"; then
+      failed_checkout="$source_parent/hallmark.failed-$timestamp"
+      mv "$checkout" "$failed_checkout"
+      echo "failed_checkout=$failed_checkout" >&2
+    fi
+    if test "$checkout_backup" != none && test -e "$checkout_backup"; then
+      mv "$checkout_backup" "$checkout"
+    fi
+    "$HERMES_BIN" --profile "$profile" gateway restart >/dev/null 2>&1 || true
+  fi
+  cleanup_stage
+  exit "$status"
+}
+trap rollback ERR
+trap cleanup_stage EXIT
+
+validate_locked_commit() {
+  local repo="$1"
+  local actual_tree actual_version actual_count invalid_entries
+
+  if ! git -C "$repo" cat-file -e "$HALLMARK_COMMIT^{commit}" 2>/dev/null; then
+    echo "pinned Hallmark commit is unavailable: $HALLMARK_COMMIT" >&2
+    return 1
+  fi
+  actual_tree="$(git -C "$repo" rev-parse "$HALLMARK_COMMIT:skills/hallmark")"
+  if test "$actual_tree" != "$HALLMARK_TREE"; then
+    echo "Hallmark tree mismatch: expected=$HALLMARK_TREE actual=$actual_tree" >&2
+    return 1
+  fi
+  actual_version="$(
+    git -C "$repo" show "$HALLMARK_COMMIT:skills/hallmark/SKILL.md" |
+      awk -F: '$1 == "version" {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}'
+  )"
+  if test "$actual_version" != "$HALLMARK_VERSION"; then
+    echo "Hallmark version mismatch: expected=$HALLMARK_VERSION actual=${actual_version:-missing}" >&2
+    return 1
+  fi
+  actual_count="$(git -C "$repo" ls-tree -r --name-only "$HALLMARK_COMMIT" -- skills/hallmark | wc -l | tr -d ' ')"
+  if test "$actual_count" != "$HALLMARK_SKILL_FILE_COUNT"; then
+    echo "Hallmark file count mismatch: expected=$HALLMARK_SKILL_FILE_COUNT actual=$actual_count" >&2
+    return 1
+  fi
+  invalid_entries="$(
+    git -C "$repo" ls-tree -r "$HALLMARK_COMMIT" -- skills/hallmark |
+      awk '$1 != "100644" || $2 != "blob" || $4 !~ /\.md$/ {print}'
+  )"
+  if test -n "$invalid_entries"; then
+    echo "Hallmark contains non-regular, executable, symlink, submodule, or non-Markdown entries:" >&2
+    printf '%s\n' "$invalid_entries" >&2
+    return 1
+  fi
+}
+
+config_has_external_dir() {
+  python3 - "$product_config" "$external_dir" <<'PY'
+from pathlib import Path
+import sys
+import yaml
+
+config_path = Path(sys.argv[1])
+target = sys.argv[2]
+try:
+    data = yaml.safe_load(config_path.read_text()) or {}
+except Exception as exc:
+    print(f"failed to parse product config: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+skills = data.get("skills") or {}
+if not isinstance(skills, dict):
+    print("product config skills section is not a mapping", file=sys.stderr)
+    raise SystemExit(2)
+external_dirs = skills.get("external_dirs") or []
+if isinstance(external_dirs, str):
+    external_dirs = [external_dirs]
+if not isinstance(external_dirs, list):
+    print("product config skills.external_dirs is not a list", file=sys.stderr)
+    raise SystemExit(2)
+raise SystemExit(0 if target in external_dirs else 1)
+PY
+}
+
+add_external_dir() {
+  python3 - "$product_config" "$external_dir" <<'PY'
+from pathlib import Path
+import sys
+
+config_path = Path(sys.argv[1])
+target = sys.argv[2]
+lines = config_path.read_text().splitlines()
+
+try:
+    skills_index = next(i for i, line in enumerate(lines) if line == "skills:")
+except StopIteration:
+    if lines and lines[-1]:
+        lines.append("")
+    lines.extend(["skills:", "  external_dirs:", f"    - {target}"])
+    config_path.write_text("\n".join(lines) + "\n")
+    raise SystemExit
+
+section_end = skills_index + 1
+while section_end < len(lines):
+    line = lines[section_end]
+    if line and not line.startswith((" ", "\t")):
+        break
+    section_end += 1
+
+external_index = None
+for index in range(skills_index + 1, section_end):
+    if lines[index].startswith("  external_dirs:"):
+        external_index = index
+        break
+
+if external_index is None:
+    lines[skills_index + 1:skills_index + 1] = [
+        "  external_dirs:",
+        f"    - {target}",
+    ]
+elif lines[external_index].strip() == "external_dirs: []":
+    lines[external_index:external_index + 1] = [
+        "  external_dirs:",
+        f"    - {target}",
+    ]
+elif lines[external_index].strip() == "external_dirs:":
+    list_end = external_index + 1
+    while list_end < len(lines):
+        line = lines[list_end]
+        if line and len(line) - len(line.lstrip()) <= 2:
+            break
+        list_end += 1
+    entries = {
+        line.strip()[2:].strip()
+        for line in lines[external_index + 1:list_end]
+        if line.strip().startswith("- ")
+    }
+    if target not in entries:
+        lines[list_end:list_end] = [f"    - {target}"]
+else:
+    raise SystemExit(
+        "unsupported inline skills.external_dirs form; convert it to a YAML block list first"
+    )
+
+config_path.write_text("\n".join(lines) + "\n")
+PY
+}
+
+test -x "$HERMES_BIN"
+test -f "$product_config"
+mkdir -p "$source_parent"
+
+checkout_matches=false
+if test -e "$checkout"; then
+  if ! git -C "$checkout" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "Hallmark checkout exists but is not a git repository: $checkout" >&2
+    exit 1
+  fi
+  dirty="$(git -C "$checkout" status --porcelain --untracked-files=all)"
+  if test -n "$dirty"; then
+    echo "Hallmark checkout is dirty; refusing to overwrite:" >&2
+    printf '%s\n' "$dirty" >&2
+    exit 1
+  fi
+  actual_origin="$(git -C "$checkout" remote get-url origin)"
+  if test "$actual_origin" != "$HALLMARK_REPO_URL"; then
+    echo "unexpected Hallmark origin: $actual_origin" >&2
+    exit 1
+  fi
+  if test "$(git -C "$checkout" rev-parse HEAD)" = "$HALLMARK_COMMIT"; then
+    validate_locked_commit "$checkout"
+    checkout_matches=true
+  fi
+fi
+
+config_matches=false
+if config_has_external_dir; then
+  config_matches=true
+else
+  config_status=$?
+  if test "$config_status" -ne 1; then
+    exit "$config_status"
+  fi
+fi
+
+if test "$checkout_matches" = true && test "$config_matches" = true; then
+  echo "profile=$profile"
+  echo "hallmark_version=$HALLMARK_VERSION"
+  echo "hallmark_commit=$HALLMARK_COMMIT"
+  echo "hallmark_tree=$HALLMARK_TREE"
+  echo "checkout=$checkout"
+  echo "config_backup=none"
+  echo "checkout_backup=none"
+  echo "gateway_restarted=no"
+  echo "result=no-op"
+  echo "completion_mode=review-required"
+  exit 0
+fi
+
+if test "$checkout_matches" != true; then
+  stage="$source_parent/.hallmark.stage-$timestamp-$$"
+  git clone --quiet --filter=blob:none --no-checkout --no-tags \
+    "$HALLMARK_REPO_URL" "$stage"
+  validate_locked_commit "$stage"
+  git -C "$stage" sparse-checkout init --cone
+  git -C "$stage" sparse-checkout set skills/hallmark
+  git -C "$stage" checkout --quiet --detach "$HALLMARK_COMMIT"
+  validate_locked_commit "$stage"
+  if test -n "$(git -C "$stage" status --porcelain --untracked-files=all)"; then
+    echo "staged Hallmark checkout is unexpectedly dirty" >&2
+    exit 1
+  fi
+fi
+
+config_backup="$product_config.bak-remote-ops-hallmark-$timestamp"
+cp "$product_config" "$config_backup"
+rollback_enabled=true
+
+if test "$checkout_matches" != true; then
+  if test -e "$checkout"; then
+    checkout_backup="$source_parent/hallmark.bak-$timestamp"
+    mv "$checkout" "$checkout_backup"
+  fi
+  mv "$stage" "$checkout"
+  stage=""
+fi
+
+if test "$config_matches" != true; then
+  add_external_dir
+fi
+if ! config_has_external_dir; then
+  echo "product config did not retain the Hallmark external directory" >&2
+  exit 1
+fi
+
+"$HERMES_BIN" --profile "$profile" gateway restart
+"$HERMES_BIN" --profile "$profile" gateway status
+
+rollback_enabled=false
+trap - ERR
+echo "profile=$profile"
+echo "hallmark_version=$HALLMARK_VERSION"
+echo "hallmark_commit=$HALLMARK_COMMIT"
+echo "hallmark_tree=$HALLMARK_TREE"
+echo "checkout=$checkout"
+echo "config_backup=$config_backup"
+echo "checkout_backup=$checkout_backup"
+echo "gateway_restarted=yes"
+echo "result=applied"
+echo "completion_mode=review-required"
+REMOTE
+}
+
+verify_hallmark() {
+  hallmark_remote_bash <<'REMOTE'
+set -euo pipefail
+
+profile="product"
+product_home="$HERMES_REMOTE_HOME/.hermes/profiles/$profile"
+product_config="$product_home/config.yaml"
+checkout="$product_home/skill-sources/hallmark"
+skill_root="$checkout/skills/hallmark"
+external_dir="skill-sources/hallmark/skills"
+
+test -d "$skill_root"
+test "$(git -C "$checkout" rev-parse HEAD)" = "$HALLMARK_COMMIT"
+test "$(git -C "$checkout" rev-parse HEAD:skills/hallmark)" = "$HALLMARK_TREE"
+test -z "$(git -C "$checkout" status --porcelain --untracked-files=all)"
+
+file_count="$(find "$skill_root" -type f | wc -l | tr -d ' ')"
+test "$file_count" = "$HALLMARK_SKILL_FILE_COUNT"
+test -z "$(find "$skill_root" -type l -print -quit)"
+test -z "$(find "$skill_root" -type f ! -name '*.md' -print -quit)"
+test -z "$(
+  find "$skill_root" -type f \
+    \( -perm -0100 -o -perm -0010 -o -perm -0001 \) -print -quit
+)"
+test -f "$skill_root/SKILL.md"
+
+python3 - "$product_config" "$external_dir" <<'PY'
+from pathlib import Path
+import sys
+import yaml
+
+data = yaml.safe_load(Path(sys.argv[1]).read_text()) or {}
+skills = data.get("skills") or {}
+if not isinstance(skills, dict):
+    raise SystemExit("product config skills section is not a mapping")
+external_dirs = skills.get("external_dirs") or []
+if isinstance(external_dirs, str):
+    external_dirs = [external_dirs]
+if not isinstance(external_dirs, list):
+    raise SystemExit("product config skills.external_dirs is not a list")
+if sys.argv[2] not in external_dirs:
+    raise SystemExit("Hallmark external directory is missing from product config")
+PY
+
+has_hallmark() {
+  grep -Eq '(^|[[:space:]│])hallmark([[:space:]│]|$)'
+}
+
+product_skills="$(NO_COLOR=1 "$HERMES_BIN" --profile product skills list --source local --enabled-only)"
+if ! printf '%s\n' "$product_skills" | has_hallmark; then
+  echo "Hallmark is not enabled in the product profile" >&2
+  exit 1
+fi
+
+for other_profile in default content jarvis preflight; do
+  if test "$other_profile" = default; then
+    other_skills="$(NO_COLOR=1 "$HERMES_BIN" skills list --source local --enabled-only)"
+  else
+    other_skills="$(NO_COLOR=1 "$HERMES_BIN" --profile "$other_profile" skills list --source local --enabled-only)"
+  fi
+  if printf '%s\n' "$other_skills" | has_hallmark; then
+    echo "Hallmark unexpectedly enabled in profile: $other_profile" >&2
+    exit 1
+  fi
+done
+
+echo '== integrity =='
+echo "profile=$profile"
+echo "version=$HALLMARK_VERSION"
+echo "commit=$HALLMARK_COMMIT"
+echo "tree=$HALLMARK_TREE"
+echo "markdown_files=$file_count"
+echo "checkout_clean=yes"
+echo "profile_isolation=pass"
+echo
+echo '== product gateway =='
+"$HERMES_BIN" --profile product gateway status
+echo
+echo '== read-only Hallmark audit smoke =='
+smoke_model="openai/gpt-5-nano"
+smoke_dir="$(mktemp -d "${TMPDIR:-/tmp}/hallmark-smoke.XXXXXX")"
+cleanup_smoke() {
+  rm -rf "$smoke_dir"
+}
+trap cleanup_smoke EXIT
+smoke_prompt='hallmark audit the following inline HTML only. Do not call terminal, do not browse, and do not create or edit any file. Return a short ranked punch list with at least one numbered finding. End with the exact line HALLMARK_SMOKE_OK. Target: <main style="background:linear-gradient(#fff,#eee)"><h1>Revolutionize your workflow</h1><div class="grid"><div class="card">Fast</div><div class="card">Smart</div><div class="card">Effortless</div></div><button>Get Started</button></main>'
+smoke_output="$(
+  cd "$smoke_dir"
+  "$HERMES_BIN" --profile product --model "$smoke_model" -s hallmark -z "$smoke_prompt"
+)"
+printf '%s\n' "$smoke_output"
+if ! printf '%s\n' "$smoke_output" | grep -Fxq 'HALLMARK_SMOKE_OK'; then
+  echo "Hallmark smoke marker missing" >&2
+  exit 1
+fi
+if test -n "$(find "$smoke_dir" -mindepth 1 -print -quit)"; then
+  echo "Hallmark smoke created unexpected files" >&2
+  find "$smoke_dir" -mindepth 1 -maxdepth 2 -print >&2
+  exit 1
+fi
+echo "smoke_model=$smoke_model"
+echo "smoke=pass"
+echo "completion_mode=review-required"
+REMOTE
+}
+
 gateway_restart() {
   ssh_remote "'$HERMES_BIN' gateway restart && '$HERMES_BIN' gateway status"
 }
@@ -1025,6 +1542,9 @@ case "$cmd" in
   research-intel-enrich) research_intel_enrich "$@" ;;
   research-intel-report) research_intel_report "$@" ;;
   research-intel-evaluate) research_intel_evaluate "$@" ;;
+  check-hallmark-update) check_hallmark_update "$@" ;;
+  setup-hallmark) setup_hallmark "$@" ;;
+  verify-hallmark) verify_hallmark "$@" ;;
   gateway-restart) gateway_restart "$@" ;;
   dashboard-start) dashboard_start "$@" ;;
   dashboard-status) dashboard_status "$@" ;;
