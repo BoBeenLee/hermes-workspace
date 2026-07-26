@@ -240,12 +240,21 @@ def is_assistant_authored_message(item: dict[str, Any]) -> bool:
     return text.startswith(PREFIX)
 
 
-def is_candidate_message(item: dict[str, Any]) -> bool:
-    """Only messages from the other party can trigger a reply."""
+def is_candidate_message(
+    item: dict[str, Any],
+    *,
+    allow_self_authored: bool = False,
+) -> bool:
+    """Return whether a message may trigger a reply under the room policy."""
     raw_direction = item.get("is_from_me")
     if raw_direction is False:
         return True
-    return str(raw_direction or "").strip().casefold() in {"false", "0", "no"}
+    normalized = str(raw_direction or "").strip().casefold()
+    if normalized in {"false", "0", "no"}:
+        return True
+    if not allow_self_authored or normalized not in {"true", "1", "yes"}:
+        return False
+    return not is_assistant_authored_message(item)
 
 
 def parse_allowed_chat_ids(value: Any, *, allow_empty: bool = False) -> frozenset[str]:
@@ -268,6 +277,17 @@ def parse_read_state_exempt_chat_ids(value: Any) -> frozenset[str]:
     normalized = [str(item).strip() for item in value]
     if any(not item or not item.isdigit() for item in normalized):
         raise RuntimeError("read_state_exempt_chat_ids must contain only numeric KakaoTalk chat IDs")
+    return frozenset(normalized)
+
+
+def parse_self_authored_reply_chat_ids(value: Any) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    if not isinstance(value, list):
+        raise RuntimeError("self_authored_reply_chat_ids must be a JSON list")
+    normalized = [str(item).strip() for item in value]
+    if any(not item or not item.isdigit() for item in normalized):
+        raise RuntimeError("self_authored_reply_chat_ids must contain only numeric KakaoTalk chat IDs")
     return frozenset(normalized)
 
 
@@ -375,6 +395,7 @@ def prioritized_room_messages(
     since: str,
     *,
     require_unread: bool = True,
+    allow_self_authored: bool = False,
 ) -> list[dict[str, Any]]:
     """Return current unread, or explicitly exempt new, incoming messages."""
     boundary = parse_time(since)
@@ -388,7 +409,7 @@ def prioritized_room_messages(
     seen: set[str] = set()
     source_messages = (room.get("unread_messages") or []) if require_unread else new_messages
     for observed in source_messages:
-        if not is_candidate_message(observed):
+        if not is_candidate_message(observed, allow_self_authored=allow_self_authored):
             continue
         entity_id = str(observed.get("entity_id") or "")
         if entity_id in seen:
@@ -401,7 +422,7 @@ def prioritized_room_messages(
             continue
         merged = dict(matching_new or {})
         merged.update(observed)
-        if not is_candidate_message(merged):
+        if not is_candidate_message(merged, allow_self_authored=allow_self_authored):
             continue
         prioritized.append(merged)
         seen.add(entity_id)
@@ -416,6 +437,7 @@ def classify_room_messages(
     max_age_seconds: int = MAX_AUTOMATIC_REPLY_AGE_SECONDS,
     require_unread: bool = True,
     assistant_outgoing_answers: bool = False,
+    allow_self_authored: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     """Separate reply triggers from operator context and suppressed unread backlog."""
     boundary = parse_time(since)
@@ -432,8 +454,8 @@ def classify_room_messages(
             continue
         manual_outgoing.append(item)
     manual_outgoing.sort(key=lambda item: item.get("timestamp") or "")
-    answering_outgoing = list(manual_outgoing)
-    if assistant_outgoing_answers:
+    answering_outgoing = [] if allow_self_authored else list(manual_outgoing)
+    if assistant_outgoing_answers or allow_self_authored:
         answering_outgoing.extend(
             item
             for item in room.get("new_messages") or []
@@ -459,7 +481,12 @@ def classify_room_messages(
     fresh: list[dict[str, Any]] = []
     stale: list[dict[str, Any]] = []
     answered: list[dict[str, Any]] = []
-    for item in prioritized_room_messages(room, since, require_unread=require_unread):
+    for item in prioritized_room_messages(
+        room,
+        since,
+        require_unread=require_unread,
+        allow_self_authored=allow_self_authored,
+    ):
         timestamp = parse_time(item.get("timestamp"))
         if latest_answer_at and timestamp and timestamp <= latest_answer_at:
             answered.append(item)
@@ -1218,16 +1245,26 @@ def intent_routing_prompt(
     new_turn: list[dict[str, Any]],
     dialogue_state: dict[str, Any],
 ) -> str:
+    self_authored_turn = any(message_is_from_me(item) for item in new_turn)
     payload = {
         "now_kst": now_utc().astimezone(KST).replace(microsecond=0).isoformat(),
         "room": room_name,
+        "trigger_mode": "self_authored" if self_authored_turn else "other_party",
         "new_turn": new_turn,
         "dialogue_state": dialogue_state,
     }
+    target_rule = (
+        "trigger_mode is self_authored, so the operator message inside new_turn is the "
+        "explicit reply target selected by controller policy. Classify its intent directly. "
+        if self_authored_turn
+        else "new_turn contains only messages whose speaker_role is other_party. The operator "
+        "is the account owner; operator messages are context only and must never be treated as "
+        "a reply target. "
+    )
     return (
-        "Classify only the current KakaoTalk new_turn, which contains only messages whose "
-        "speaker_role is other_party. The operator is the account owner; operator messages are "
-        "context only and must never be treated as a reply target. Do not infer intent from prior conversation "
+        "Classify only the current KakaoTalk new_turn. "
+        + target_rule
+        + "Do not infer intent from prior conversation "
         "or long-term memory; neither is provided. Return one JSON object only with schema: "
         '{"intent":"weather|assistant_status|other","weather_location":"",'
         '"reason":"","confidence":0.0}. '
@@ -1319,21 +1356,32 @@ def reply_drafting_prompt(
     memories: list[dict[str, Any]],
     link_summary: str = "",
 ) -> str:
+    self_authored_turn = any(message_is_from_me(item) for item in new_turn)
     payload = {
         "now_kst": now_utc().astimezone(KST).replace(microsecond=0).isoformat(),
         "room": room_name,
         "locked_intent": "other",
+        "trigger_mode": "self_authored" if self_authored_turn else "other_party",
         "new_turn": new_turn,
         "recent_context": context,
         "typed_contact_memory": memories,
         "linked_page_summary": link_summary,
     }
+    target_rule = (
+        "trigger_mode is self_authored, so the operator message inside new_turn is the explicit "
+        "reply target selected by controller policy. Other operator messages in recent_context "
+        "are context only. Return memory_updates=[] because a self-authored prompt cannot update "
+        "facts about the counterparty. "
+        if self_authored_turn
+        else "Reply only to other_party messages in new_turn. In recent_context, operator "
+        "messages are context only. Never answer as if operator messages were sent by the other "
+        "party, and never attribute an operator-supplied link or statement to the other party. "
+    )
     return (
         "Draft a concise Korean reply for the locked intent other. Never change the intent to "
-        "weather or assistant_status. Reply only to other_party messages in new_turn. In "
-        "recent_context, operator messages are context only. Never answer as if operator messages "
-        "were sent by the other party, and never attribute an operator-supplied link or statement "
-        "to the other party. Use speaker_key and speaker_name to keep different counterparties "
+        "weather or assistant_status. "
+        + target_rule
+        + "Use speaker_key and speaker_name to keep different counterparties "
         "separate when context contains multiple participants. Return one JSON object only with schema: "
         '{"reply_kind":"answer|clarification","reply":"","summary":"","reason":"",'
         '"confidence":0.0,"flags":{},"memory_updates":['
@@ -1593,10 +1641,17 @@ class MessengerAssistant:
         self.read_state_exempt_chat_ids = parse_read_state_exempt_chat_ids(
             self.config.get("read_state_exempt_chat_ids")
         )
+        self.self_authored_reply_chat_ids = parse_self_authored_reply_chat_ids(
+            self.config.get("self_authored_reply_chat_ids")
+        )
         if not self.allow_all_direct_chats and not self.read_state_exempt_chat_ids.issubset(
             self.allowed_chat_ids
         ):
             raise RuntimeError("read_state_exempt_chat_ids must be a subset of allowed_chat_ids")
+        if not self.self_authored_reply_chat_ids.issubset(self.read_state_exempt_chat_ids):
+            raise RuntimeError(
+                "self_authored_reply_chat_ids must be a subset of read_state_exempt_chat_ids"
+            )
         self.profile_dir = Path(str(self.config.get("profile_dir") or "~/.hermes/profiles/jarvis")).expanduser()
         state_dir = Path(str(self.config.get("state_dir") or self.profile_dir / "messenger-assistant")).expanduser()
         self.state_path = state_dir / "state.json"
@@ -2222,6 +2277,13 @@ class MessengerAssistant:
         excluded = [value.get("name") or key for key, value in (self.state.get("rooms") or {}).items() if value.get("excluded")]
         approval_only = [value.get("name") or key for key, value in (self.state.get("rooms") or {}).items() if value.get("approval_only")]
         read_state_exempt = self._static_exception_names()
+        rooms = self.state.get("rooms") or {}
+        self_authored_reply = [
+            str((rooms.get(room_id) or {}).get("name") or room_id)
+            for room_id in sorted(
+                getattr(self, "self_authored_reply_chat_ids", frozenset())
+            )
+        ]
         condition = self.state.get("session_condition") or {}
         policy_lines = "\n".join(self._session_policy_description(condition))
         candidate_summary = (
@@ -2243,6 +2305,7 @@ class MessengerAssistant:
             f"- 조건 일치 신뢰도: {SESSION_CONDITION_CONFIDENCE_THRESHOLD:.2f} 이상\n"
             f"- 자동답변 판별 기준: {candidate_summary}\n"
             f"- 읽음 상태 예외 방: {', '.join(read_state_exempt) or '-'}\n"
+            f"- 자기 발신 자동답변 방: {', '.join(self_authored_reply) or '-'}\n"
             f"- 오래된 자동답변 제외: {(self.state.get('stats') or {}).get('stale_skipped', 0)}\n"
             f"- 세션 조건 불일치 제외: {(self.state.get('stats') or {}).get('condition_skipped', 0)}\n"
             f"- 자동 답변 일시 중지: {'예' if self.state.get('automatic_paused') else '아니오'}\n"
@@ -2374,12 +2437,17 @@ class MessengerAssistant:
             if room_state.get("excluded"):
                 continue
             read_state_exempt = room_id in getattr(self, "read_state_exempt_chat_ids", frozenset())
+            self_authored_reply = room_id in getattr(
+                self,
+                "self_authored_reply_chat_ids",
+                frozenset(),
+            )
             rules = session_policy_rules(condition)
             if read_state_exempt:
                 room_since = later_boundary(since, self.state.get("started_at")) or since
                 max_age_seconds = MAX_AUTOMATIC_REPLY_AGE_SECONDS
                 require_unread = False
-                assistant_outgoing_answers = False
+                assistant_outgoing_answers = self_authored_reply
             else:
                 room_since = since
                 max_age_seconds = max(
@@ -2398,6 +2466,7 @@ class MessengerAssistant:
                 max_age_seconds=max_age_seconds,
                 require_unread=require_unread,
                 assistant_outgoing_answers=assistant_outgoing_answers,
+                allow_self_authored=self_authored_reply,
             )
             manual_outgoing = selection["manual_outgoing"]
             if manual_outgoing:
@@ -2661,10 +2730,24 @@ class MessengerAssistant:
             preview = self.kakao.preview(room_name, room_id)
         context = recent_context(preview)
         wanted = set(buffer.get("entity_ids") or [])
-        new_turn = [item for item in context if item.get("entity_id") in wanted and is_candidate_message(item)]
+        allow_self_authored = room_id in getattr(
+            self,
+            "self_authored_reply_chat_ids",
+            frozenset(),
+        )
+        new_turn = [
+            item
+            for item in context
+            if item.get("entity_id") in wanted
+            and is_candidate_message(
+                item,
+                allow_self_authored=allow_self_authored,
+            )
+        ]
         if not new_turn:
             raise RuntimeError("새 메시지 원문을 최근 문맥에서 다시 찾지 못했습니다")
         new_turn.sort(key=lambda item: item.get("timestamp") or "")
+        self_authored_turn = any(message_is_from_me(item) for item in new_turn)
         condition = self.state.get("session_condition") or {}
         static_exception = room_id in getattr(self, "read_state_exempt_chat_ids", frozenset())
         if condition and not static_exception:
@@ -2735,6 +2818,7 @@ class MessengerAssistant:
             intent not in {"weather", "assistant_status"}
             and reply_kind != "clarification"
             and not grounding_reason
+            and not self_authored_turn
         ):
             self._apply_memory_updates(
                 room_id,
@@ -3232,8 +3316,15 @@ def check_config(config_path: Path) -> int:
         read_state_exempt_chat_ids = parse_read_state_exempt_chat_ids(
             config.get("read_state_exempt_chat_ids")
         )
+        self_authored_reply_chat_ids = parse_self_authored_reply_chat_ids(
+            config.get("self_authored_reply_chat_ids")
+        )
         if not allow_all_direct_chats and not read_state_exempt_chat_ids.issubset(allowed_chat_ids):
             raise RuntimeError("read_state_exempt_chat_ids must be a subset of allowed_chat_ids")
+        if not self_authored_reply_chat_ids.issubset(read_state_exempt_chat_ids):
+            raise RuntimeError(
+                "self_authored_reply_chat_ids must be a subset of read_state_exempt_chat_ids"
+            )
     except RuntimeError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return 1

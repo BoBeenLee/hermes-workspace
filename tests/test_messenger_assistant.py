@@ -407,6 +407,25 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertIn("operator messages are context only", prompt)
         self.assertIn("Never answer as if operator messages were sent by the other party", prompt)
 
+    def test_self_authored_prompt_contract_marks_operator_turn_as_reply_target(self):
+        turn = [
+            {
+                "entity_id": "self-1",
+                "speaker_role": "operator",
+                "is_from_me": True,
+                "text": "이 내용에 답해줘",
+            }
+        ]
+
+        route_prompt = module.intent_routing_prompt("이보빈", turn, {})
+        draft_prompt = module.reply_drafting_prompt("이보빈", turn, turn, [])
+
+        self.assertIn('"trigger_mode": "self_authored"', route_prompt)
+        self.assertIn("explicit reply target", route_prompt)
+        self.assertIn('"trigger_mode": "self_authored"', draft_prompt)
+        self.assertIn("explicit reply target", draft_prompt)
+        self.assertIn("memory_updates=[]", draft_prompt)
+
     def test_weather_lookup_recognizes_any_current_location_question(self):
         self.assertTrue(module.is_weather_lookup("하남 오늘 날씨"))
         self.assertTrue(module.is_weather_lookup("서울 현재 날씨 알려줘"))
@@ -1352,6 +1371,106 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertNotIn("MCP", reply)
         self.assertEqual(assistant.memory["contacts"], {})
 
+    def test_explicit_self_authored_status_prompt_reaches_reply_pipeline(self):
+        event = {
+            "entity_id": "self-message-1",
+            "timestamp": module.iso_now(),
+            "sender_name": "나",
+            "is_from_me": True,
+            "message_type": "text",
+            "snippet": "너의 상태는 어때?",
+        }
+        assistant = self._assistant_for_events([event])
+        assistant.self_authored_reply_chat_ids = {"room-1"}
+        result = {
+            "intent": "assistant_status",
+            "reply_kind": "answer",
+            "reply": "내부 상태",
+            "summary": "상태 질문",
+            "confidence": 0.90,
+            "weather_location": "",
+            "flags": {},
+            "memory_updates": [],
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER}
+
+        with mock.patch.object(module, "run_hermes_json", return_value=(result, usage)):
+            assistant._process_room_buffer(
+                "room-1",
+                {
+                    "room_name": "이보빈",
+                    "entity_ids": ["self-message-1"],
+                    "unread_entity_ids": [],
+                    "last_at": event["timestamp"],
+                },
+            )
+
+        assistant._send_automatic.assert_called_once()
+        self.assertEqual(
+            assistant._send_automatic.call_args.args[2][0]["entity_id"],
+            "self-message-1",
+        )
+        self.assertEqual(
+            assistant._send_automatic.call_args.args[3],
+            module.ASSISTANT_STATUS_REPLY,
+        )
+
+    def test_self_authored_prompt_cannot_update_counterparty_memory(self):
+        event = {
+            "entity_id": "self-message-1",
+            "timestamp": module.iso_now(),
+            "sender_name": "나",
+            "is_from_me": True,
+            "message_type": "text",
+            "snippet": "나는 매운 음식을 좋아해",
+        }
+        assistant = self._assistant_for_events([event])
+        assistant.self_authored_reply_chat_ids = {"room-1"}
+        route = {
+            "intent": "other",
+            "weather_location": "",
+            "reason": "",
+            "confidence": 0.95,
+        }
+        draft = {
+            "intent": "other",
+            "reply_kind": "answer",
+            "reply": "알겠어",
+            "summary": "취향",
+            "reason": "",
+            "confidence": 0.95,
+            "flags": {},
+            "memory_updates": [
+                {
+                    "kind": "preference",
+                    "key": "음식",
+                    "value": "매운 음식 선호",
+                    "confidence": 0.95,
+                    "secret_or_auth": False,
+                    "source_entity_ids": ["self-message-1"],
+                }
+            ],
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER}
+
+        with mock.patch.object(
+            module,
+            "run_hermes_json",
+            side_effect=[(route, usage), (draft, usage)],
+        ):
+            assistant._process_room_buffer(
+                "room-1",
+                {
+                    "room_name": "이보빈",
+                    "entity_ids": ["self-message-1"],
+                    "unread_entity_ids": [],
+                    "last_at": event["timestamp"],
+                },
+            )
+
+        self.assertEqual(assistant.memory["contacts"], {})
+        assistant._send_automatic.assert_called_once()
+
     def test_auth_memory_is_rejected(self):
         self.assertIsNone(
             module.sanitize_memory_update(
@@ -1925,6 +2044,26 @@ mcp_servers:
         self.assertTrue(module.is_candidate_message({"is_from_me": False, "text": "상대가 보낸 질문"}))
         self.assertFalse(module.is_candidate_message({"text": "화자 방향이 누락된 메시지"}))
 
+    def test_explicit_self_authored_trigger_excludes_assistant_replies(self):
+        self.assertTrue(
+            module.is_candidate_message(
+                {"is_from_me": True, "text": "직접 보낸 질문"},
+                allow_self_authored=True,
+            )
+        )
+        self.assertFalse(
+            module.is_candidate_message(
+                {"is_from_me": True, "text": f"{module.PREFIX} 자동 답변"},
+                allow_self_authored=True,
+            )
+        )
+        self.assertFalse(
+            module.is_candidate_message(
+                {"text": "화자 방향이 누락된 메시지"},
+                allow_self_authored=True,
+            )
+        )
+
     def test_read_state_exempt_chat_ids_are_numeric_and_optional(self):
         self.assertEqual(module.parse_read_state_exempt_chat_ids(None), set())
         self.assertEqual(
@@ -1934,6 +2073,55 @@ mcp_servers:
         for invalid in ("128426307555607", [""], ["not-numeric"]):
             with self.assertRaises(RuntimeError):
                 module.parse_read_state_exempt_chat_ids(invalid)
+
+    def test_self_authored_reply_chat_ids_are_numeric_and_optional(self):
+        self.assertEqual(module.parse_self_authored_reply_chat_ids(None), set())
+        self.assertEqual(
+            module.parse_self_authored_reply_chat_ids(["128426307555607"]),
+            {"128426307555607"},
+        )
+        for invalid in ("128426307555607", [""], ["not-numeric"]):
+            with self.assertRaises(RuntimeError):
+                module.parse_self_authored_reply_chat_ids(invalid)
+
+    def test_self_authored_reply_scope_must_also_be_read_state_exempt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "discord_channel_id": "1",
+                        "discord_user_id": "2",
+                        "allow_all_direct_chats": True,
+                        "allowed_chat_ids": [],
+                        "read_state_exempt_chat_ids": [],
+                        "self_authored_reply_chat_ids": ["128426307555607"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = []
+            with mock.patch("builtins.print", side_effect=lambda value: output.append(value)):
+                status = module.check_config(config_path)
+
+        self.assertEqual(status, 1)
+        self.assertIn("subset of read_state_exempt_chat_ids", output[0])
+
+    def test_installer_accepts_repeatable_self_authored_reply_room(self):
+        args = installer.build_parser().parse_args(
+            [
+                "--controller",
+                "/tmp/messenger_assistant.py",
+                "--self-authored-reply-chat-id",
+                "128426307555607",
+                "--self-authored-reply-chat-id",
+                "987654321",
+            ]
+        )
+        self.assertEqual(
+            args.self_authored_reply_chat_id,
+            ["128426307555607", "987654321"],
+        )
 
     def test_poll_skips_read_and_stale_incoming_messages(self):
         class FakeKakao:
@@ -2295,6 +2483,69 @@ mcp_servers:
 
         self.assertEqual(assistant.state["room_buffers"], {})
         self.assertNotIn("999", assistant.state["rooms"])
+
+    def test_poll_buffers_self_authored_message_only_for_explicit_room(self):
+        class FakeKakao:
+            @staticmethod
+            def list_since(_since, _until):
+                return {
+                    "rooms": [
+                        {
+                            "chat_id": "128426307555607",
+                            "display_name": "이보빈",
+                            "unread_messages": [],
+                            "new_messages": [
+                                {
+                                    "entity_id": "explicit-self-message",
+                                    "timestamp": "2026-07-19T12:00:00+00:00",
+                                    "is_from_me": True,
+                                    "snippet": "너의 상태는?",
+                                }
+                            ],
+                        },
+                        {
+                            "chat_id": "999",
+                            "display_name": "다른 사람",
+                            "unread_messages": [],
+                            "new_messages": [
+                                {
+                                    "entity_id": "ordinary-self-message",
+                                    "timestamp": "2026-07-19T12:00:01+00:00",
+                                    "is_from_me": True,
+                                    "snippet": "이 메시지는 처리하지 마",
+                                }
+                            ],
+                        },
+                    ]
+                }
+
+            @staticmethod
+            def is_direct_chat(_chat_id, _display_name):
+                return True
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["started_at"] = "2026-07-19T11:59:00+00:00"
+        assistant.state["baseline_at"] = "2026-07-19T11:59:00+00:00"
+        assistant.allowed_chat_ids = {"128426307555607", "999"}
+        assistant.read_state_exempt_chat_ids = {"128426307555607"}
+        assistant.self_authored_reply_chat_ids = {"128426307555607"}
+        assistant.kakao = FakeKakao()
+        assistant.discord = mock.Mock()
+        assistant._invalidate_pending_for_room = mock.Mock()
+
+        with mock.patch.object(
+            module,
+            "now_utc",
+            return_value=dt.datetime(2026, 7, 19, 12, 1, tzinfo=dt.timezone.utc),
+        ):
+            assistant._poll_kakao()
+
+        self.assertEqual(
+            assistant.state["room_buffers"]["128426307555607"]["entity_ids"],
+            ["explicit-self-message"],
+        )
+        self.assertNotIn("999", assistant.state["room_buffers"])
 
     def test_poll_all_direct_scope_buffers_only_adapter_verified_direct_rooms(self):
         class FakeKakao:

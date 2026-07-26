@@ -421,6 +421,12 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
         or []
     )
     read_state_exempt_chat_ids = normalize_chat_ids(requested_read_state_exempt_ids)
+    requested_self_authored_reply_ids = (
+        getattr(args, "self_authored_reply_chat_id", None)
+        or existing_config.get("self_authored_reply_chat_ids")
+        or []
+    )
+    self_authored_reply_chat_ids = normalize_chat_ids(requested_self_authored_reply_ids)
     allow_all_direct_chats = bool(
         getattr(args, "allow_all_direct_chats", False) or existing_config.get("allow_all_direct_chats") is True
     )
@@ -428,6 +434,10 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("At least one --allowed-chat-id is required (or must exist in the installed config)")
     if not allow_all_direct_chats and not set(read_state_exempt_chat_ids).issubset(allowed_chat_ids):
         raise RuntimeError("Read-state-exempt KakaoTalk chat IDs must also be allowed")
+    if not set(self_authored_reply_chat_ids).issubset(read_state_exempt_chat_ids):
+        raise RuntimeError(
+            "Self-authored-reply KakaoTalk chat IDs must also be read-state exempt"
+        )
 
     if args.dry_run:
         return {
@@ -445,6 +455,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
             "allowed_chat_ids": allowed_chat_ids,
             "allow_all_direct_chats": allow_all_direct_chats,
             "read_state_exempt_chat_ids": read_state_exempt_chat_ids,
+            "self_authored_reply_chat_ids": self_authored_reply_chat_ids,
             "login_mode": "user-entered-kmsg-encrypted-cache",
         }
 
@@ -480,6 +491,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
         "allowed_chat_ids": allowed_chat_ids,
         "allow_all_direct_chats": allow_all_direct_chats,
         "read_state_exempt_chat_ids": read_state_exempt_chat_ids,
+        "self_authored_reply_chat_ids": self_authored_reply_chat_ids,
         "login_mode": "user-entered-kmsg-encrypted-cache",
     }
     config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -568,6 +580,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
         "allowed_chat_ids": allowed_chat_ids,
         "allow_all_direct_chats": allow_all_direct_chats,
         "read_state_exempt_chat_ids": read_state_exempt_chat_ids,
+        "self_authored_reply_chat_ids": self_authored_reply_chat_ids,
         "kakao_poller": str(poller_plist),
         "kakao_poller_backup": str(poller_plist_backup) if poller_plist_backup else "",
         "poll_interval_seconds": POLL_INTERVAL_SECONDS,
@@ -599,6 +612,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--read-state-exempt-chat-id",
         action="append",
         help="Direct-room chat_id whose new incoming messages may trigger regardless of read state",
+    )
+    parser.add_argument(
+        "--self-authored-reply-chat-id",
+        action="append",
+        help=(
+            "Read-state-exempt direct-room chat_id whose manual self-authored messages "
+            "may trigger replies; assistant-prefixed messages remain excluded"
+        ),
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser

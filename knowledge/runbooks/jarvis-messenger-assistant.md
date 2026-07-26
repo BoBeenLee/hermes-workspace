@@ -120,6 +120,13 @@ gateway restart, and future policy changes remain `review-required`.
   reports them as read. The five-minute age limit, incoming-direction check,
   duplicate suppression, direct-room verification, operator-reply
   cancellation, confidence gate, and rate limits still apply.
+- `self_authored_reply_chat_ids` is a narrower opt-in subset of
+  `read_state_exempt_chat_ids`. In those explicitly named direct rooms, a new
+  manually authored outgoing message may also enter the reply buffer. Messages
+  beginning with `[메신저 비서]` remain ineligible, so an assistant response
+  cannot trigger another assistant response. A self-authored trigger cannot
+  create or update counterparty memory. Other rooms keep the incoming-only
+  rule.
 
 ## Control Commands
 
@@ -201,11 +208,14 @@ Reply to an approval or audit card with:
   A preview-followup guard produces no new evidence and therefore fails closed
   for an uncached or stale-policy room.
 - Only a current unread message from the other party can enter the reply
-  buffer. A user-authored outgoing message is context only, invalidates an
-  outstanding draft, and cancels buffered incoming messages at or before its
-  timestamp because the operator has already responded. Messages beginning
-  with the visible `[메신저 비서]` prefix remain context and do not trigger
-  either cancellation or another reply.
+  buffer by default. A user-authored outgoing message is context only,
+  invalidates an outstanding draft, and cancels buffered incoming messages at
+  or before its timestamp because the operator has already responded. The
+  sole exception is an adapter-verified direct room explicitly listed in
+  `self_authored_reply_chat_ids`; there, the new manual outgoing message
+  becomes the replacement reply trigger after the older work is cancelled.
+  Messages beginning with the visible `[메신저 비서]` prefix remain context
+  and do not trigger either cancellation or another reply.
 - Consecutive messages are buffered until five seconds after the newest
   message. Because KakaoTalk polling uses the configured interval, this is a
   post-message quiet-period gate rather than a five-second polling SLA.
@@ -348,13 +358,15 @@ ssh bobeen '/Users/bobeenlee/.hermes/hermes-agent/venv/bin/python \
   --controller /tmp/messenger_assistant.py \
   --allow-all-direct-chats \
   --read-state-exempt-chat-id 128426307555607 \
+  --self-authored-reply-chat-id 128426307555607 \
   --dry-run'
 
 ssh bobeen '/Users/bobeenlee/.hermes/hermes-agent/venv/bin/python \
   /tmp/install_messenger_assistant.py \
   --controller /tmp/messenger_assistant.py \
   --allow-all-direct-chats \
-  --read-state-exempt-chat-id 128426307555607'
+  --read-state-exempt-chat-id 128426307555607 \
+  --self-authored-reply-chat-id 128426307555607'
 ```
 
 On later upgrades, omitting `--allow-all-direct-chats` preserves an enabled
@@ -444,6 +456,10 @@ Before live use, confirm in the private Discord channel:
     the current start time.
 16. The configured 이보빈 static exception bypasses the session matcher but
     still passes reply confidence, direct-room, duplicate, and rate guards.
+17. A new manual outgoing message in the configured 이보빈 self-authored-reply
+    room enters the normal intent and reply pipeline. The same message in any
+    other room stays context-only, and a `[메신저 비서]` outgoing message never
+    enters the reply buffer.
 
 For controller-only updates, back up and replace the installed script, then
 restart `ai.hermes.jarvis-messenger-assistant-poll` and
