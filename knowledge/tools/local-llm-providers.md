@@ -98,6 +98,76 @@ custom_providers:
         context_length: 65536
 ```
 
+## Cloud Vision Bridge
+
+Last verified on the remote Mac on 2026-07-26, all five Hermes profiles use
+the same auxiliary vision route:
+
+1. Google AI Studio: `gemini-3.6-flash`
+2. OpenRouter: `google/gemma-4-26b-a4b-it:free`
+3. GroqCloud: `qwen/qwen3.6-27b`
+
+The route is separate from the profiles' primary text models. It converts an
+image into one JSON object with `summary`, `ocr_text`, `code_blocks`,
+`regions`, `uncertainties`, and `answer`, which can be passed to a text-only
+model such as Laguna S 2.1. Text found inside an image is treated as untrusted
+data and is never followed as an instruction.
+
+Secret-safe configuration shape:
+
+```yaml
+auxiliary:
+  vision:
+    provider: gemini
+    model: gemini-3.6-flash
+    base_url: ""
+    timeout: 120
+    temperature: 0.1
+    extra_body:
+      response_format:
+        type: json_object
+    fallback_chain:
+      - provider: openrouter
+        model: google/gemma-4-26b-a4b-it:free
+        timeout: 60
+      - provider: groq
+        model: qwen/qwen3.6-27b
+        timeout: 45
+```
+
+The installed Hermes checkout contains a vision-only fallback hardening patch
+on branch `codex/vision-fallback`, commit `72bc6b79e`. A failed configured
+candidate advances to the next entry on rate limits, timeouts, model
+incompatibility, or an invalid response. Other auxiliary tasks retain their
+existing fallback behavior.
+
+Verification status:
+
+- Google returned valid structured JSON and exact OCR for the synthetic test
+  invoice through the built-in `vision_analyze` tool.
+- OpenRouter Gemma 4 returned valid structured JSON and exact OCR through its
+  API.
+- Groq accepted the API key, but the organization currently blocks
+  `qwen/qwen3.6-27b`. The entry remains third in the chain and will be
+  temporarily quarantined if reached until an administrator enables the model.
+- The relevant Hermes test suites passed `453` tests.
+- The five gateway profiles restarted successfully and remained supervised by
+  launchd.
+
+Remote rollback copies were created before the config change:
+
+```text
+/Users/bobeenlee/.hermes/config.yaml.vision-fallback.20260726-165609.bak
+/Users/bobeenlee/.hermes/profiles/content/config.yaml.vision-fallback.20260726-165609.bak
+/Users/bobeenlee/.hermes/profiles/product/config.yaml.vision-fallback.20260726-165609.bak
+/Users/bobeenlee/.hermes/profiles/jarvis/config.yaml.vision-fallback.20260726-165609.bak
+/Users/bobeenlee/.hermes/profiles/preflight/config.yaml.vision-fallback.20260726-165609.bak
+```
+
+Do not put Google, OpenRouter, or Groq keys in YAML or git. They remain in the
+remote Hermes `.env`. Enabling the Groq vision model is an external
+organization-policy change and requires separate operator review.
+
 ## Altalt Routing
 
 The `default` and `jarvis` profile routes are configured as:
