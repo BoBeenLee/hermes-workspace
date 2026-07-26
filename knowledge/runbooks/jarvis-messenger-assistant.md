@@ -138,7 +138,11 @@ Reply to an approval or audit card with:
 - Start creates a new baseline; messages received before it are summary-only.
 - Stop blocks approvals and corrections as well as automatic replies.
 - Only rooms whose adapter lookup reports the same `chat_id` from
-  `NTUser.directChatId` are treated as 1:1 rooms; `member_count` is not used.
+  `NTUser.directChatId` and classifies the associated `NTUser` as `human` are
+  treated as 1:1 rooms; `member_count` is not used. Non-zero `userType`,
+  business/public-institution verification, AlimTalk, bot, BizChat, or an
+  explicitly non-writable channel marks the destination as non-human and
+  excludes it before drafting or sending.
 - With `allow_all_direct_chats=true`, every discovered room may enter the
   direct-room lookup, but no room may be buffered or sent to until the adapter
   proves that exact `chat_id` as `NTUser.directChatId`. A final send guard
@@ -146,8 +150,10 @@ Reply to an approval or audit card with:
   rooms. With the setting false, the original `allowed_chat_ids` scope applies.
 - Direct-room evidence is obtained through the MCP `find_chat` tool and cached
   only when the same `chat_id` includes the adapter source
-  `NTUser.directChatId`. A preview-followup guard produces no new evidence and
-  therefore fails closed for an uncached room.
+  `NTUser.directChatId` and `direct_chat_kind=human`. The cache records a direct
+  policy version, so legacy direct-only evidence is rejected until refreshed.
+  A preview-followup guard produces no new evidence and therefore fails closed
+  for an uncached or stale-policy room.
 - A new incoming message or user-authored outgoing message invalidates an
   outstanding draft for the same room. Messages beginning with the visible
   `[메신저 비서]` prefix are never candidates, preventing reply loops.

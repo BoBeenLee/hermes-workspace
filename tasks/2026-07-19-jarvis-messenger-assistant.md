@@ -17,6 +17,79 @@
   secret is handled by Jarvis or committed
 - Completion mode: `review-required`
 
+## Non-human direct-chat exclusion
+
+- HIL status: skipped; the user explicitly requested that non-human KakaoTalk
+  channels be excluded from messenger processing.
+- Root cause: `NTUser.directChatId` proves a one-to-one-shaped room but does not
+  prove the peer is a human. Business and AlimTalk channels can have the same
+  direct-chat identifier and were accepted by the previous policy.
+- The KakaoTalk adapter now joins `NTUser` and `NTChatRoom` metadata and returns
+  `direct_chat_kind` plus non-sensitive classification reasons. Non-zero
+  `userType`, business/public-institution verification, AlimTalk, bot, BizChat,
+  or an explicitly non-writable channel classifies the destination as
+  `non_human`.
+- Jarvis now requires both the exact `NTUser.directChatId` source and
+  `direct_chat_kind=human`. A versioned final-send guard invalidates old cached
+  direct-room evidence, so a stale approval or buffered turn cannot bypass the
+  new policy.
+- Regression coverage proves that the observed business/AlimTalk shape is
+  rejected, the known human shape remains accepted, and legacy direct caches
+  fail closed.
+- Live verification classified the business/AlimTalk room as `non_human` with
+  `user_type:1`, `verification_type:BUSINESS`, `alimtalk`, and `not_writable`;
+  the known human room remained `human`. The installed controller reported the
+  non-human room as `bc_sendable=false`.
+- Controller backup:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-nonhuman-filter-20260726-164643`.
+  Adapter backups:
+  `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/adapters/kakaotalk/observe.py.bak-nonhuman-filter-20260726-164643`
+  and
+  `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/adapters/kakaotalk/observe.py.bak-nonhuman-filter-20260726-164643`.
+- Installed SHA-256 values are
+  `b14e334619e82684cde2dea0af7945e080d9424a12a6890f092b1c55cefd569d`
+  for the controller and
+  `bc3b5835e82d5d73b5dba1e6224b20a6a27476d7e0a4d6a5857fa5b13ee7d7ea`
+  for the adapter.
+- All 62 messenger-controller tests and 104 KakaoTalk adapter/MCP tests passed.
+  Python compilation, OKF validation, `git diff --check`, live controller
+  `--check`, SSH validation, and Hermes status checks passed.
+- KakaoTalk adapter source commit:
+  `92bb357 fix: exclude non-human direct chats` on
+  `codex/nonhuman-messenger-filter-20260726`.
+- Only the messenger poller/listener restarted, as PIDs `9048` and `9046`.
+  Jarvis gateway PID `2255` remained unchanged, the assistant remained enabled,
+  and the Discord listener reconnected.
+- Completion mode: `review-required`.
+
+## Expected-tool call counting
+
+- HIL status: completed in the originating Codex task; Discord thread id: none.
+  The user requested that mixed-tool Jarvis sessions be validated and reported
+  by the requested `send_message` call count rather than the total number of
+  tool calls in the session.
+- The session verifier now filters assistant calls and tool-result rows by the
+  requested tool name. Unrelated calls such as `web_fetch` no longer make a
+  single `send_message` look like a duplicate, while zero or duplicate sends
+  still fail closed.
+- Count mismatches now report the concrete operation and both counts, for
+  example `send_message 호출 수 0회, 결과 수 0회입니다(각각 1회 필요)`.
+  Exact send arguments and the matching MCP result payload remain required.
+- Regression coverage includes an unrelated fetch plus one send, zero sends,
+  and two sends. All 60 messenger-assistant tests pass; Python compilation,
+  OKF validation, and `git diff --check` also pass.
+- Remote controller backup:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-send-count-20260720-135159`.
+  The deployed local and remote controller SHA-256 is
+  `86802250813f7e0a2ed16c1b3927a5c4c701fba7df7d42499ddd173bfb3de183`.
+- The 80-second poller and Discord listener restarted successfully as PIDs
+  `5865` and `5867`; controller `--check` passed every check. The first
+  post-restart poll reached the existing, separate Jarvis model/provider guard
+  and logged `승인된 Jarvis 모델이 KakaoTalk MCP를 호출하지 않았습니다`.
+  That provider mismatch is not caused or fixed by the call-count change.
+- The pre-existing dirty files in the remote canonical workspace were left
+  untouched. Completion mode: `review-required`.
+
 ## Intent router, explicit dialogue state, and typed memory
 
 - HIL status: completed in the originating Codex task; Discord thread id: none.

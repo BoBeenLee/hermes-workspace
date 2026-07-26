@@ -765,13 +765,17 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         exact_json = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
         self.assertLess(prompt.index(exact_json), prompt.index("Call kakaotalk_mac.preview_messages"))
 
-    def test_jarvis_session_result_requires_one_exact_tool_call_and_arguments(self):
+    def test_jarvis_session_result_counts_only_expected_send_message_call(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             profile = Path(temp_dir)
             database = profile / "state.db"
             expected_tool = module.KAKAO_TOOL_PREFIX + "send_message"
             arguments = {"target": "친구", "message": "답장", "dry_run": True}
-            calls = [{"function": {"name": expected_tool, "arguments": json.dumps(arguments, ensure_ascii=False)}}]
+            fetch_tool = "web_fetch"
+            calls = [
+                {"function": {"name": fetch_tool, "arguments": json.dumps({"url": "https://example.com"})}},
+                {"function": {"name": expected_tool, "arguments": json.dumps(arguments, ensure_ascii=False)}},
+            ]
             tool_content = '<untrusted_tool_result source="mcp">\n' + json.dumps(
                 {"result": json.dumps({"ok": True, "chat_id_validated": True})}
             ) + "\n</untrusted_tool_result>"
@@ -783,6 +787,10 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                 connection.execute(
                     "INSERT INTO messages(session_id, role, tool_calls) VALUES(?,?,?)",
                     ("session-1", "assistant", json.dumps(calls, ensure_ascii=False)),
+                )
+                connection.execute(
+                    "INSERT INTO messages(session_id, role, content, tool_name) VALUES(?,?,?,?)",
+                    ("session-1", "tool", json.dumps({"ok": True}), fetch_tool),
                 )
                 connection.execute(
                     "INSERT INTO messages(session_id, role, content, tool_name) VALUES(?,?,?,?)",
@@ -799,6 +807,77 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         self.assertEqual(result, {"ok": True, "chat_id_validated": True})
 
+    def test_jarvis_session_result_reports_send_message_call_count(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile = Path(temp_dir)
+            database = profile / "state.db"
+            expected_tool = module.KAKAO_TOOL_PREFIX + "send_message"
+            fetch_tool = "web_fetch"
+            calls = [
+                {"function": {"name": fetch_tool, "arguments": json.dumps({"url": "https://example.com"})}}
+            ]
+            with contextlib.closing(sqlite3.connect(database)) as connection:
+                connection.execute(
+                    "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, "
+                    "content TEXT, tool_calls TEXT, tool_name TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO messages(session_id, role, tool_calls) VALUES(?,?,?)",
+                    ("session-1", "assistant", json.dumps(calls)),
+                )
+                connection.execute(
+                    "INSERT INTO messages(session_id, role, content, tool_name) VALUES(?,?,?,?)",
+                    ("session-1", "tool", json.dumps({"ok": True}), fetch_tool),
+                )
+                connection.commit()
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "send_message 호출 수 0회, 결과 수 0회",
+            ):
+                module.hermes_session_tool_payload(
+                    profile,
+                    "session-1",
+                    expected_tool,
+                    {"target": "친구", "message": "답장", "dry_run": True},
+                )
+
+    def test_jarvis_session_result_reports_duplicate_send_message_calls(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile = Path(temp_dir)
+            database = profile / "state.db"
+            expected_tool = module.KAKAO_TOOL_PREFIX + "send_message"
+            arguments = {"target": "친구", "message": "답장", "dry_run": True}
+            call = {"function": {"name": expected_tool, "arguments": json.dumps(arguments)}}
+            with contextlib.closing(sqlite3.connect(database)) as connection:
+                connection.execute(
+                    "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, "
+                    "content TEXT, tool_calls TEXT, tool_name TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO messages(session_id, role, tool_calls) VALUES(?,?,?)",
+                    ("session-1", "assistant", json.dumps([call, call])),
+                )
+                connection.executemany(
+                    "INSERT INTO messages(session_id, role, content, tool_name) VALUES(?,?,?,?)",
+                    [
+                        ("session-1", "tool", json.dumps({"ok": True}), expected_tool),
+                        ("session-1", "tool", json.dumps({"ok": True}), expected_tool),
+                    ],
+                )
+                connection.commit()
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "send_message 호출 수 2회, 결과 수 2회",
+            ):
+                module.hermes_session_tool_payload(
+                    profile,
+                    "session-1",
+                    expected_tool,
+                    arguments,
+                )
+
     def test_direct_room_requires_adapter_direct_evidence_over_mcp(self):
         client = module.JarvisKakaoAgent.__new__(module.JarvisKakaoAgent)
         client._call_tool = mock.Mock(
@@ -807,6 +886,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                     {
                         "chat_id": "123",
                         "sources": ["visible_chats", "NTUser.directChatId"],
+                        "direct_chat_kind": "human",
                     }
                 ]
             }
@@ -823,6 +903,27 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                 "user_id": "",
             },
         )
+
+    def test_direct_room_rejects_non_human_adapter_classification(self):
+        client = module.JarvisKakaoAgent.__new__(module.JarvisKakaoAgent)
+        client._call_tool = mock.Mock(
+            return_value={
+                "matches": [
+                    {
+                        "chat_id": "4928063170323458",
+                        "sources": ["visible_chats", "NTUser.directChatId"],
+                        "direct_chat_kind": "non_human",
+                        "direct_chat_reasons": [
+                            "user_type:1",
+                            "verification_type:BUSINESS",
+                            "alimtalk",
+                        ],
+                    }
+                ]
+            }
+        )
+
+        self.assertFalse(client.is_direct_chat("4928063170323458", "비씨카드"))
 
     def test_auth_complete_command_is_dispatched(self):
         class FakeDiscord:
@@ -1087,6 +1188,19 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertEqual(set(assistant.state["room_buffers"]), {"direct-2"})
         self.assertTrue(assistant.state["rooms"]["direct-2"]["is_direct"])
         self.assertFalse(assistant._room_is_sendable("group-2"))
+
+    def test_all_direct_scope_rejects_stale_direct_cache_without_current_policy_version(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.allow_all_direct_chats = True
+        assistant.allowed_chat_ids = set()
+        assistant.state = module.default_state()
+        assistant.state["rooms"]["4928063170323458"] = {
+            "name": "비씨카드",
+            "is_direct": True,
+            "direct_evidence": "NTUser.directChatId via Hermes MCP",
+        }
+
+        self.assertFalse(assistant._room_is_sendable("4928063170323458"))
 
     def test_ready_buffer_waits_exactly_five_seconds_after_latest_message(self):
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
@@ -1407,7 +1521,11 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "1:1 방 정책 거부"):
             assistant._send_verified("검증 전 방", "999", "답장")
 
-        assistant.state["rooms"]["999"] = {"name": "검증된 친구", "is_direct": True}
+        assistant.state["rooms"]["999"] = {
+            "name": "검증된 친구",
+            "is_direct": True,
+            "direct_policy_version": module.DIRECT_CHAT_POLICY_VERSION,
+        }
         self.assertTrue(assistant._send_verified("검증된 친구", "999", "답장"))
 
 

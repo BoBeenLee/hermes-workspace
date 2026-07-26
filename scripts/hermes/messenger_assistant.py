@@ -40,6 +40,7 @@ KST = dt.timezone(dt.timedelta(hours=9))
 UTC = dt.timezone.utc
 STATE_VERSION = 2
 MEMORY_VERSION = 2
+DIRECT_CHAT_POLICY_VERSION = 2
 WEATHER_PENDING_TTL_SECONDS = 900
 MEMORY_KINDS = frozenset({"profile", "preference", "relationship", "constraint"})
 DEFAULT_POLL_INTERVAL_SECONDS = 80
@@ -423,7 +424,10 @@ class JarvisKakaoAgent:
             if str(match.get("chat_id") or "") != str(chat_id):
                 continue
             sources = match.get("sources") or [match.get("source")]
-            return "NTUser.directChatId" in sources
+            return (
+                "NTUser.directChatId" in sources
+                and str(match.get("direct_chat_kind") or "") == "human"
+            )
         return False
 
     def list_since(self, since: str, until: str) -> dict[str, Any]:
@@ -672,14 +676,20 @@ def hermes_session_single_tool(
             raise RuntimeError("Jarvis tool-call 기록이 손상되었습니다") from exc
         if isinstance(parsed, list):
             calls.extend(item for item in parsed if isinstance(item, dict))
-    if len(calls) != 1 or len(tool_rows) != 1:
-        raise RuntimeError("Jarvis가 요청한 도구를 정확히 한 번 호출하지 않았습니다")
+    expected_calls = [
+        call
+        for call in calls
+        if str((call.get("function") or {}).get("name") or "") == expected_tool
+    ]
+    expected_tool_rows = [row for row in tool_rows if str(row[0] or "") == expected_tool]
+    if len(expected_calls) != 1 or len(expected_tool_rows) != 1:
+        tool_name = expected_tool.removeprefix(KAKAO_TOOL_PREFIX)
+        raise RuntimeError(
+            f"Jarvis {tool_name} 호출 수 {len(expected_calls)}회, "
+            f"결과 수 {len(expected_tool_rows)}회입니다(각각 1회 필요)"
+        )
 
-    function = calls[0].get("function") or {}
-    actual_tool = str(function.get("name") or "")
-    recorded_tool = str(tool_rows[0][0] or "")
-    if actual_tool != expected_tool or recorded_tool != expected_tool:
-        raise RuntimeError("Jarvis가 요청과 다른 도구를 호출했습니다")
+    function = expected_calls[0].get("function") or {}
     raw_arguments = function.get("arguments") or "{}"
     try:
         actual_arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
@@ -687,7 +697,7 @@ def hermes_session_single_tool(
         raise RuntimeError("Jarvis 도구 호출 인자가 손상되었습니다") from exc
     if not isinstance(actual_arguments, dict):
         raise RuntimeError("Jarvis 도구 호출 인자가 객체가 아닙니다")
-    return actual_arguments, tool_rows[0][1]
+    return actual_arguments, expected_tool_rows[0][1]
 
 
 def hermes_session_tool_payload(
@@ -1312,7 +1322,10 @@ class MessengerAssistant:
         if not getattr(self, "allow_all_direct_chats", False):
             return True
         room = (getattr(self, "state", {}).get("rooms") or {}).get(normalized) or {}
-        return room.get("is_direct") is True
+        return (
+            room.get("is_direct") is True
+            and room.get("direct_policy_version") == DIRECT_CHAT_POLICY_VERSION
+        )
 
     def run(self, *, process_discord: bool, process_kakao: bool) -> None:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1507,7 +1520,10 @@ class MessengerAssistant:
                 continue
             room_name = str(room.get("display_name") or room_id)
             room_state = self.state.setdefault("rooms", {}).setdefault(room_id, {"name": room_name})
-            if room_state.get("is_direct") is True:
+            if (
+                room_state.get("is_direct") is True
+                and room_state.get("direct_policy_version") == DIRECT_CHAT_POLICY_VERSION
+            ):
                 direct[room_id] = room
                 continue
             try:
@@ -1516,9 +1532,16 @@ class MessengerAssistant:
                 is_direct = None
             if is_direct is True:
                 room_state["is_direct"] = True
+                room_state["direct_chat_kind"] = "human"
                 room_state["direct_evidence"] = "NTUser.directChatId via Hermes MCP"
+                room_state["direct_policy_version"] = DIRECT_CHAT_POLICY_VERSION
                 room_state["direct_verified_at"] = iso_now()
                 direct[room_id] = room
+            elif is_direct is False:
+                room_state["is_direct"] = False
+                room_state["direct_chat_kind"] = "non_human_or_unverified"
+                room_state["direct_policy_version"] = DIRECT_CHAT_POLICY_VERSION
+                room_state["direct_rejected_at"] = iso_now()
         return direct
 
     def _poll_kakao(self) -> None:
