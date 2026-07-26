@@ -73,19 +73,22 @@ The default macOS Hermes host is `bobeen` / `bobeenlee` and its runtime currentl
 | `product` | `groq` | `openai/gpt-oss-120b` |
 | `preflight` | `custom:mlx-qwen` | `samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed` |
 
-The `default` and `jarvis` profiles currently fall back to OpenRouter, then Groq:
+The `default` and `jarvis` profiles currently fall back to the fixed OpenRouter
+Laguna S 2.1 free route, then Groq:
 
 ```yaml
 fallback_providers:
   - provider: openrouter
-    model: openrouter/free
+    model: poolside/laguna-s-2.1:free
     base_url: https://openrouter.ai/api/v1
   - provider: groq
     model: openai/gpt-oss-120b
     base_url: https://api.groq.com/openai/v1
 ```
 
-The named `content`, `product`, and `preflight` profiles were not changed during the 2026-07-06 `altalt` default-profile and `jarvis` switches; at that time they still had the single OpenRouter fallback. The `preflight` profile and default config also include a local MLX Qwen provider:
+The named `content`, `product`, and `preflight` profiles use the same fixed
+OpenRouter Laguna S 2.1 free route as their single text fallback. The
+`preflight` profile and default config also include a local MLX Qwen provider:
 
 ```yaml
 custom_providers:
@@ -173,7 +176,7 @@ organization-policy change and requires separate operator review.
 The `default` and `jarvis` profile routes are configured as:
 
 1. Primary: `altalt` custom OpenAI-compatible endpoint, model `openai/gpt-5-nano`.
-2. Fallback 1: OpenRouter.
+2. Fallback 1: OpenRouter `poolside/laguna-s-2.1:free`.
 3. Fallback 2: Groq.
 
 Hermes tries `fallback_providers` in list order when the primary model fails.
@@ -206,7 +209,7 @@ custom_providers:
 
 fallback_providers:
   - provider: openrouter
-    model: openrouter/free
+    model: poolside/laguna-s-2.1:free
     base_url: https://openrouter.ai/api/v1
   - provider: groq
     model: openai/gpt-oss-120b
