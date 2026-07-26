@@ -2794,14 +2794,19 @@ mcp_servers:
         assistant.allowed_chat_ids = {"123"}
         assistant.kakao = FakeKakao()
 
-        self.assertTrue(
-            assistant._send_verified(
-                "친구",
-                "123",
-                message,
-                not_before="2026-07-19T13:00:00+00:00",
+        with mock.patch.object(
+            module,
+            "now_utc",
+            return_value=dt.datetime(2026, 7, 19, 13, 0, 2, tzinfo=dt.timezone.utc),
+        ):
+            self.assertTrue(
+                assistant._send_verified(
+                    "친구",
+                    "123",
+                    message,
+                    not_before="2026-07-19T13:00:00+00:00",
+                )
             )
-        )
         self.assertEqual(FakeKakao.send_calls, 0)
 
     def test_automatic_send_uses_latest_incoming_timestamp_as_verification_boundary(self):
@@ -2863,6 +2868,10 @@ mcp_servers:
                     "operation": "send_message",
                     "dry_run": False,
                     "phase": "resolve_destination",
+                    "failure_stage": "message_send",
+                    "send_attempted": True,
+                    "message_sent": False,
+                    "external_state_changed": False,
                     "scan_limit": 20,
                 }
 
@@ -2874,6 +2883,64 @@ mcp_servers:
         with self.assertRaisesRegex(RuntimeError, "stage=message_send.*reason=command_failed"):
             assistant._send_verified("친구", "123", "답장")
         self.assertEqual(FakeKakao.calls, 1)
+
+    def test_verified_send_classifies_resolver_rejection_as_confirmed_not_sent(self):
+        class FakeKakao:
+            @staticmethod
+            def send(_target, _message, *, dry_run, chat_id=None):
+                assert dry_run is False
+                return {
+                    "ok": False,
+                    "operation": "send_message",
+                    "error": "destination_not_in_recent_chats",
+                    "message": "No recent KakaoTalk chat matched the requested target.",
+                    "phase": "resolve_destination",
+                    "failure_stage": "resolve_destination",
+                    "send_attempted": False,
+                    "message_sent": False,
+                    "external_state_changed": False,
+                    "scan_limit": 20,
+                }
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.allowed_chat_ids = {"123"}
+        assistant.kakao = FakeKakao()
+        assistant._verify_sent = mock.Mock(return_value=False)
+
+        with self.assertRaisesRegex(
+            module.KakaoPreSendFailure,
+            "발신 전 대상 확인 실패\\(전송되지 않음\\).*destination_not_in_recent_chats",
+        ):
+            assistant._send_verified("친구", "123", "답장")
+
+    def test_approval_reply_reports_pre_send_failure_without_unknown_delivery_warning(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["enabled"] = True
+        assistant.state["pending"]["card-1"] = {
+            "status": "pending",
+            "room_name": "이보빈",
+            "room_id": "128426307555607",
+            "draft": "기존 초안",
+            "created_at": "2026-07-26T00:00:00+00:00",
+            "latest_at": "2026-07-26T00:00:00+00:00",
+        }
+        assistant.discord = mock.Mock()
+        assistant._pending_is_stale = mock.Mock(return_value=False)
+        assistant._send_verified = mock.Mock(
+            side_effect=module.KakaoPreSendFailure(
+                "Jarvis KakaoTalk MCP 발신 전 대상 확인 실패(전송되지 않음): destination_not_in_recent_chats"
+            )
+        )
+
+        assistant._handle_reply_command("reply-1", "card-1", "수정: 어떤거 말이야")
+
+        notification = assistant.discord.send.call_args.args[0]
+        self.assertIn("발신 전에 대상을 확인하지 못해 전송하지 않았습니다", notification)
+        self.assertNotIn("발신을 확인하지 못했습니다", notification)
+        self.assertNotIn("중복 위험", notification)
+        self.assertEqual(assistant.state["pending"]["card-1"]["status"], "pending")
+        self.assertEqual(assistant.state["stats"]["failed"], 1)
 
     def test_verified_send_distinguishes_read_back_mismatch(self):
         class FakeKakao:

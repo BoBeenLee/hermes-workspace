@@ -128,6 +128,10 @@ WMO_CONDITIONS_KO = {
 }
 
 
+class KakaoPreSendFailure(RuntimeError):
+    """The MCP confirmed that KakaoTalk send was not attempted."""
+
+
 def now_utc() -> dt.datetime:
     return dt.datetime.now(UTC)
 
@@ -3039,6 +3043,19 @@ class MessengerAssistant:
         if self._verify_sent(room_name, room_id, message, not_before=verification_start):
             return True
         diagnosed = dict(result)
+        if (
+            not result.get("ok")
+            and result.get("failure_stage") == "resolve_destination"
+            and result.get("send_attempted") is False
+            and result.get("message_sent") is False
+            and result.get("external_state_changed") is False
+        ):
+            diagnosed["failure_stage"] = "resolve_destination"
+            diagnosed.setdefault("failure_reason", result.get("error") or "destination_rejected")
+            detail = kakao_failure_detail(diagnosed, "발신 전 대상 확인 실패")
+            raise KakaoPreSendFailure(
+                f"Jarvis KakaoTalk MCP 발신 전 대상 확인 실패(전송되지 않음): {compact(detail, 300)}"
+            )
         if result.get("ok"):
             diagnosed["failure_stage"] = "delivery_verify"
             diagnosed["failure_reason"] = "read_back_mismatch"
@@ -3168,6 +3185,15 @@ class MessengerAssistant:
                     f"{PREFIX} {reply}",
                     not_before=pending.get("latest_at") or pending.get("created_at"),
                 )
+            except KakaoPreSendFailure as exc:
+                self.state.setdefault("stats", fresh_stats())["failed"] += 1
+                self.discord.send(
+                    "❌ KakaoTalk 발신 전에 대상을 확인하지 못해 전송하지 않았습니다. "
+                    "승인 요청은 pending 상태로 유지됩니다.\n"
+                    f"오류: {compact(exc, 300)}",
+                    reply_to=message_id,
+                )
+                return
             except Exception as exc:
                 self.state.setdefault("stats", fresh_stats())["failed"] += 1
                 self.discord.send(
