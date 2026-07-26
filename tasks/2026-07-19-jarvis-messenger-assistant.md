@@ -1,5 +1,47 @@
 # Jarvis Messenger Assistant
 
+## Unread-first polling and live interval commands
+
+- HIL status: skipped; the user directly requested unread-first processing and
+  command-configurable polling on the default remote Mac.
+- Incremental KakaoTalk scans now request unread metadata, process rooms and
+  messages with current unread items first, deduplicate unread/new overlap,
+  and exclude unread items older than the active scan boundary from automatic
+  reply processing.
+- The private Discord control channel now accepts `폴링 주기`,
+  `폴링 주기 45초`, and `폴링 주기 2분`. The durable interval is constrained
+  to 5 seconds through 60 minutes, appears in `메신저 상태`, and is re-read by
+  the running poll loop without a launchd plist rewrite.
+- A Discord command arriving during a long Kakao scan now waits for the
+  controller lock and reloads durable state after acquiring it. This prevents
+  an interval command from being dropped or overwriting newer poll state.
+- Local verification: all 68 messenger-assistant tests passed; Python
+  compilation, OKF validation, and `git diff --check` passed.
+- Remote controller backups:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-unread-poll-20260726-191122`
+  and
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-command-lock-20260726-191250`.
+  State backups use the same suffixes under
+  `/Users/bobeenlee/.hermes/profiles/jarvis/messenger-assistant/state.json`.
+- Deployed controller SHA-256:
+  `29634dfa22ebfbd56175c28d2af53e535132b37f87639dc80c9a455310a02ec6`.
+  The poller and Discord listener restarted as PIDs `27219` and `27182`;
+  Jarvis gateway PID `17319` remained unchanged.
+- Remote verification confirmed the persisted 30-second default, connected
+  Discord listener, and `include_unread=true` in the active Kakao scan. No live
+  KakaoTalk message was sent.
+- Pre-existing operational issue: post-deployment baseline attempts still
+  failed because the session verifier reported zero recorded
+  `list_new_messages_since` calls even when an actual Kakao MCP child process
+  was observed. A read-only SQLite `PRAGMA quick_check` then confirmed many
+  invalid and duplicate page references in the Jarvis profile `state.db`.
+  The unread/interval configuration is deployed, but successful message
+  processing remains blocked by this separate session-database corruption.
+  Repair was not attempted because it requires a separately reviewed gateway
+  stop, full database backup, recovery, and session verification.
+- Completion mode: `review-required` because recurring automation behavior and
+  the remote controller changed.
+
 - Task type: `remote-config` and `ops-change`
 - HIL status: completed in the originating Codex task
 - Goal: add the agreed KakaoTalk messenger-assistant role to the existing

@@ -58,8 +58,26 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         state = module.default_state()
         self.assertFalse(state["enabled"])
         self.assertFalse(state["automatic_paused"])
+        self.assertEqual(state["poll_interval_seconds"], 30)
         self.assertEqual(state["pending"], {})
         self.assertEqual(state["dialogue_state"], {})
+
+    def test_prioritized_room_messages_prefers_current_unread_and_deduplicates(self):
+        room = {
+            "unread_messages": [
+                {"entity_id": "old", "timestamp": "2026-07-19T11:58:00+00:00", "snippet": "old"},
+                {"entity_id": "unread", "timestamp": "2026-07-19T12:01:00+00:00", "snippet": "unread"},
+            ],
+            "new_messages": [
+                {"entity_id": "regular", "timestamp": "2026-07-19T12:02:00+00:00", "snippet": "regular"},
+                {"entity_id": "unread", "timestamp": "2026-07-19T12:01:00+00:00", "snippet": "duplicate"},
+            ],
+        }
+
+        result = module.prioritized_room_messages(room, "2026-07-19T12:00:00+00:00")
+
+        self.assertEqual([item["entity_id"] for item in result], ["unread", "regular"])
+        self.assertEqual(result[0]["snippet"], "unread")
 
     def test_start_does_not_rebuffer_pending_older_than_new_baseline(self):
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
@@ -750,6 +768,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         )
         send_arguments = client._call_tool.call_args_list[-1].args[1]
         self.assertEqual(send_arguments["chat_id"], "chat-1")
+        list_arguments = client._call_tool.call_args_list[1].args[1]
+        self.assertTrue(list_arguments["include_unread"])
 
     def test_jarvis_kakao_agent_uses_only_kakao_toolset_and_verified_session_result(self):
         client = module.JarvisKakaoAgent(Path("/tmp/hermes"), "jarvis", Path("/tmp/profile"))
@@ -971,6 +991,44 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         assistant._authentication_completed.assert_called_once_with("42")
 
+    def test_poll_interval_command_updates_durable_state(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.discord = mock.Mock()
+
+        assistant._handle_poll_interval_command("42", "폴링 주기 2분")
+
+        self.assertEqual(assistant.state["poll_interval_seconds"], 120)
+        self.assertIn("2분", assistant.discord.send.call_args.args[0])
+
+    def test_poll_interval_command_rejects_out_of_range_value(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.discord = mock.Mock()
+
+        assistant._handle_poll_interval_command("42", "폴링 주기 2초")
+
+        self.assertEqual(assistant.state["poll_interval_seconds"], 30)
+        self.assertIn("5초 이상 60분 이하", assistant.discord.send.call_args.args[0])
+
+    def test_configured_poll_interval_reads_state_override(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            state_dir = root / "state"
+            state_dir.mkdir()
+            (root / "config.json").write_text(
+                json.dumps({"profile_dir": str(root), "state_dir": str(state_dir)}),
+                encoding="utf-8",
+            )
+            (state_dir / "state.json").write_text(
+                json.dumps({"poll_interval_seconds": 75}),
+                encoding="utf-8",
+            )
+
+            interval = module.configured_poll_interval(root / "config.json", 30)
+
+        self.assertEqual(interval, 75)
+
     def test_auth_complete_verifies_without_attempting_login(self):
         class FakeKakao:
             @staticmethod
@@ -998,6 +1056,34 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
             assistant._run_locked(process_discord=False, process_kakao=True)
 
         assistant._process_discord_commands.assert_not_called()
+
+    def test_run_reloads_latest_state_after_acquiring_lock(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            state_path = root / "state.json"
+            memory_path = root / "memory.json"
+            state = module.default_state()
+            state["poll_interval_seconds"] = 75
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            memory_path.write_text(json.dumps(module.default_memory()), encoding="utf-8")
+            assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+            assistant.lock_path = root / "controller.lock"
+            assistant.state_path = state_path
+            assistant.memory_path = memory_path
+            assistant.state = {"poll_interval_seconds": 30}
+            assistant.memory = {}
+            assistant._run_locked = mock.Mock()
+            assistant.save = mock.Mock()
+
+            acquired = assistant.run(
+                process_discord=True,
+                process_kakao=False,
+                wait_for_lock=True,
+            )
+
+        self.assertTrue(acquired)
+        self.assertEqual(assistant.state["poll_interval_seconds"], 75)
+        assistant._run_locked.assert_called_once_with(process_discord=True, process_kakao=False)
 
     def test_cron_poll_uses_message_mcp_without_redundant_auth_status(self):
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)

@@ -6,7 +6,7 @@ Run this script *on the remote host* after copying it and
 private Discord channel, installs the controller under ``~/.hermes/scripts``,
 adds the channel to Jarvis' Discord ignore list so only the deterministic
 controller consumes commands, appends a managed SOUL section, and installs a
-30-second KakaoTalk polling launch agent.
+configurable KakaoTalk polling launch agent.
 
 The Discord token and other secrets are read from the existing Jarvis .env and
 are never printed or copied into generated config.
@@ -191,8 +191,9 @@ def update_soul(path: Path) -> None:
   private Discord control channel.
 - The deterministic controller, not ordinary Jarvis conversation, processes
   `메신저 시작`, `메신저 종료`, approval replies, corrections, room controls,
-  and contact-memory commands in that channel.
-- The 30-second polling controller delegates every KakaoTalk read and send to a
+  contact-memory commands, and `폴링 주기` changes in that channel.
+- The polling controller prioritizes unread messages and delegates every
+  KakaoTalk read and send to a
   Jarvis one-shot that directly calls the `openhuman-kakaotalk-mac` MCP
   toolset. Do not add direct adapter, `kmsg`, `kakaocli`, or CuaDriver calls to
   the controller.
@@ -459,6 +460,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
                     "gateway_identity": "",
                     "automatic_paused": False,
                     "automatic_pause_reason": "",
+                    "poll_interval_seconds": POLL_INTERVAL_SECONDS,
                     "processed": [],
                     "room_buffers": {},
                     "rooms": {},

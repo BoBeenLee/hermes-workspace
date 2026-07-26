@@ -44,6 +44,9 @@ DIRECT_CHAT_POLICY_VERSION = 2
 WEATHER_PENDING_TTL_SECONDS = 900
 MEMORY_KINDS = frozenset({"profile", "preference", "relationship", "constraint"})
 DEFAULT_POLL_INTERVAL_SECONDS = 30
+MIN_POLL_INTERVAL_SECONDS = 5
+MAX_POLL_INTERVAL_SECONDS = 3600
+POLL_INTERVAL_COMMAND_RE = re.compile(r"^폴링\s*주기(?:\s*(\d+)\s*(초|분))?$")
 TRANSIENT_MEMORY_KEY_RE = re.compile(
     r"(^|[_\s-])(last|recent|current|query|request|asked|conversation|message|weather|location|workflow|status|pending)([_\s-]|$)"
     r"|최근|질문|요청|대화|메시지|날씨|지역|상태|보류",
@@ -237,6 +240,55 @@ def parse_allowed_chat_ids(value: Any, *, allow_empty: bool = False) -> frozense
     return frozenset(normalized)
 
 
+def normalize_poll_interval_seconds(value: Any, fallback: int = DEFAULT_POLL_INTERVAL_SECONDS) -> int:
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        seconds = fallback
+    if not MIN_POLL_INTERVAL_SECONDS <= seconds <= MAX_POLL_INTERVAL_SECONDS:
+        return fallback
+    return seconds
+
+
+def format_poll_interval(seconds: int) -> str:
+    if seconds % 60 == 0:
+        return f"{seconds // 60}분"
+    return f"{seconds}초"
+
+
+def prioritized_room_messages(room: dict[str, Any], since: str) -> list[dict[str, Any]]:
+    """Prefer unread messages while excluding unread items older than the active scan boundary."""
+    boundary = parse_time(since)
+    new_messages = [item for item in room.get("new_messages") or [] if is_candidate_message(item)]
+    new_by_id = {
+        str(item.get("entity_id") or ""): item
+        for item in new_messages
+        if str(item.get("entity_id") or "")
+    }
+    prioritized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for unread in room.get("unread_messages") or []:
+        if not is_candidate_message(unread):
+            continue
+        entity_id = str(unread.get("entity_id") or "")
+        matching_new = new_by_id.get(entity_id)
+        timestamp = parse_time(unread.get("timestamp")) or (
+            parse_time(matching_new.get("timestamp")) if matching_new else None
+        )
+        if not entity_id or (boundary and (timestamp is None or timestamp < boundary)):
+            continue
+        merged = dict(matching_new or {})
+        merged.update(unread)
+        prioritized.append(merged)
+        seen.add(entity_id)
+    for item in new_messages:
+        entity_id = str(item.get("entity_id") or "")
+        if entity_id and entity_id not in seen:
+            prioritized.append(item)
+            seen.add(entity_id)
+    return prioritized
+
+
 def default_state() -> dict[str, Any]:
     return {
         "version": STATE_VERSION,
@@ -249,6 +301,7 @@ def default_state() -> dict[str, Any]:
         "gateway_identity": "",
         "automatic_paused": False,
         "automatic_pause_reason": "",
+        "poll_interval_seconds": DEFAULT_POLL_INTERVAL_SECONDS,
         "processed": [],
         "room_buffers": {},
         "rooms": {},
@@ -439,7 +492,7 @@ class JarvisKakaoAgent:
                 "chat_limit": 100,
                 "message_limit_per_chat": 10,
                 "include_unknown": True,
-                "include_unread": False,
+                "include_unread": True,
                 "unread_message_limit": 10,
                 "snippet_chars": 500,
                 "kakaocli_bin": "",
@@ -1237,6 +1290,7 @@ class MessengerAssistant:
         self.memory_path = state_dir / "memory.json"
         self.lock_path = state_dir / "controller.lock"
         self.state = load_json(self.state_path, default_state())
+        self.state.setdefault("poll_interval_seconds", DEFAULT_POLL_INTERVAL_SECONDS)
         self.memory = load_json(self.memory_path, default_memory())
         self.conversation_policy = ConversationPolicy()
         self.hermes_bin = Path(str(self.config.get("hermes_bin") or "~/.local/bin/hermes")).expanduser()
@@ -1327,17 +1381,28 @@ class MessengerAssistant:
             and room.get("direct_policy_version") == DIRECT_CHAT_POLICY_VERSION
         )
 
-    def run(self, *, process_discord: bool, process_kakao: bool) -> None:
+    def run(
+        self,
+        *,
+        process_discord: bool,
+        process_kakao: bool,
+        wait_for_lock: bool = False,
+    ) -> bool:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         with self.lock_path.open("a+", encoding="utf-8") as lock:
             try:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                operation = fcntl.LOCK_EX if wait_for_lock else fcntl.LOCK_EX | fcntl.LOCK_NB
+                fcntl.flock(lock.fileno(), operation)
             except BlockingIOError:
-                return
+                return False
+            self.state = load_json(self.state_path, default_state())
+            self.state.setdefault("poll_interval_seconds", DEFAULT_POLL_INTERVAL_SECONDS)
+            self.memory = load_json(self.memory_path, default_memory())
             try:
                 self._run_locked(process_discord=process_discord, process_kakao=process_kakao)
             finally:
                 self.save()
+            return True
 
     def _run_locked(self, *, process_discord: bool, process_kakao: bool) -> None:
         identity = gateway_identity(self.profile_dir)
@@ -1381,6 +1446,8 @@ class MessengerAssistant:
                 self._stop()
             elif content == "메신저 상태":
                 self._status()
+            elif POLL_INTERVAL_COMMAND_RE.fullmatch(content):
+                self._handle_poll_interval_command(message_id, content)
             elif content == "인증 완료":
                 self._authentication_completed(message_id)
             elif content == "자동답변 재개":
@@ -1392,9 +1459,36 @@ class MessengerAssistant:
             else:
                 self.discord.send(
                     "ℹ️ 지원하지 않는 명령입니다. `메신저 상태`, `메신저 시작`, `메신저 종료`, "
-                    "또는 `인증 완료`를 사용하세요.",
+                    "`폴링 주기 30초`, 또는 `인증 완료`를 사용하세요.",
                     reply_to=message_id,
                 )
+
+    def _handle_poll_interval_command(self, message_id: str, content: str) -> None:
+        match = POLL_INTERVAL_COMMAND_RE.fullmatch(content)
+        if not match:
+            return
+        value, unit = match.groups()
+        current = normalize_poll_interval_seconds(self.state.get("poll_interval_seconds"))
+        if value is None:
+            self.discord.send(
+                f"⏱️ 현재 폴링 주기는 {format_poll_interval(current)}입니다. "
+                "`폴링 주기 45초` 또는 `폴링 주기 2분`처럼 설정할 수 있습니다.",
+                reply_to=message_id,
+            )
+            return
+        seconds = int(value) * (60 if unit == "분" else 1)
+        if not MIN_POLL_INTERVAL_SECONDS <= seconds <= MAX_POLL_INTERVAL_SECONDS:
+            self.discord.send(
+                "⛔ 폴링 주기는 5초 이상 60분 이하로 설정하세요.",
+                reply_to=message_id,
+            )
+            return
+        self.state["poll_interval_seconds"] = seconds
+        self.discord.send(
+            f"✅ 폴링 주기를 {format_poll_interval(seconds)}로 변경했습니다. "
+            "실행 중인 폴러가 다음 시작 시점부터 새 주기를 적용합니다.",
+            reply_to=message_id,
+        )
 
     def _authentication_completed(self, message_id: str) -> None:
         """Verify a user-completed login without attempting another login."""
@@ -1455,8 +1549,9 @@ class MessengerAssistant:
                 "last_at": pending.get("latest_at") or stamp,
             }
         self.discord.send(
-            "✅ **메신저 비서 시작**\n시작 시점을 기준선으로 설정했습니다. 이후 허용된 1:1 카카오톡 방만 30초 주기로 확인합니다. "
-            "기준선 이전의 기존 승인 대기 건은 무효화하며 자동 답변 버퍼에 다시 넣지 않습니다."
+            "✅ **메신저 비서 시작**\n시작 시점을 기준선으로 설정했습니다. "
+            f"이후 허용된 1:1 카카오톡 방만 {format_poll_interval(normalize_poll_interval_seconds(self.state.get('poll_interval_seconds')))} 주기로 확인합니다. "
+            "안 읽은 메시지를 먼저 처리하고, 기준선 이전의 기존 승인 대기 건은 무효화하며 자동 답변 버퍼에 다시 넣지 않습니다."
         )
 
     def _stop(self) -> None:
@@ -1488,6 +1583,8 @@ class MessengerAssistant:
             f"- 상태: {'실행 중' if self.state.get('enabled') else '종료'}\n"
             f"- 시작: {self.state.get('started_at') or '-'}\n"
             f"- 최근 카카오 조회: {self.state.get('last_kakao_poll_at') or '-'}\n"
+            f"- 폴링 주기: {format_poll_interval(normalize_poll_interval_seconds(self.state.get('poll_interval_seconds')))}\n"
+            "- 처리 우선순위: 안 읽은 메시지 우선\n"
             f"- 자동 답변 일시 중지: {'예' if self.state.get('automatic_paused') else '아니오'}\n"
             f"- 미결 승인: {pending_count}\n"
             f"- 1:1 대상: {'검증된 모든 1:1 방' if self.allow_all_direct_chats else ', '.join(sorted(self.allowed_chat_ids))}\n"
@@ -1567,7 +1664,10 @@ class MessengerAssistant:
             )
         else:
             self.state["last_scan_at"] = until
-        result_rooms = result.get("rooms") or []
+        result_rooms = sorted(
+            result.get("rooms") or [],
+            key=lambda room: 0 if room.get("unread_messages") else 1,
+        )
         direct = self._direct_chat_map(result_rooms)
         processed = set(self.state.get("processed") or [])
         buffers = self.state.setdefault("room_buffers", {})
@@ -1582,7 +1682,7 @@ class MessengerAssistant:
             room_state["name"] = room_name
             if room_state.get("excluded"):
                 continue
-            candidates = [item for item in room.get("new_messages") or [] if is_candidate_message(item)]
+            candidates = prioritized_room_messages(room, since)
             new_items = []
             for item in candidates:
                 entity_id = str(item.get("entity_id") or "")
@@ -2264,6 +2364,7 @@ def run_discord_listener(config_path: Path) -> int:
                 MessengerAssistant(config_path).run,
                 process_discord=True,
                 process_kakao=False,
+                wait_for_lock=True,
             )
 
     @client.event
@@ -2292,18 +2393,37 @@ def next_poll_deadline(previous_deadline: float, now: float, interval_seconds: i
     return deadline
 
 
+def configured_poll_interval(config_path: Path, fallback: int) -> int:
+    config = load_json(config_path, {})
+    profile_dir = Path(str(config.get("profile_dir") or "~/.hermes/profiles/jarvis")).expanduser()
+    state_dir = Path(str(config.get("state_dir") or profile_dir / "messenger-assistant")).expanduser()
+    state = load_json(state_dir / "state.json", {})
+    return normalize_poll_interval_seconds(state.get("poll_interval_seconds"), fallback)
+
+
 def run_kakao_poll_loop(config_path: Path, interval_seconds: int) -> int:
     """Run polls on fixed start-time boundaries, skipping a boundary only if a poll overruns it."""
-    if interval_seconds < 5:
-        raise RuntimeError("Poll interval must be at least five seconds")
+    if not MIN_POLL_INTERVAL_SECONDS <= interval_seconds <= MAX_POLL_INTERVAL_SECONDS:
+        raise RuntimeError("Poll interval must be between five seconds and one hour")
     deadline = time.monotonic()
     while True:
         try:
             MessengerAssistant(config_path).run(process_discord=False, process_kakao=True)
         except Exception as exc:
             print(f"Kakao poll failed: {compact(exc, 500)}", file=sys.stderr, flush=True)
-        deadline = next_poll_deadline(deadline, time.monotonic(), interval_seconds)
-        time.sleep(max(0.0, deadline - time.monotonic()))
+        poll_finished = time.monotonic()
+        current_interval = configured_poll_interval(config_path, interval_seconds)
+        next_deadline = next_poll_deadline(deadline, poll_finished, current_interval)
+        while True:
+            refreshed_interval = configured_poll_interval(config_path, interval_seconds)
+            if refreshed_interval != current_interval:
+                current_interval = refreshed_interval
+                next_deadline = next_poll_deadline(deadline, poll_finished, current_interval)
+            remaining = next_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(1.0, remaining))
+        deadline = next_deadline
 
 
 def main(argv: list[str] | None = None) -> int:

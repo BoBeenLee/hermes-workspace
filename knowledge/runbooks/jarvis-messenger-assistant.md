@@ -36,12 +36,14 @@ gateway restart, and future policy changes remain `review-required`.
   session. The poller does not consume Discord commands.
 - Hermes 0.18.2 accepts only integer-minute recurring intervals, so its legacy
   `every 2m` job is retained in paused state for rollback rather than used as
-  an imprecise 30-second scheduler. The controller lock prevents the realtime
+  an imprecise seconds-based scheduler. The controller lock prevents the realtime
   listener and poller from executing state mutations concurrently.
 - A user-level launchd service keeps `--discord-listen` connected to Discord
   Gateway and dispatches control-channel messages immediately. It catches up
   through the REST cursor after reconnecting, so a temporary disconnect does
-  not lose commands.
+  not lose commands. If a Kakao scan currently holds the controller lock, the
+  listener waits and reloads the latest durable state before applying the
+  command rather than dropping the Discord event.
 - The controller reads the existing Jarvis Discord token at runtime. The token
   is never copied into controller config or the launchd plist.
 - The private channel or private-thread fallback is added to
@@ -106,6 +108,9 @@ assistant config and accepted by the controller.
 - `메신저 시작`: set a new baseline and enable polling
 - `메신저 종료`: block every KakaoTalk send and post a session report
 - `메신저 상태`: show state, recent poll, pending approvals, and room controls
+- `폴링 주기`: show the current interval
+- `폴링 주기 45초` / `폴링 주기 2분`: change the live polling interval
+  between 5 seconds and 60 minutes
 - `인증 완료`: verify user-completed Kakao read/send login without retrying or
   handling any authentication value
 - `자동답변 재개`: clear a global automatic-send rate pause
@@ -161,10 +166,14 @@ Reply to an approval or audit card with:
   outstanding draft for the same room. Messages beginning with the visible
   `[메신저 비서]` prefix are never candidates, preventing reply loops.
 - Consecutive messages are buffered until five seconds after the newest
-  message. Because KakaoTalk polling remains scheduled every 30 seconds, this
-  is a post-message quiet-period gate rather than a five-second polling SLA.
+  message. Because KakaoTalk polling uses the configured interval, this is a
+  post-message quiet-period gate rather than a five-second polling SLA.
+- Each incremental scan requests unread metadata and prioritizes unread
+  messages and rooms before other new messages. Unread items older than the
+  active start/scan boundary remain summary-only and are not automatically
+  answered.
 - A buffered-message processing exception retains that room buffer. The next
-  30-second poll retries the same entity IDs, and the buffer is removed
+  configured poll retries the same entity IDs, and the buffer is removed
   only after processing succeeds. The Discord failure notice states that the
   retry remains scheduled.
 - Unknown/fallback model use, confidence below `0.70`, an empty reply, weather
@@ -279,8 +288,9 @@ The installer:
 2. backs up Jarvis `.env` and `SOUL.md` with a timestamp;
 3. installs the controller and non-secret config;
 4. adds the control channel to `DISCORD_IGNORED_CHANNELS`;
-5. creates the disabled-state file, installs the 30-second Kakao-only launchd
-   poller, and pauses the legacy Hermes cron if it exists;
+5. creates the disabled-state file, installs the configurable Kakao-only
+   launchd poller with a 30-second default, and pauses the legacy Hermes cron
+   if it exists;
 6. installs and starts the separate user launchd service
    `ai.hermes.jarvis-messenger-assistant-discord` for realtime Discord commands.
 
@@ -310,7 +320,7 @@ bin/hermes-remote status
 
 Before live use, confirm in the private Discord channel:
 
-1. `메신저 상태` receives a response without waiting for the 30-second poller
+1. `메신저 상태` receives a response without waiting for the Kakao poller
    and reports `종료`.
 2. A gateway restart still leaves it `종료`.
 3. `메신저 시작` establishes a new baseline.
@@ -334,10 +344,10 @@ Before live use, confirm in the private Discord channel:
     recognizes an outgoing match after that trigger and does not resend.
 
 For controller-only updates, back up and replace the installed script, then
-restart only `ai.hermes.jarvis-messenger-assistant-discord`. The poller loads
-the new file on its next 30-second run; the Jarvis gateway does not need a
-restart unless profile configuration, environment, or tool registration also
-changed.
+restart `ai.hermes.jarvis-messenger-assistant-poll` and
+`ai.hermes.jarvis-messenger-assistant-discord`. The Jarvis gateway does not
+need a restart unless profile configuration, environment, or tool registration
+also changed.
 
 ## Rollback
 
