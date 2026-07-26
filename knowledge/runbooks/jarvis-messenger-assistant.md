@@ -72,6 +72,21 @@ gateway restart, and future policy changes remain `review-required`.
 - Explicit dialogue state is stored separately in state schema v2. A weather
   request with no location creates `pending_intent=weather_location` for 15
   minutes. Resolution, another completed intent, or expiry clears that state.
+- `메신저 시작: <자연어 조건>` compiles one session-only automatic-reply
+  condition with the primary nano model before the assistant is enabled. The
+  compiler records the trusted raw condition, normalized condition, whether
+  ordinary rooms may include already-read new messages, confidence, and
+  compilation time. Invalid, fallback-model, secret-like, overlong, or
+  confidence-below-`0.80` conditions leave the assistant stopped.
+- A non-exempt room with an active session condition receives a context-free
+  condition decision before intent routing. It sees only the trusted
+  condition, current KST time, room name, current incoming turn, and read state
+  captured at scan time. A match requires the primary nano model and
+  confidence of at least `0.80`; KakaoTalk text cannot change the condition.
+- Condition mismatches create no reply or approval card. They are marked
+  processed and reported without message text in one room/reason/count summary
+  per polling cycle. A technical condition-call failure retains the room
+  buffer for retry.
 - Long-term memory schema v2 permits only typed `profile`, `preference`,
   `relationship`, and `constraint` facts. Every fact must cite entity IDs from
   the current turn. Untyped legacy entries, weather locations, recent queries,
@@ -111,9 +126,14 @@ gateway restart, and future policy changes remain `review-required`.
 Only the single ID in `DISCORD_ALLOWED_USERS` is copied into the non-secret
 assistant config and accepted by the controller.
 
-- `메신저 시작`: set a new baseline and enable polling
+- `메신저 시작`: clear any old session condition, set a new baseline, and
+  enable the default unread-first policy
+- `메신저 시작: <자연어 조건>`: compile and confirm a session-only condition,
+  then set a new baseline and enable polling
 - `메신저 종료`: block every KakaoTalk send and post a session report
 - `메신저 상태`: show state, recent poll, pending approvals, and room controls
+- `도움말` / `메신저 도움말`: show the same grouped command reference for
+  conditions, polling, approvals, room controls, and memory
 - `폴링 주기`: show the current interval
 - `폴링 주기 45초` / `폴링 주기 2분`: change the live polling interval
   between 5 seconds and 60 minutes
@@ -148,6 +168,12 @@ Reply to an approval or audit card with:
 ## Fail-Closed Rules
 
 - Initial state is disabled.
+- Session conditions are limited to 500 characters and rejected when they look
+  like credentials or secrets. Compilation occurs before the new baseline, so
+  a rejected condition cannot partially start the assistant.
+- Session conditions are cleared by explicit stop and gateway-identity
+  automatic shutdown. Changing a condition requires stop followed by another
+  start command.
 - A Jarvis gateway PID/start-time change disables the assistant. The identity
   reader accepts both the legacy plain PID file and Hermes 0.18.2's JSON PID
   record; an unparseable record is treated as invalid.
@@ -191,6 +217,13 @@ Reply to an approval or audit card with:
   start/scan boundary or more than five minutes old are not automatically
   answered; stale items are marked processed and reported to Discord without
   copying their message text.
+- An active condition may expand ordinary-room collection to all new incoming
+  messages only when its compiled `allows_read_messages` value is true. Every
+  expanded message still passes the per-turn condition decision. Static
+  `read_state_exempt_chat_ids` take precedence over session conditions: those
+  rooms bypass condition matching as well as unread filtering, while all
+  direct-room, age, reply-confidence, duplicate, and rate controls remain
+  active.
 - `recent_context` preserves both sides of the conversation. Every event has
   `speaker_role=operator|other_party`, `speaker_name`, and a `speaker_key`.
   Counterparties use `speaker_key=other_party:<name>`, so multiple participants
@@ -237,6 +270,9 @@ Reply to an approval or audit card with:
   message. There is no CuaDriver fallback and no second actual-send attempt.
   An adapter timeout or uncertain read-back is reported with its specific
   reason while the approval remains pending.
+- State schema v3 adds `session_condition`, `condition_audit_batch`, and the
+  `condition_skipped` statistic. Existing v2 state is migrated in place with an
+  empty condition and no audit batch.
 - Duplicate suppression and post-send read-back require both exact message
   text and an outgoing timestamp at or after the triggering boundary. The
   boundary is the latest incoming turn for automatic replies, the pending
@@ -383,6 +419,17 @@ Before live use, confirm in the private Discord channel:
 11. Repeating an `assistant_status` request after an older identical fixed
     response still performs one new actual send; retrying the same trigger
     recognizes an outgoing match after that trigger and does not resend.
+12. `도움말` and `메신저 도움말` return identical grouped help without IDs,
+    paths, secrets, or raw configuration values.
+13. `메신저 시작: 가족 방에서 질문일 때만` starts only after a primary-model
+    condition compilation at confidence `0.80` or higher. Empty, secret-like,
+    over-500-character, malformed, fallback-model, and low-confidence
+    conditions leave the assistant stopped.
+14. A non-exempt condition mismatch creates no send or approval card, is
+    marked processed, and appears only in the poll-level metadata summary. A
+    condition-call exception retains the buffer.
+15. The configured 이보빈 static exception bypasses the session matcher but
+    still passes reply confidence, direct-room, duplicate, and rate guards.
 
 For controller-only updates, back up and replace the installed script, then
 restart `ai.hermes.jarvis-messenger-assistant-poll` and

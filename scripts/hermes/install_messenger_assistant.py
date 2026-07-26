@@ -192,7 +192,11 @@ def update_soul(path: Path) -> None:
   private Discord control channel.
 - The deterministic controller, not ordinary Jarvis conversation, processes
   `메신저 시작`, `메신저 종료`, approval replies, corrections, room controls,
-  contact-memory commands, and polling controls in that channel.
+  contact-memory commands, polling controls, and `도움말` in that channel.
+- `메신저 시작: <자연어 조건>` compiles one session-only condition with the
+  configured primary nano model. A low-confidence or malformed condition must
+  fail closed before enabling the assistant. The condition is cleared on stop
+  or gateway-identity shutdown.
 - The polling controller replies only to current unread messages from the
   other party received within five minutes, except for explicitly configured
   read-state-exempt chat IDs, and calls the configured
@@ -487,7 +491,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
         state_path.write_text(
             json.dumps(
                 {
-                    "version": 2,
+                    "version": 3,
                     "enabled": False,
                     "started_at": "",
                     "baseline_at": "",
@@ -509,10 +513,22 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
                     "pending": {},
                     "audit_cards": {},
                     "rate": {"global": [], "rooms": {}},
-                    "stats": {"automatic": 0, "approved": 0, "held": 0, "failed": 0, "rooms": [], "memory_created": 0, "memory_updated": 0},
+                    "stats": {
+                        "automatic": 0,
+                        "approved": 0,
+                        "held": 0,
+                        "failed": 0,
+                        "stale_skipped": 0,
+                        "condition_skipped": 0,
+                        "rooms": [],
+                        "memory_created": 0,
+                        "memory_updated": 0,
+                    },
                     "baseline_summary_pending": False,
                     "memory_delete_confirmation": {},
                     "dialogue_state": {},
+                    "session_condition": {},
+                    "condition_audit_batch": [],
                 },
                 ensure_ascii=False,
                 indent=2,
