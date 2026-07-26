@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -54,6 +55,35 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         self.assertEqual(record, ("643add69262e", "active"))
 
+    def test_launch_agent_reload_retries_transient_bootstrap_failure(self):
+        responses = iter(
+            [
+                subprocess.CompletedProcess(["launchctl", "bootout"], 0, "", ""),
+                subprocess.CompletedProcess(["launchctl", "bootstrap"], 5, "", "Input/output error"),
+                subprocess.CompletedProcess(["launchctl", "bootstrap"], 0, "", ""),
+                subprocess.CompletedProcess(["launchctl", "enable"], 0, "", ""),
+                subprocess.CompletedProcess(["launchctl", "print"], 0, "", ""),
+            ]
+        )
+
+        with (
+            mock.patch.object(installer, "run", side_effect=lambda *_args, **_kwargs: next(responses)) as run,
+            mock.patch.object(installer.time, "sleep") as sleep,
+        ):
+            installer.reload_launch_agent(
+                "ai.hermes.test",
+                Path("/tmp/ai.hermes.test.plist"),
+                failure_message="test service was not loaded",
+            )
+
+        bootstrap_calls = [
+            call
+            for call in run.call_args_list
+            if call.args[0][1] == "bootstrap"
+        ]
+        self.assertEqual(len(bootstrap_calls), 2)
+        sleep.assert_called_once_with(1)
+
     def test_default_state_is_fail_closed(self):
         state = module.default_state()
         self.assertFalse(state["enabled"])
@@ -100,6 +130,33 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         self.assertEqual([item["entity_id"] for item in result], ["unread"])
         self.assertEqual(result[0]["snippet"], "unread")
+
+    def test_prioritized_room_messages_can_ignore_read_state_for_explicit_exception(self):
+        room = {
+            "unread_messages": [],
+            "new_messages": [
+                {
+                    "entity_id": "read-but-new",
+                    "timestamp": "2026-07-19T12:01:00+00:00",
+                    "is_from_me": False,
+                    "snippet": "이미 읽혔지만 새 메시지",
+                },
+                {
+                    "entity_id": "operator",
+                    "timestamp": "2026-07-19T12:02:00+00:00",
+                    "is_from_me": True,
+                    "snippet": "직접 보낸 메시지",
+                },
+            ],
+        }
+
+        result = module.prioritized_room_messages(
+            room,
+            "2026-07-19T12:00:00+00:00",
+            require_unread=False,
+        )
+
+        self.assertEqual([item["entity_id"] for item in result], ["read-but-new"])
 
     def test_room_message_selection_separates_fresh_stale_and_operator_messages(self):
         room = {
@@ -1305,6 +1362,16 @@ mcp_servers:
         self.assertTrue(module.is_candidate_message({"is_from_me": False, "text": "상대가 보낸 질문"}))
         self.assertFalse(module.is_candidate_message({"text": "화자 방향이 누락된 메시지"}))
 
+    def test_read_state_exempt_chat_ids_are_numeric_and_optional(self):
+        self.assertEqual(module.parse_read_state_exempt_chat_ids(None), set())
+        self.assertEqual(
+            module.parse_read_state_exempt_chat_ids(["128426307555607"]),
+            {"128426307555607"},
+        )
+        for invalid in ("128426307555607", [""], ["not-numeric"]):
+            with self.assertRaises(RuntimeError):
+                module.parse_read_state_exempt_chat_ids(invalid)
+
     def test_poll_skips_read_and_stale_incoming_messages(self):
         class FakeKakao:
             @staticmethod
@@ -1363,6 +1430,53 @@ mcp_servers:
         self.assertIn(module.message_fingerprint("direct-1", "stale"), assistant.state["processed"])
         self.assertEqual(assistant.state["stats"]["stale_skipped"], 1)
         assistant.discord.send.assert_called_once()
+
+    def test_poll_buffers_new_read_message_for_read_state_exempt_room(self):
+        class FakeKakao:
+            @staticmethod
+            def list_since(_since, _until):
+                return {
+                    "rooms": [
+                        {
+                            "chat_id": "128426307555607",
+                            "display_name": "이보빈",
+                            "unread_messages": [],
+                            "new_messages": [
+                                {
+                                    "entity_id": "read-but-new",
+                                    "timestamp": "2026-07-19T11:59:00+00:00",
+                                    "is_from_me": False,
+                                    "snippet": "이미 읽힌 새 메시지",
+                                }
+                            ],
+                        }
+                    ]
+                }
+
+            @staticmethod
+            def is_direct_chat(chat_id, _display_name):
+                return chat_id == "128426307555607"
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["baseline_at"] = "2026-07-19T11:50:00+00:00"
+        assistant.allowed_chat_ids = {"128426307555607"}
+        assistant.read_state_exempt_chat_ids = {"128426307555607"}
+        assistant.kakao = FakeKakao()
+        assistant.discord = mock.Mock()
+        assistant._invalidate_pending_for_room = mock.Mock()
+
+        with mock.patch.object(
+            module,
+            "now_utc",
+            return_value=dt.datetime(2026, 7, 19, 12, 0, tzinfo=dt.timezone.utc),
+        ):
+            assistant._poll_kakao()
+
+        self.assertEqual(
+            assistant.state["room_buffers"]["128426307555607"]["entity_ids"],
+            ["read-but-new"],
+        )
 
     def test_poll_rejects_member_count_two_without_adapter_direct_evidence(self):
         class FakeKakao:

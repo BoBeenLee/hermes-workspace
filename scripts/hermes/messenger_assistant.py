@@ -253,6 +253,17 @@ def parse_allowed_chat_ids(value: Any, *, allow_empty: bool = False) -> frozense
     return frozenset(normalized)
 
 
+def parse_read_state_exempt_chat_ids(value: Any) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    if not isinstance(value, list):
+        raise RuntimeError("read_state_exempt_chat_ids must be a JSON list")
+    normalized = [str(item).strip() for item in value]
+    if any(not item or not item.isdigit() for item in normalized):
+        raise RuntimeError("read_state_exempt_chat_ids must contain only numeric KakaoTalk chat IDs")
+    return frozenset(normalized)
+
+
 def normalize_poll_interval_seconds(value: Any, fallback: int = DEFAULT_POLL_INTERVAL_SECONDS) -> int:
     try:
         seconds = int(value)
@@ -269,8 +280,13 @@ def format_poll_interval(seconds: int) -> str:
     return f"{seconds}초"
 
 
-def prioritized_room_messages(room: dict[str, Any], since: str) -> list[dict[str, Any]]:
-    """Return only current unread messages at or after the active scan boundary."""
+def prioritized_room_messages(
+    room: dict[str, Any],
+    since: str,
+    *,
+    require_unread: bool = True,
+) -> list[dict[str, Any]]:
+    """Return current unread, or explicitly exempt new, incoming messages."""
     boundary = parse_time(since)
     new_messages = list(room.get("new_messages") or [])
     new_by_id = {
@@ -280,18 +296,21 @@ def prioritized_room_messages(room: dict[str, Any], since: str) -> list[dict[str
     }
     prioritized: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for unread in room.get("unread_messages") or []:
-        if not is_candidate_message(unread):
+    source_messages = (room.get("unread_messages") or []) if require_unread else new_messages
+    for observed in source_messages:
+        if not is_candidate_message(observed):
             continue
-        entity_id = str(unread.get("entity_id") or "")
+        entity_id = str(observed.get("entity_id") or "")
+        if entity_id in seen:
+            continue
         matching_new = new_by_id.get(entity_id)
-        timestamp = parse_time(unread.get("timestamp")) or (
+        timestamp = parse_time(observed.get("timestamp")) or (
             parse_time(matching_new.get("timestamp")) if matching_new else None
         )
         if not entity_id or (boundary and (timestamp is None or timestamp < boundary)):
             continue
         merged = dict(matching_new or {})
-        merged.update(unread)
+        merged.update(observed)
         if not is_candidate_message(merged):
             continue
         prioritized.append(merged)
@@ -305,6 +324,7 @@ def classify_room_messages(
     until: str,
     *,
     max_age_seconds: int = MAX_AUTOMATIC_REPLY_AGE_SECONDS,
+    require_unread: bool = True,
 ) -> dict[str, list[dict[str, Any]]]:
     """Separate reply triggers from operator context and suppressed unread backlog."""
     boundary = parse_time(since)
@@ -329,7 +349,7 @@ def classify_room_messages(
     fresh: list[dict[str, Any]] = []
     stale: list[dict[str, Any]] = []
     answered: list[dict[str, Any]] = []
-    for item in prioritized_room_messages(room, since):
+    for item in prioritized_room_messages(room, since, require_unread=require_unread):
         timestamp = parse_time(item.get("timestamp"))
         if latest_manual_at and timestamp and timestamp <= latest_manual_at:
             answered.append(item)
@@ -1368,6 +1388,13 @@ class MessengerAssistant:
         self.allowed_chat_ids = parse_allowed_chat_ids(
             self.config.get("allowed_chat_ids"), allow_empty=self.allow_all_direct_chats
         )
+        self.read_state_exempt_chat_ids = parse_read_state_exempt_chat_ids(
+            self.config.get("read_state_exempt_chat_ids")
+        )
+        if not self.allow_all_direct_chats and not self.read_state_exempt_chat_ids.issubset(
+            self.allowed_chat_ids
+        ):
+            raise RuntimeError("read_state_exempt_chat_ids must be a subset of allowed_chat_ids")
         self.profile_dir = Path(str(self.config.get("profile_dir") or "~/.hermes/profiles/jarvis")).expanduser()
         state_dir = Path(str(self.config.get("state_dir") or self.profile_dir / "messenger-assistant")).expanduser()
         self.state_path = state_dir / "state.json"
@@ -1699,7 +1726,8 @@ class MessengerAssistant:
         self.discord.send(
             "✅ **메신저 비서 시작**\n시작 시점을 기준선으로 설정했습니다. "
             f"이후 허용된 1:1 카카오톡 방만 {format_poll_interval(normalize_poll_interval_seconds(self.state.get('poll_interval_seconds')))} 주기로 확인합니다. "
-            "현재 안 읽은 상대 메시지만 처리하고, 수신 후 5분이 지난 backlog와 기준선 이전의 기존 승인 대기 건은 자동 답변 버퍼에 넣지 않습니다."
+            "현재 안 읽은 상대 메시지만 처리하되 명시된 읽음 상태 예외 방은 새 상대 메시지를 읽음 여부와 무관하게 처리합니다. "
+            "수신 후 5분이 지난 backlog와 기준선 이전의 기존 승인 대기 건은 자동 답변 버퍼에 넣지 않습니다."
         )
 
     def _stop(self) -> None:
@@ -1716,7 +1744,7 @@ class MessengerAssistant:
             f"- 승인 발신: {stats.get('approved', 0)}\n"
             f"- 보류: {stats.get('held', 0)}\n"
             f"- 실패: {stats.get('failed', 0)}\n"
-            f"- 오래된 unread 제외: {stats.get('stale_skipped', 0)}\n"
+            f"- 오래된 자동답변 제외: {stats.get('stale_skipped', 0)}\n"
             f"- 처리한 채팅방: {rooms}\n"
             f"- 장기 기억 생성/수정: {stats.get('memory_created', 0)}/{stats.get('memory_updated', 0)}\n"
             f"- 미결 승인: {pending_count}\n"
@@ -1728,6 +1756,11 @@ class MessengerAssistant:
         pending_count = sum(1 for value in (self.state.get("pending") or {}).values() if value.get("status") == "pending")
         excluded = [value.get("name") or key for key, value in (self.state.get("rooms") or {}).items() if value.get("excluded")]
         approval_only = [value.get("name") or key for key, value in (self.state.get("rooms") or {}).items() if value.get("approval_only")]
+        rooms = self.state.get("rooms") or {}
+        read_state_exempt = [
+            (rooms.get(room_id) or {}).get("name") or room_id
+            for room_id in sorted(self.read_state_exempt_chat_ids)
+        ]
         self.discord.send(
             "📋 **메신저 비서 상태**\n"
             f"- 상태: {'실행 중' if self.state.get('enabled') else '종료'}\n"
@@ -1737,8 +1770,9 @@ class MessengerAssistant:
             f"- 최근 카카오 조회 오류: {compact(self.state.get('last_kakao_poll_error'), 160) or '-'}\n"
             f"- 폴링 주기: {format_poll_interval(normalize_poll_interval_seconds(self.state.get('poll_interval_seconds')))}\n"
             f"- 폴링 일시정지: {'예' if self.state.get('polling_paused') else '아니오'}\n"
-            "- 자동답변 대상: 현재 안 읽은 상대 메시지(수신 5분 이내)만\n"
-            f"- 오래된 unread 제외: {(self.state.get('stats') or {}).get('stale_skipped', 0)}\n"
+            "- 자동답변 대상: 현재 안 읽은 상대 메시지(수신 5분 이내), 읽음 상태 예외 방은 새 상대 메시지\n"
+            f"- 읽음 상태 예외 방: {', '.join(read_state_exempt) or '-'}\n"
+            f"- 오래된 자동답변 제외: {(self.state.get('stats') or {}).get('stale_skipped', 0)}\n"
             f"- 자동 답변 일시 중지: {'예' if self.state.get('automatic_paused') else '아니오'}\n"
             f"- 미결 승인: {pending_count}\n"
             f"- 1:1 대상: {'검증된 모든 1:1 방' if self.allow_all_direct_chats else ', '.join(sorted(self.allowed_chat_ids))}\n"
@@ -1857,7 +1891,13 @@ class MessengerAssistant:
             room_state["name"] = room_name
             if room_state.get("excluded"):
                 continue
-            selection = classify_room_messages(room, since, until)
+            require_unread = room_id not in getattr(self, "read_state_exempt_chat_ids", frozenset())
+            selection = classify_room_messages(
+                room,
+                since,
+                until,
+                require_unread=require_unread,
+            )
             manual_outgoing = selection["manual_outgoing"]
             if manual_outgoing:
                 latest_manual_at = max(
@@ -1899,7 +1939,7 @@ class MessengerAssistant:
                 stats = self.state.setdefault("stats", fresh_stats())
                 stats["stale_skipped"] = int(stats.get("stale_skipped", 0)) + len(stale)
                 self.discord.send(
-                    "⏭️ **오래된 unread 자동답변 제외**\n"
+                    f"⏭️ **오래된 {'unread ' if require_unread else ''}자동답변 제외**\n"
                     f"방: {compact(room_name, 100)}\n"
                     f"수신 후 {MAX_AUTOMATIC_REPLY_AGE_SECONDS // 60}분이 지난 메시지 {len(stale)}건은 "
                     "자동답변하지 않았습니다."
@@ -2533,6 +2573,11 @@ def check_config(config_path: Path) -> int:
         allowed_chat_ids = parse_allowed_chat_ids(
             config.get("allowed_chat_ids"), allow_empty=allow_all_direct_chats
         )
+        read_state_exempt_chat_ids = parse_read_state_exempt_chat_ids(
+            config.get("read_state_exempt_chat_ids")
+        )
+        if not allow_all_direct_chats and not read_state_exempt_chat_ids.issubset(allowed_chat_ids):
+            raise RuntimeError("read_state_exempt_chat_ids must be a subset of allowed_chat_ids")
     except RuntimeError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return 1

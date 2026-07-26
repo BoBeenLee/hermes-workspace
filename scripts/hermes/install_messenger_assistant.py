@@ -24,6 +24,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any
 import urllib.error
 import urllib.request
@@ -193,7 +194,8 @@ def update_soul(path: Path) -> None:
   `메신저 시작`, `메신저 종료`, approval replies, corrections, room controls,
   contact-memory commands, and polling controls in that channel.
 - The polling controller replies only to current unread messages from the
-  other party received within five minutes, and calls the configured
+  other party received within five minutes, except for explicitly configured
+  read-state-exempt chat IDs, and calls the configured
   `openhuman-kakaotalk-mac` stdio MCP server through its deterministic adapter.
   Operator messages remain attributed context and never become reply triggers.
   Jarvis models classify and draft replies but never select KakaoTalk tools or
@@ -223,6 +225,34 @@ def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProces
         stderr=subprocess.PIPE,
         check=check,
     )
+
+
+def reload_launch_agent(
+    label: str,
+    plist_path: Path,
+    *,
+    failure_message: str,
+) -> None:
+    domain = f"gui/{os.getuid()}"
+    run(["/bin/launchctl", "bootout", f"{domain}/{label}"], check=False)
+    bootstrap: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(1, 6):
+        bootstrap = run(
+            ["/bin/launchctl", "bootstrap", domain, str(plist_path)],
+            check=False,
+        )
+        if bootstrap.returncode == 0:
+            break
+        if attempt < 5:
+            time.sleep(attempt)
+    if bootstrap is None or bootstrap.returncode != 0:
+        detail = (bootstrap.stderr if bootstrap else "").strip()
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"{failure_message} (bootstrap exit {bootstrap.returncode if bootstrap else 'unknown'}){suffix}")
+    run(["/bin/launchctl", "enable", f"{domain}/{label}"])
+    loaded = run(["/bin/launchctl", "print", f"{domain}/{label}"], check=False)
+    if loaded.returncode != 0:
+        raise RuntimeError(failure_message)
 
 
 def legacy_cron_record() -> tuple[str, str] | None:
@@ -300,13 +330,11 @@ def install_kakao_poller(
     temporary.chmod(0o600)
     os.replace(temporary, plist_path)
 
-    domain = f"gui/{os.getuid()}"
-    run(["/bin/launchctl", "bootout", f"{domain}/{POLLER_LABEL}"], check=False)
-    run(["/bin/launchctl", "bootstrap", domain, str(plist_path)])
-    run(["/bin/launchctl", "enable", f"{domain}/{POLLER_LABEL}"])
-    loaded = run(["/bin/launchctl", "print", f"{domain}/{POLLER_LABEL}"], check=False)
-    if loaded.returncode != 0:
-        raise RuntimeError("KakaoTalk fixed-interval poller was not loaded by launchd")
+    reload_launch_agent(
+        POLLER_LABEL,
+        plist_path,
+        failure_message="KakaoTalk fixed-interval poller was not loaded by launchd",
+    )
     return plist_path, plist_backup
 
 
@@ -350,14 +378,11 @@ def install_discord_listener(
     temporary.chmod(0o600)
     os.replace(temporary, plist_path)
 
-    domain = f"gui/{os.getuid()}"
-    run(["/bin/launchctl", "bootout", f"{domain}/{LISTENER_LABEL}"], check=False)
-    run(["/bin/launchctl", "bootstrap", domain, str(plist_path)])
-    run(["/bin/launchctl", "enable", f"{domain}/{LISTENER_LABEL}"])
-    run(["/bin/launchctl", "kickstart", "-k", f"{domain}/{LISTENER_LABEL}"])
-    loaded = run(["/bin/launchctl", "print", f"{domain}/{LISTENER_LABEL}"], check=False)
-    if loaded.returncode != 0:
-        raise RuntimeError("Discord realtime listener was not loaded by launchd")
+    reload_launch_agent(
+        LISTENER_LABEL,
+        plist_path,
+        failure_message="Discord realtime listener was not loaded by launchd",
+    )
     return plist_path, plist_backup
 
 
@@ -383,11 +408,19 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
             existing_config = loaded
     requested_chat_ids = getattr(args, "allowed_chat_id", None) or existing_config.get("allowed_chat_ids")
     allowed_chat_ids = normalize_chat_ids(requested_chat_ids)
+    requested_read_state_exempt_ids = (
+        getattr(args, "read_state_exempt_chat_id", None)
+        or existing_config.get("read_state_exempt_chat_ids")
+        or []
+    )
+    read_state_exempt_chat_ids = normalize_chat_ids(requested_read_state_exempt_ids)
     allow_all_direct_chats = bool(
         getattr(args, "allow_all_direct_chats", False) or existing_config.get("allow_all_direct_chats") is True
     )
     if not allowed_chat_ids and not allow_all_direct_chats:
         raise RuntimeError("At least one --allowed-chat-id is required (or must exist in the installed config)")
+    if not allow_all_direct_chats and not set(read_state_exempt_chat_ids).issubset(allowed_chat_ids):
+        raise RuntimeError("Read-state-exempt KakaoTalk chat IDs must also be allowed")
 
     if args.dry_run:
         return {
@@ -404,6 +437,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "allowed_chat_ids": allowed_chat_ids,
             "allow_all_direct_chats": allow_all_direct_chats,
+            "read_state_exempt_chat_ids": read_state_exempt_chat_ids,
             "login_mode": "user-entered-kmsg-encrypted-cache",
         }
 
@@ -429,7 +463,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
     state_dir.mkdir(parents=True, exist_ok=True)
     state_dir.chmod(0o700)
     config = {
-        "version": 3,
+        "version": 4,
         "profile": "jarvis",
         "profile_dir": str(PROFILE_DIR),
         "state_dir": str(state_dir),
@@ -438,6 +472,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
         "discord_user_id": user_id,
         "allowed_chat_ids": allowed_chat_ids,
         "allow_all_direct_chats": allow_all_direct_chats,
+        "read_state_exempt_chat_ids": read_state_exempt_chat_ids,
         "login_mode": "user-entered-kmsg-encrypted-cache",
     }
     config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -512,6 +547,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
         "config_backup": str(config_backup) if config_backup else "",
         "allowed_chat_ids": allowed_chat_ids,
         "allow_all_direct_chats": allow_all_direct_chats,
+        "read_state_exempt_chat_ids": read_state_exempt_chat_ids,
         "kakao_poller": str(poller_plist),
         "kakao_poller_backup": str(poller_plist_backup) if poller_plist_backup else "",
         "poll_interval_seconds": POLL_INTERVAL_SECONDS,
@@ -538,6 +574,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-all-direct-chats",
         action="store_true",
         help="Allow every room verified by the KakaoTalk adapter as a 1:1 direct chat",
+    )
+    parser.add_argument(
+        "--read-state-exempt-chat-id",
+        action="append",
+        help="Direct-room chat_id whose new incoming messages may trigger regardless of read state",
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser

@@ -99,6 +99,12 @@ gateway restart, and future policy changes remain `review-required`.
   lack this exact evidence remain blocked at discovery and at the final send
   guard. Deployments that leave this setting false continue to use the
   `allowed_chat_ids` allowlist.
+- `read_state_exempt_chat_ids` is an explicit per-room exception to the
+  unread-only trigger rule. For those IDs, new incoming messages after the
+  active scan boundary may enter the reply buffer even if KakaoTalk already
+  reports them as read. The five-minute age limit, incoming-direction check,
+  duplicate suppression, direct-room verification, operator-reply
+  cancellation, confidence gate, and rate limits still apply.
 
 ## Control Commands
 
@@ -178,10 +184,13 @@ Reply to an approval or audit card with:
   post-message quiet-period gate rather than a five-second polling SLA.
 - Each incremental scan requests unread metadata. Messages absent from the
   current unread set are never automatic-reply candidates, even when they
-  appear in the incremental history. Unread messages older than the active
+  appear in the incremental history, unless their room ID is explicitly listed
+  in `read_state_exempt_chat_ids`. In an exempt room, only new incoming
+  messages from the incremental scan are considered; the controller does not
+  backfill older read history. Candidate messages older than the active
   start/scan boundary or more than five minutes old are not automatically
-  answered; stale unread items are marked processed and reported to Discord
-  without copying their message text.
+  answered; stale items are marked processed and reported to Discord without
+  copying their message text.
 - `recent_context` preserves both sides of the conversation. Every event has
   `speaker_role=operator|other_party`, `speaker_name`, and a `speaker_key`.
   Counterparties use `speaker_key=other_party:<name>`, so multiple participants
@@ -290,12 +299,15 @@ scp scripts/hermes/messenger_assistant.py \
 ssh bobeen '/Users/bobeenlee/.hermes/hermes-agent/venv/bin/python \
   /tmp/install_messenger_assistant.py \
   --controller /tmp/messenger_assistant.py \
-  --allow-all-direct-chats --dry-run'
+  --allow-all-direct-chats \
+  --read-state-exempt-chat-id 128426307555607 \
+  --dry-run'
 
 ssh bobeen '/Users/bobeenlee/.hermes/hermes-agent/venv/bin/python \
   /tmp/install_messenger_assistant.py \
   --controller /tmp/messenger_assistant.py \
-  --allow-all-direct-chats'
+  --allow-all-direct-chats \
+  --read-state-exempt-chat-id 128426307555607'
 ```
 
 On later upgrades, omitting `--allow-all-direct-chats` preserves an enabled
@@ -357,7 +369,10 @@ Before live use, confirm in the private Discord channel:
    adapter-verified direct room is buffered. A read message, a manual
    `is_from_me=true` message, a message older than five minutes, a group room,
    or a final send without cached `NTUser.directChatId` evidence is rejected
-   before the KakaoTalk send MCP call.
+   before the KakaoTalk send MCP call. For a room listed in
+   `read_state_exempt_chat_ids`, a fresh incoming incremental message is
+   buffered even when absent from the unread set; the same message in any
+   other room remains excluded.
 8. A mixed preview labels operator messages separately and assigns different
    `speaker_key` values to each named counterparty.
 9. A forced read-only preview argument mismatch leaves the room buffer present;
