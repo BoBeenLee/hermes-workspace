@@ -1589,19 +1589,50 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
     def test_kakao_operations_use_one_deterministic_adapter_interface(self):
         client = module.KakaoMcpAdapter.__new__(module.KakaoMcpAdapter)
-        client._call_tool = mock.Mock(return_value={"ok": True})
+        binding = {
+            "version": 1,
+            "read_chat_id": "chat-1",
+            "display_name": "친구",
+            "send_chat_id": "kmsg-chat-1",
+        }
+        client._call_tool = mock.Mock(
+            side_effect=[
+                {"ok": True},
+                {"ok": True},
+                {"ok": True},
+                {"ok": True, "conversation_binding": binding},
+                {"ok": True},
+            ]
+        )
 
         client.auth_status()
         client.list_since("from", "until")
         client.preview("친구", "123")
-        client.send("친구", "답장", dry_run=False, chat_id="chat-1")
+        self.assertEqual(client.bind("친구", "chat-1", "마지막 메시지"), binding)
+        client.send(
+            "친구",
+            "답장",
+            dry_run=False,
+            chat_id="chat-1",
+            conversation_binding=binding,
+        )
 
         self.assertEqual(
             [call.args[0] for call in client._call_tool.call_args_list],
-            ["auth_status", "list_new_messages_since", "preview_messages", "send_message"],
+            [
+                "auth_status",
+                "list_new_messages_since",
+                "preview_messages",
+                "send_message",
+                "send_message",
+            ],
         )
         send_arguments = client._call_tool.call_args_list[-1].args[1]
         self.assertEqual(send_arguments["chat_id"], "chat-1")
+        self.assertEqual(send_arguments["conversation_binding"], binding)
+        bind_arguments = client._call_tool.call_args_list[-2].args[1]
+        self.assertTrue(bind_arguments["dry_run"])
+        self.assertEqual(bind_arguments["binding_anchor"], "마지막 메시지")
         list_arguments = client._call_tool.call_args_list[1].args[1]
         self.assertTrue(list_arguments["include_unread"])
 
@@ -2718,6 +2749,142 @@ mcp_servers:
             ],
         )
 
+    def test_create_approval_card_persists_card_time_conversation_binding(self):
+        binding = {
+            "version": 1,
+            "read_chat_id": "128426307555607",
+            "display_name": "이보빈",
+            "send_chat_id": "chat_ibo",
+        }
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.kakao = mock.Mock()
+        assistant.kakao.bind.return_value = binding
+        assistant.discord = mock.Mock()
+        assistant.discord.send.side_effect = [None, {"id": "card-1"}]
+        assistant._touch_room_stats = mock.Mock()
+
+        assistant._create_approval_card(
+            "128426307555607",
+            "이보빈",
+            [
+                {
+                    "entity_id": "message-1",
+                    "is_from_me": False,
+                    "sender": "이보빈",
+                    "text": "수정할 내용이 뭐야?",
+                }
+            ],
+            "초안",
+            "요약",
+            "승인 필요",
+            "감사",
+            {
+                "last_at": "2026-07-26T00:00:00+00:00",
+                "entity_ids": ["message-1"],
+            },
+        )
+
+        assistant.kakao.bind.assert_called_once_with(
+            "이보빈",
+            "128426307555607",
+            "수정할 내용이 뭐야?",
+        )
+        self.assertEqual(
+            assistant.state["pending"]["card-1"]["conversation_binding"],
+            binding,
+        )
+
+    def test_approval_reply_uses_stored_conversation_binding(self):
+        binding = {
+            "version": 1,
+            "read_chat_id": "128426307555607",
+            "display_name": "이보빈",
+            "send_chat_id": "chat_ibo",
+        }
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["enabled"] = True
+        assistant.state["pending"]["card-1"] = {
+            "status": "pending",
+            "room_name": "이보빈",
+            "room_id": "128426307555607",
+            "draft": "기존 초안",
+            "created_at": "2026-07-26T00:00:00+00:00",
+            "latest_at": "2026-07-26T00:00:00+00:00",
+            "conversation_binding": binding,
+        }
+        assistant.discord = mock.Mock()
+        assistant._pending_is_stale = mock.Mock(return_value=False)
+        assistant._send_verified = mock.Mock(return_value=True)
+        assistant._touch_room_stats = mock.Mock()
+
+        assistant._handle_reply_command("reply-1", "card-1", "수정: 어떤거 말이야")
+
+        assistant._send_verified.assert_called_once_with(
+            "이보빈",
+            "128426307555607",
+            f"{module.PREFIX} 어떤거 말이야",
+            not_before="2026-07-26T00:00:00+00:00",
+            conversation_binding=binding,
+        )
+        self.assertEqual(assistant.state["pending"]["card-1"]["status"], "sent")
+
+    def test_approval_reply_without_card_binding_fails_closed_before_lookup_or_send(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["enabled"] = True
+        assistant.state["pending"]["legacy-card"] = {
+            "status": "pending",
+            "room_name": "이보빈",
+            "room_id": "128426307555607",
+            "draft": "기존 초안",
+            "created_at": "2026-07-26T00:00:00+00:00",
+            "latest_at": "2026-07-26T00:00:00+00:00",
+        }
+        assistant.discord = mock.Mock()
+        assistant._pending_is_stale = mock.Mock()
+        assistant._send_verified = mock.Mock()
+
+        assistant._handle_reply_command("reply-1", "legacy-card", "수정: 어떤거 말이야")
+
+        assistant._pending_is_stale.assert_not_called()
+        assistant._send_verified.assert_not_called()
+        self.assertEqual(
+            assistant.state["pending"]["legacy-card"]["status"],
+            "pending",
+        )
+        self.assertIn("대화 바인딩이 없는 이전 승인 카드", assistant.discord.send.call_args.args[0])
+
+    def test_verified_send_passes_conversation_binding_to_mcp(self):
+        binding = {
+            "version": 1,
+            "read_chat_id": "123",
+            "display_name": "친구",
+            "send_chat_id": "chat_friend",
+        }
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.allowed_chat_ids = {"123"}
+        assistant.kakao = mock.Mock()
+        assistant.kakao.send.return_value = {"ok": True, "message_sent": True}
+        assistant._verify_sent = mock.Mock(side_effect=[False, True])
+
+        self.assertTrue(
+            assistant._send_verified(
+                "친구",
+                "123",
+                "답장",
+                conversation_binding=binding,
+            )
+        )
+        assistant.kakao.send.assert_called_once_with(
+            "친구",
+            "답장",
+            dry_run=False,
+            chat_id="123",
+            conversation_binding=binding,
+        )
+
     def test_verified_send_does_not_treat_old_identical_message_as_current_send(self):
         message = f"{module.PREFIX} 응, 지금 정상적으로 작동 중이야 🙂"
 
@@ -2924,6 +3091,12 @@ mcp_servers:
             "draft": "기존 초안",
             "created_at": "2026-07-26T00:00:00+00:00",
             "latest_at": "2026-07-26T00:00:00+00:00",
+            "conversation_binding": {
+                "version": 1,
+                "read_chat_id": "128426307555607",
+                "display_name": "이보빈",
+                "send_chat_id": "chat_ibo",
+            },
         }
         assistant.discord = mock.Mock()
         assistant._pending_is_stale = mock.Mock(return_value=False)

@@ -861,6 +861,8 @@ class KakaoMcpAdapter:
         *,
         dry_run: bool,
         chat_id: str | None = None,
+        binding_anchor: str | None = None,
+        conversation_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         arguments: dict[str, Any] = {
             "message": message,
@@ -878,7 +880,35 @@ class KakaoMcpAdapter:
         }
         if chat_id:
             arguments["chat_id"] = chat_id
+        if binding_anchor:
+            arguments["binding_anchor"] = binding_anchor
+        if conversation_binding is not None:
+            arguments["conversation_binding"] = conversation_binding
         return self._call_tool("send_message", arguments)
+
+    def bind(self, target: str, chat_id: str, anchor_text: str) -> dict[str, Any]:
+        result = self.send(
+            target,
+            "conversation binding probe",
+            dry_run=True,
+            chat_id=chat_id,
+            binding_anchor=anchor_text,
+        )
+        binding = result.get("conversation_binding")
+        valid = (
+            result.get("ok") is True
+            and isinstance(binding, dict)
+            and binding.get("version") == 1
+            and str(binding.get("read_chat_id") or "") == str(chat_id)
+            and str(binding.get("display_name") or "") == str(target)
+            and bool(str(binding.get("send_chat_id") or "").strip())
+        )
+        if not valid:
+            detail = kakao_failure_detail(result, "재사용 가능한 대화 바인딩을 만들지 못했습니다")
+            raise KakaoPreSendFailure(
+                f"Jarvis KakaoTalk MCP 대화 바인딩 실패(전송되지 않음): {compact(detail, 300)}"
+            )
+        return dict(binding)
 
 
 def kakao_mcp_client_ready(profile_dir: Path) -> bool:
@@ -2955,6 +2985,19 @@ class MessengerAssistant:
         audit: str,
         buffer: dict[str, Any],
     ) -> None:
+        binding_anchor = next(
+            (
+                str(item.get("text") or "").strip()
+                for item in reversed(new_turn)
+                if str(item.get("text") or "").strip()
+            ),
+            "",
+        )
+        conversation_binding = self.kakao.bind(
+            room_name,
+            room_id,
+            binding_anchor,
+        )
         raw = "\n".join(
             f"{'나' if item.get('is_from_me') else item.get('sender') or '상대'}: "
             f"{item.get('text') or '[첨부/비텍스트]'}"
@@ -2982,6 +3025,7 @@ class MessengerAssistant:
             "status": "pending",
             "latest_at": buffer.get("last_at") or "",
             "entity_ids": list(buffer.get("entity_ids") or []),
+            "conversation_binding": conversation_binding,
         }
         self._touch_room_stats(room_name)
 
@@ -3033,13 +3077,20 @@ class MessengerAssistant:
         message: str,
         *,
         not_before: Any | None = None,
+        conversation_binding: dict[str, Any] | None = None,
     ) -> bool:
         if not self._room_is_sendable(room_id):
             raise RuntimeError(f"KakaoTalk 검증된 1:1 방 정책 거부: {compact(room_id, 80)}")
         verification_start = (parse_time(not_before) or now_utc()).replace(microsecond=0)
         if self._verify_sent(room_name, room_id, message, not_before=verification_start):
             return True
-        result = self.kakao.send(room_name, message, dry_run=False, chat_id=room_id)
+        send_kwargs: dict[str, Any] = {
+            "dry_run": False,
+            "chat_id": room_id,
+        }
+        if conversation_binding is not None:
+            send_kwargs["conversation_binding"] = conversation_binding
+        result = self.kakao.send(room_name, message, **send_kwargs)
         if self._verify_sent(room_name, room_id, message, not_before=verification_start):
             return True
         diagnosed = dict(result)
@@ -3154,6 +3205,14 @@ class MessengerAssistant:
             if not self.state.get("enabled"):
                 self.discord.send("⛔ 종료 상태에서는 발신하지 않습니다. 다시 시작하면 최신 문맥으로 카드를 갱신합니다.", reply_to=message_id)
                 return
+            conversation_binding = pending.get("conversation_binding")
+            if not isinstance(conversation_binding, dict):
+                self.discord.send(
+                    "⛔ 대화 바인딩이 없는 이전 승인 카드라 발신하지 않았습니다. "
+                    "최근 대화를 다시 찾지 않으며, 새 메시지로 생성된 승인 카드를 사용해 주세요.",
+                    reply_to=message_id,
+                )
+                return
             if self._pending_is_stale(pending):
                 pending["status"] = "invalidated"
                 self.discord.send("♻️ 새 메시지가 있어 이 초안을 무효화했습니다. 다음 조회에서 새 카드를 만듭니다.", reply_to=message_id)
@@ -3184,6 +3243,7 @@ class MessengerAssistant:
                     pending["room_id"],
                     f"{PREFIX} {reply}",
                     not_before=pending.get("latest_at") or pending.get("created_at"),
+                    conversation_binding=conversation_binding,
                 )
             except KakaoPreSendFailure as exc:
                 self.state.setdefault("stats", fresh_stats())["failed"] += 1
