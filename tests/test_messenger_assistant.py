@@ -1596,10 +1596,11 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
     def test_kakao_operations_use_one_deterministic_adapter_interface(self):
         client = module.KakaoMcpAdapter.__new__(module.KakaoMcpAdapter)
         binding = {
-            "version": 1,
+            "version": 2,
             "read_chat_id": "chat-1",
             "display_name": "친구",
             "send_chat_id": "kmsg-chat-1",
+            "send_strategy": "verified_friend_fallback",
         }
         client._call_tool = mock.Mock(
             side_effect=[
@@ -1629,7 +1630,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                 "auth_status",
                 "list_new_messages_since",
                 "preview_messages",
-                "send_message",
+                "bind_conversation",
                 "send_message",
             ],
         )
@@ -1637,8 +1638,9 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertEqual(send_arguments["chat_id"], "chat-1")
         self.assertEqual(send_arguments["conversation_binding"], binding)
         bind_arguments = client._call_tool.call_args_list[-2].args[1]
-        self.assertTrue(bind_arguments["dry_run"])
         self.assertEqual(bind_arguments["binding_anchor"], "마지막 메시지")
+        self.assertNotIn("message", bind_arguments)
+        self.assertNotIn("dry_run", bind_arguments)
         list_arguments = client._call_tool.call_args_list[1].args[1]
         self.assertTrue(list_arguments["include_unread"])
 

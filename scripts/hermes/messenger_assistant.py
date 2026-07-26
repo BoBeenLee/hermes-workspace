@@ -887,18 +887,28 @@ class KakaoMcpAdapter:
         return self._call_tool("send_message", arguments)
 
     def bind(self, target: str, chat_id: str, anchor_text: str) -> dict[str, Any]:
-        result = self.send(
-            target,
-            "conversation binding probe",
-            dry_run=True,
-            chat_id=chat_id,
-            binding_anchor=anchor_text,
+        result = self._call_tool(
+            "bind_conversation",
+            {
+                "target": target,
+                "chat_id": chat_id,
+                "binding_anchor": anchor_text,
+                "kmsg_bin": "",
+                "timeout_seconds": 60,
+            },
         )
         binding = result.get("conversation_binding")
+        version = binding.get("version") if isinstance(binding, dict) else None
+        strategy = (
+            str(binding.get("send_strategy") or "").strip()
+            if version == 2 and isinstance(binding, dict)
+            else "chat_id"
+        )
         valid = (
             result.get("ok") is True
             and isinstance(binding, dict)
-            and binding.get("version") == 1
+            and version in {1, 2}
+            and strategy in {"chat_id", "verified_friend_fallback"}
             and str(binding.get("read_chat_id") or "") == str(chat_id)
             and str(binding.get("display_name") or "") == str(target)
             and bool(str(binding.get("send_chat_id") or "").strip())
