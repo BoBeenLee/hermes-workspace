@@ -165,6 +165,7 @@ Provider changes are `remote-config` work and should finish as `review-required`
 ~/.local/bin/dgx-ai-control models
 ~/.local/bin/dgx-ai-control current-model
 ~/.local/bin/dgx-ai-control select-model gemma4
+~/.local/bin/dgx-ai-control select-model laguna-s-2.1
 ~/.local/bin/dgx-ai-control select-model qwen3.6-35b-a3b-nvfp4
 systemctl --user status llama-local.service
 ```
@@ -172,9 +173,12 @@ systemctl --user status llama-local.service
 Current model registry:
 
 - `gemma4`: `/home/bobeenlee/models/gemma-4-26b-a4b-it/gemma-4-26B-A4B-it-UD-Q6_K.gguf`, context `131072`
+- `laguna-s-2.1`: `/home/bobeenlee/models/laguna-s-2.1/laguna-s-2.1-Q4_K_M.gguf`, context `262144`, with `/home/bobeenlee/models/laguna-s-2.1/laguna-s-2.1-DFlash-BF16.gguf`
 - `qwen3.6-35b-a3b-nvfp4`: `/home/bobeenlee/models/qwen3.6-35b-a3b-nvfp4/Qwen3.6-35B-A3B-NVFP4.gguf`, context `65536`
 
-Live check on 2026-06-24 KST showed `gemma4` selected, `llama-local.service` active on `127.0.0.1:8080`, and `llama-server` running `gemma-4-26B-A4B-it-UD-Q6_K.gguf`.
+Laguna uses the isolated Poolside build at `/home/bobeenlee/src/llama.cpp-poolside-laguna/build/bin/llama-server`; the existing llama.cpp build remains unchanged. Its registry entry enables full CUDA offload, Q8_0 K/V cache, Jinja, preserved reasoning, and DFlash speculative decoding. A 2026-07-26 three-run fixed coding benchmark improved median generation from `26.74 tok/s` without DFlash to `38.09 tok/s` with DFlash, and reduced median response time from `9.699s` to `6.867s`.
+
+Live check on 2026-07-26 KST loaded Laguna successfully with one `262144`-token slot and loopback-only `127.0.0.1:8080`. Initial cold load took about `266s`; DFlash registered with block size `16` and passed chat, thinking, tool-call, and tool-result follow-up checks without assistant-token leakage. Loading populated about `1.3GiB` of swap transiently, but post-load checks showed no sustained swap I/O or memory pressure. The task finished with `gemma4` selected, `llama-local.service` inactive and disabled, and port `8080` closed.
 
 ComfyUI is configured as an enabled user service and should start automatically after boot because lingering is enabled for `bobeenlee`:
 
