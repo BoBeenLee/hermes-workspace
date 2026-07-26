@@ -5,8 +5,8 @@ Run this script *on the remote host* after copying it and
 ``messenger_assistant.py`` to a temporary directory.  It creates/reuses one
 private Discord channel, installs the controller under ``~/.hermes/scripts``,
 adds the channel to Jarvis' Discord ignore list so only the deterministic
-controller consumes commands, appends a managed SOUL section, and installs an
-80-second KakaoTalk polling launch agent.
+controller consumes commands, appends a managed SOUL section, and installs a
+30-second KakaoTalk polling launch agent.
 
 The Discord token and other secrets are read from the existing Jarvis .env and
 are never printed or copied into generated config.
@@ -35,7 +35,7 @@ CHANNEL_NAME = "메신저-비서"
 CRON_NAME = "jarvis-messenger-assistant"
 LISTENER_LABEL = "ai.hermes.jarvis-messenger-assistant-discord"
 POLLER_LABEL = "ai.hermes.jarvis-messenger-assistant-poll"
-POLL_INTERVAL_SECONDS = 80
+POLL_INTERVAL_SECONDS = 30
 HERMES_PYTHON = Path.home() / ".hermes/hermes-agent/venv/bin/python"
 SOUL_START = "<!-- messenger-assistant:managed:start -->"
 SOUL_END = "<!-- messenger-assistant:managed:end -->"
@@ -192,7 +192,7 @@ def update_soul(path: Path) -> None:
 - The deterministic controller, not ordinary Jarvis conversation, processes
   `메신저 시작`, `메신저 종료`, approval replies, corrections, room controls,
   and contact-memory commands in that channel.
-- The 80-second polling controller delegates every KakaoTalk read and send to a
+- The 30-second polling controller delegates every KakaoTalk read and send to a
   Jarvis one-shot that directly calls the `openhuman-kakaotalk-mac` MCP
   toolset. Do not add direct adapter, `kmsg`, `kakaocli`, or CuaDriver calls to
   the controller.

@@ -43,7 +43,7 @@ MEMORY_VERSION = 2
 DIRECT_CHAT_POLICY_VERSION = 2
 WEATHER_PENDING_TTL_SECONDS = 900
 MEMORY_KINDS = frozenset({"profile", "preference", "relationship", "constraint"})
-DEFAULT_POLL_INTERVAL_SECONDS = 80
+DEFAULT_POLL_INTERVAL_SECONDS = 30
 TRANSIENT_MEMORY_KEY_RE = re.compile(
     r"(^|[_\s-])(last|recent|current|query|request|asked|conversation|message|weather|location|workflow|status|pending)([_\s-]|$)"
     r"|최근|질문|요청|대화|메시지|날씨|지역|상태|보류",
@@ -1455,7 +1455,7 @@ class MessengerAssistant:
                 "last_at": pending.get("latest_at") or stamp,
             }
         self.discord.send(
-            "✅ **메신저 비서 시작**\n시작 시점을 기준선으로 설정했습니다. 이후 허용된 1:1 카카오톡 방만 2분 주기로 확인합니다. "
+            "✅ **메신저 비서 시작**\n시작 시점을 기준선으로 설정했습니다. 이후 허용된 1:1 카카오톡 방만 30초 주기로 확인합니다. "
             "기준선 이전의 기존 승인 대기 건은 무효화하며 자동 답변 버퍼에 다시 넣지 않습니다."
         )
 

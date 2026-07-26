@@ -23,7 +23,7 @@ INSTALLER_SPEC.loader.exec_module(installer)
 
 
 class MessengerAssistantPolicyTests(unittest.TestCase):
-    def test_kakao_poller_uses_persistent_eighty_second_fixed_interval(self):
+    def test_kakao_poller_uses_persistent_thirty_second_fixed_interval(self):
         payload = installer.kakao_poller_payload(
             Path("/profile/scripts/messenger_assistant.py"),
             Path("/profile/messenger-assistant/config.json"),
@@ -34,11 +34,11 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertTrue(payload["KeepAlive"])
         self.assertNotIn("--discord-listen", payload["ProgramArguments"])
         interval_index = payload["ProgramArguments"].index("--poll-interval-seconds")
-        self.assertEqual(payload["ProgramArguments"][interval_index + 1], "80")
+        self.assertEqual(payload["ProgramArguments"][interval_index + 1], "30")
 
     def test_fixed_poll_deadline_preserves_start_interval_and_skips_overrun(self):
-        self.assertEqual(module.next_poll_deadline(100.0, 140.0, 80), 180.0)
-        self.assertEqual(module.next_poll_deadline(100.0, 181.0, 80), 260.0)
+        self.assertEqual(module.next_poll_deadline(100.0, 140.0, 30), 160.0)
+        self.assertEqual(module.next_poll_deadline(100.0, 161.0, 30), 190.0)
 
     def test_legacy_cron_record_finds_job_id_and_state(self):
         listed = mock.Mock(
