@@ -17,6 +17,38 @@
   secret is handled by Jarvis or committed
 - Completion mode: `review-required`
 
+## Start-baseline pending replay guard
+
+- HIL status: skipped; the user directly requested the diagnosed replay guard.
+- Root cause: `메신저 시작` created a fresh scan baseline but also restored
+  every pending or held approval card to `room_buffers` without comparing its
+  `latest_at` timestamp with that baseline. On 2026-07-26 this replayed
+  2026-07-20 entity IDs and allowed one old draft to reach an actual
+  `dry_run=false` send.
+- Start now invalidates pending or held cards first and restores them only when
+  `latest_at` parses successfully and is at or after the newly created
+  baseline. Missing, malformed, and pre-baseline timestamps fail closed without
+  re-entering the automatic-reply buffer.
+- The focused regression reproduced the old buffer restoration before the
+  change and passes afterward. The full controller suite passes 63 tests;
+  Python compilation, OKF validation, and `git diff --check` also pass.
+- Remote controller backup:
+  `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-start-baseline-20260726-165826`.
+  The installed controller SHA-256 is
+  `e0103f717b514dff81fbeb63da04ce0cf409ad77d48bb2b38a85bb739b38205f`.
+- Only the messenger poller and Discord listener restarted, as PIDs `12000`
+  and `12001`. Jarvis gateway PID `2255` remained unchanged during deployment.
+  The assistant remained enabled with zero buffered rooms, and the first
+  post-restart poll advanced both cursors to `2026-07-26T07:58:46+00:00`.
+- A separate external operation subsequently restarted the Jarvis gateway as
+  PID `12323`. This deployment did not request that restart. The controller's
+  gateway-identity guard correctly changed the assistant to disabled with zero
+  buffered rooms; the user must explicitly issue `메신저 시작` to establish a
+  new baseline and resume automatic replies.
+- No live KakaoTalk message is sent during verification.
+- Completion mode: `review-required` because the recurring automatic-reply
+  controller behavior changed.
+
 ## Non-human direct-chat exclusion
 
 - HIL status: skipped; the user explicitly requested that non-human KakaoTalk

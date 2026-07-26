@@ -61,6 +61,30 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertEqual(state["pending"], {})
         self.assertEqual(state["dialogue_state"], {})
 
+    def test_start_does_not_rebuffer_pending_older_than_new_baseline(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["pending"]["old-card"] = {
+            "status": "pending",
+            "room_id": "123",
+            "room_name": "친구",
+            "entity_ids": ["old-message"],
+            "latest_at": "2026-07-20T04:00:53+00:00",
+        }
+        assistant.discord = mock.Mock()
+        assistant._room_is_sendable = mock.Mock(return_value=True)
+
+        with mock.patch.object(
+            module,
+            "now_utc",
+            return_value=dt.datetime(2026, 7, 26, 7, 21, 49, tzinfo=dt.timezone.utc),
+        ):
+            assistant._start()
+
+        self.assertEqual(assistant.state["baseline_at"], "2026-07-26T07:21:49+00:00")
+        self.assertEqual(assistant.state["pending"]["old-card"]["status"], "invalidated")
+        self.assertEqual(assistant.state["room_buffers"], {})
+
     def test_chat_id_allowlist_requires_nonempty_numeric_ids(self):
         self.assertEqual(module.parse_allowed_chat_ids(["128426307555607"]), {"128426307555607"})
         for invalid in (None, [], ["room-1"], [""]):

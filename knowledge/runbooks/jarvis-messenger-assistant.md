@@ -136,6 +136,9 @@ Reply to an approval or audit card with:
   reader accepts both the legacy plain PID file and Hermes 0.18.2's JSON PID
   record; an unparseable record is treated as invalid.
 - Start creates a new baseline; messages received before it are summary-only.
+- Start invalidates pending or held approval cards whose latest message is
+  older than the new baseline, or whose timestamp is missing or malformed,
+  without restoring their entity IDs to the automatic-reply buffer.
 - Stop blocks approvals and corrections as well as automatic replies.
 - Only rooms whose adapter lookup reports the same `chat_id` from
   `NTUser.directChatId` and classifies the associated `NTUser` as `human` are

@@ -1437,10 +1437,14 @@ class MessengerAssistant:
             }
         )
         buffers = self.state.setdefault("room_buffers", {})
+        baseline_at = parse_time(stamp)
         for pending in (self.state.get("pending") or {}).values():
             if pending.get("status") not in {"pending", "held"}:
                 continue
             pending["status"] = "invalidated"
+            pending_at = parse_time(pending.get("latest_at"))
+            if pending_at is None or baseline_at is None or pending_at < baseline_at:
+                continue
             room_id = str(pending.get("room_id") or "")
             if not self._room_is_sendable(room_id):
                 continue
@@ -1452,7 +1456,7 @@ class MessengerAssistant:
             }
         self.discord.send(
             "✅ **메신저 비서 시작**\n시작 시점을 기준선으로 설정했습니다. 이후 허용된 1:1 카카오톡 방만 2분 주기로 확인합니다. "
-            "기존 승인 대기 건은 최신 문맥으로 새 카드를 생성합니다."
+            "기준선 이전의 기존 승인 대기 건은 무효화하며 자동 답변 버퍼에 다시 넣지 않습니다."
         )
 
     def _stop(self) -> None:
