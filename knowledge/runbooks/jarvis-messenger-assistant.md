@@ -28,12 +28,10 @@ gateway restart, and future policy changes remain `review-required`.
 - A user-level launchd service named
   `ai.hermes.jarvis-messenger-assistant-poll` keeps the controller's
   `--poll-loop --poll-interval-seconds 30` process alive. The loop uses a
-  monotonic fixed-rate deadline, so normal request duration does not extend the
-  next start interval; an overrun skips only the already-missed boundary. The
-  controller delegates each KakaoTalk read to a Jarvis one-shot restricted to
-  the `openhuman-kakaotalk-mac` toolset. Jarvis directly calls the MCP tool and
-  the controller consumes the verified tool result from that same Hermes
-  session. The poller does not consume Discord commands.
+  dynamic monotonic fixed-rate deadline, so normal request duration does not
+  extend the next start interval and an overrun skips only already-missed
+  boundaries. It reloads durable pause, immediate-run, and interval controls
+  while waiting. The poller does not consume Discord commands.
 - Hermes 0.18.2 accepts only integer-minute recurring intervals, so its legacy
   `every 2m` job is retained in paused state for rollback rather than used as
   an imprecise seconds-based scheduler. The controller lock prevents the realtime
@@ -49,19 +47,19 @@ gateway restart, and future policy changes remain `review-required`.
 - The private channel or private-thread fallback is added to
   `DISCORD_IGNORED_CHANNELS`, preventing the
   ordinary Jarvis conversational gateway from double-processing control replies.
-- Every KakaoTalk operation goes through `JarvisKakaoAgent`: a Jarvis one-shot
-  uses the Hermes-configured `openhuman-kakaotalk-mac` toolset and directly
-  calls exactly one namespaced MCP tool. The controller verifies the primary
-  model/provider, exact tool name, required arguments, one-call count, and raw
-  tool result recorded in the same Jarvis session. It does not import the MCP
-  SDK or adapter modules and does not invoke `kakaocli`, `kmsg`, or CuaDriver.
-- The Jarvis execution prompt requires every supplied argument to remain exact,
-  including intentional empty strings. In particular, it prohibits inferring
-  or substituting local paths for `skill_dir` and `script_path`; the controller
-  still rejects any recorded argument mutation instead of relaxing validation.
-- Polling scans and previews use bounded result sizes so Hermes can retain
-  the complete MCP tool result. A truncated or malformed session result fails
-  closed instead of being reconstructed from model text.
+- Every KakaoTalk operation goes through the `KakaoMcpAdapter` interface. Its
+  implementation loads the existing profile MCP server definition, starts the
+  stdio server with the MCP Python SDK, initializes one client session, calls
+  exactly one `kakaotalk_mac.*` tool with controller-owned arguments, normalizes
+  structured output, and closes the subprocess. The controller never invokes
+  `kakaocli`, `kmsg`, or CuaDriver directly.
+- Jarvis models are no longer part of KakaoTalk tool selection, argument
+  construction, or MCP result transport. They remain responsible for intent
+  routing, drafting, typed-memory extraction, and allowlisted public-data
+  lookup only.
+- Polling scans and previews use bounded result sizes. A malformed structured
+  MCP result fails closed, and a 180-second adapter deadline terminates the
+  SDK-managed stdio call.
 - `ConversationPolicy` separates intent routing from reply drafting. The intent
   router receives only the current `new_turn` and the room's explicit dialogue
   state; recent context and long-term memory cannot influence its decision.
@@ -86,7 +84,9 @@ gateway restart, and future policy changes remain `review-required`.
   Semantic risk flags are retained only for Discord audit.
 - Linked pages are read with a separate Camofox identity named
   `hermes-messenger-isolated`. A failed isolated read is passed to the model as
-  unavailable context instead of independently forcing approval.
+  unavailable context instead of independently forcing approval. Only links
+  supplied by the other party in the current turn are opened; operator-sent
+  links remain text context without redundant browser calls.
 - `OpenMeteoWeather` resolves an explicit model-extracted place through the
   Open-Meteo geocoding and forecast endpoints. Each public-data request is one
   verified Jarvis `terminal` call with an exact allowlisted HTTPS URL and
@@ -111,6 +111,11 @@ assistant config and accepted by the controller.
 - `폴링 주기`: show the current interval
 - `폴링 주기 45초` / `폴링 주기 2분`: change the live polling interval
   between 5 seconds and 60 minutes
+- `폴링 상태`: show pause state, interval, latest attempt/success/error, and
+  the unread-only five-minute automatic-reply window
+- `폴링 즉시실행`: request one poll without waiting for the next deadline
+- `폴링 일시정지`: stop new KakaoTalk scans without stopping the assistant
+- `폴링 재개`: resume and request one immediate poll before normal scheduling
 - `인증 완료`: verify user-completed Kakao read/send login without retrying or
   handling any authentication value
 - `자동답변 재개`: clear a global automatic-send rate pause
@@ -162,16 +167,34 @@ Reply to an approval or audit card with:
   policy version, so legacy direct-only evidence is rejected until refreshed.
   A preview-followup guard produces no new evidence and therefore fails closed
   for an uncached or stale-policy room.
-- A new incoming message or user-authored outgoing message invalidates an
-  outstanding draft for the same room. Messages beginning with the visible
-  `[메신저 비서]` prefix are never candidates, preventing reply loops.
+- Only a current unread message from the other party can enter the reply
+  buffer. A user-authored outgoing message is context only, invalidates an
+  outstanding draft, and cancels buffered incoming messages at or before its
+  timestamp because the operator has already responded. Messages beginning
+  with the visible `[메신저 비서]` prefix remain context and do not trigger
+  either cancellation or another reply.
 - Consecutive messages are buffered until five seconds after the newest
   message. Because KakaoTalk polling uses the configured interval, this is a
   post-message quiet-period gate rather than a five-second polling SLA.
-- Each incremental scan requests unread metadata and prioritizes unread
-  messages and rooms before other new messages. Unread items older than the
-  active start/scan boundary remain summary-only and are not automatically
-  answered.
+- Each incremental scan requests unread metadata. Messages absent from the
+  current unread set are never automatic-reply candidates, even when they
+  appear in the incremental history. Unread messages older than the active
+  start/scan boundary or more than five minutes old are not automatically
+  answered; stale unread items are marked processed and reported to Discord
+  without copying their message text.
+- `recent_context` preserves both sides of the conversation. Every event has
+  `speaker_role=operator|other_party`, `speaker_name`, and a `speaker_key`.
+  Counterparties use `speaker_key=other_party:<name>`, so multiple participants
+  in group-derived context remain distinct even though automatic sends still
+  require a separately verified 1:1 room. The upstream adapter currently
+  exposes sender names but not stable sender IDs.
+- The start summary reuses unread metadata from the first successful
+  incremental scan instead of launching a second seven-day MCP scan. A summary
+  delivery failure is recorded and retried from a later successful result, so
+  it cannot prevent new-message polling or cursor persistence.
+- A successful incremental scan persists its cursor and room buffers before
+  classification, drafting, link lookup, or sending begins. Later processing
+  latency therefore cannot make the same scan appear unsuccessful.
 - A buffered-message processing exception retains that room buffer. The next
   configured poll retries the same entity IDs, and the buffer is removed
   only after processing succeeds. The Discord failure notice states that the
@@ -246,8 +269,8 @@ checked afterward through the read-back preview; there is no pre-send readiness
 dry-run.
 
 Device approval, OTP, and other second-factor steps are never collected by
-Jarvis. A failed MCP poll does not advance the message cursor and is reported
-to Discord; the next scheduled poll retries through the same MCP path.
+Jarvis. A failed direct MCP poll does not advance the message cursor and is
+reported to Discord; the next scheduled poll retries through the same adapter.
 Likewise, a failure after polling but before buffered classification or reply
 completion retains the buffer so advancing the scan cursor cannot lose the
 message.
@@ -330,16 +353,19 @@ Before live use, confirm in the private Discord channel:
 6. Confidence `0.70` sends automatically, while `0.69`, fallback-model use,
    ambiguous weather, and MCP send uncertainty produce approval or failure
    audit according to their operational path.
-7. A message in a newly discovered adapter-verified direct room, including a
-   user-authored `is_from_me=true` message, is buffered; a group room or a final
-   send without cached `NTUser.directChatId` evidence is rejected before the
-   KakaoTalk send MCP call.
-8. A forced read-only preview argument mismatch leaves the room buffer present;
+7. A fresh unread message from the other party in a newly discovered
+   adapter-verified direct room is buffered. A read message, a manual
+   `is_from_me=true` message, a message older than five minutes, a group room,
+   or a final send without cached `NTUser.directChatId` evidence is rejected
+   before the KakaoTalk send MCP call.
+8. A mixed preview labels operator messages separately and assigns different
+   `speaker_key` values to each named counterparty.
+9. A forced read-only preview argument mismatch leaves the room buffer present;
    a subsequent successful run consumes it exactly once.
-9. A forced destination scan failure reports `phase=resolve_destination` and
+10. A forced destination scan failure reports `phase=resolve_destination` and
    `scan_limit=20`; a recent-target miss is distinguishable from a scan timeout
    and from an actual `kmsg send` failure.
-10. Repeating an `assistant_status` request after an older identical fixed
+11. Repeating an `assistant_status` request after an older identical fixed
     response still performs one new actual send; retrying the same trigger
     recognizes an outgoing match after that trigger and does not resend.
 

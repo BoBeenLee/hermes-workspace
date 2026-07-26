@@ -58,26 +58,132 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         state = module.default_state()
         self.assertFalse(state["enabled"])
         self.assertFalse(state["automatic_paused"])
+        self.assertFalse(state["polling_paused"])
+        self.assertFalse(state["poll_immediate_requested"])
         self.assertEqual(state["poll_interval_seconds"], 30)
         self.assertEqual(state["pending"], {})
         self.assertEqual(state["dialogue_state"], {})
 
-    def test_prioritized_room_messages_prefers_current_unread_and_deduplicates(self):
+    def test_prioritized_room_messages_uses_only_current_unread_and_deduplicates(self):
         room = {
             "unread_messages": [
-                {"entity_id": "old", "timestamp": "2026-07-19T11:58:00+00:00", "snippet": "old"},
-                {"entity_id": "unread", "timestamp": "2026-07-19T12:01:00+00:00", "snippet": "unread"},
+                {
+                    "entity_id": "old",
+                    "timestamp": "2026-07-19T11:58:00+00:00",
+                    "is_from_me": False,
+                    "snippet": "old",
+                },
+                {
+                    "entity_id": "unread",
+                    "timestamp": "2026-07-19T12:01:00+00:00",
+                    "is_from_me": False,
+                    "snippet": "unread",
+                },
             ],
             "new_messages": [
-                {"entity_id": "regular", "timestamp": "2026-07-19T12:02:00+00:00", "snippet": "regular"},
-                {"entity_id": "unread", "timestamp": "2026-07-19T12:01:00+00:00", "snippet": "duplicate"},
+                {
+                    "entity_id": "regular",
+                    "timestamp": "2026-07-19T12:02:00+00:00",
+                    "is_from_me": False,
+                    "snippet": "regular",
+                },
+                {
+                    "entity_id": "unread",
+                    "timestamp": "2026-07-19T12:01:00+00:00",
+                    "is_from_me": False,
+                    "snippet": "duplicate",
+                },
             ],
         }
 
         result = module.prioritized_room_messages(room, "2026-07-19T12:00:00+00:00")
 
-        self.assertEqual([item["entity_id"] for item in result], ["unread", "regular"])
+        self.assertEqual([item["entity_id"] for item in result], ["unread"])
         self.assertEqual(result[0]["snippet"], "unread")
+
+    def test_room_message_selection_separates_fresh_stale_and_operator_messages(self):
+        room = {
+            "unread_messages": [
+                {"entity_id": "answered", "timestamp": "2026-07-19T11:54:00+00:00", "is_from_me": False},
+                {"entity_id": "stale", "timestamp": "2026-07-19T11:56:00+00:00", "is_from_me": False},
+                {"entity_id": "fresh", "timestamp": "2026-07-19T12:01:00+00:00", "is_from_me": False},
+            ],
+            "new_messages": [
+                {"entity_id": "answered", "timestamp": "2026-07-19T11:54:00+00:00", "is_from_me": False},
+                {"entity_id": "operator", "timestamp": "2026-07-19T11:55:00+00:00", "is_from_me": True},
+                {"entity_id": "stale", "timestamp": "2026-07-19T11:56:00+00:00", "is_from_me": False},
+                {"entity_id": "fresh", "timestamp": "2026-07-19T12:01:00+00:00", "is_from_me": False},
+            ],
+        }
+
+        result = module.classify_room_messages(
+            room,
+            "2026-07-19T11:50:00+00:00",
+            "2026-07-19T12:02:00+00:00",
+        )
+
+        self.assertEqual([item["entity_id"] for item in result["fresh"]], ["fresh"])
+        self.assertEqual([item["entity_id"] for item in result["stale"]], ["stale"])
+        self.assertEqual([item["entity_id"] for item in result["answered"]], ["answered"])
+        self.assertEqual([item["entity_id"] for item in result["manual_outgoing"]], ["operator"])
+
+    def test_recent_context_labels_operator_and_each_group_counterparty(self):
+        preview = {
+            "observed": [
+                {
+                    "events": [
+                        {
+                            "entity_id": "operator",
+                            "timestamp": "2026-07-26T09:00:00+00:00",
+                            "sender_name": "나",
+                            "is_from_me": True,
+                            "snippet": "내가 보낸 링크",
+                        },
+                        {
+                            "entity_id": "incoming",
+                            "timestamp": "2026-07-26T09:01:00+00:00",
+                            "sender_name": "친구",
+                            "is_from_me": False,
+                            "snippet": "상대가 보낸 답장",
+                        },
+                        {
+                            "entity_id": "incoming-2",
+                            "timestamp": "2026-07-26T09:02:00+00:00",
+                            "sender_name": "동료",
+                            "is_from_me": False,
+                            "snippet": "다른 상대가 보낸 답장",
+                        },
+                    ]
+                }
+            ]
+        }
+
+        with mock.patch.object(
+            module,
+            "now_utc",
+            return_value=dt.datetime(2026, 7, 26, 10, 0, tzinfo=dt.timezone.utc),
+        ):
+            context = module.recent_context(preview)
+
+        self.assertEqual(
+            [item["speaker_role"] for item in context],
+            ["operator", "other_party", "other_party"],
+        )
+        self.assertEqual(
+            [item["speaker_key"] for item in context],
+            ["operator", "other_party:친구", "other_party:동료"],
+        )
+        self.assertEqual([item["speaker_name"] for item in context], ["나", "친구", "동료"])
+
+    def test_link_lookup_uses_only_links_from_the_other_party(self):
+        urls = module.incoming_turn_urls(
+            [
+                {"is_from_me": True, "text": "보낸 링크 https://example.com/mine"},
+                {"is_from_me": False, "text": "받은 링크 https://example.com/theirs"},
+            ]
+        )
+
+        self.assertEqual(urls, ["https://example.com/theirs"])
 
     def test_start_does_not_rebuffer_pending_older_than_new_baseline(self):
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
@@ -178,12 +284,28 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
     def test_intent_router_prompt_excludes_recent_context_and_memory(self):
         prompt = module.intent_routing_prompt(
             "친구",
-            [{"entity_id": "new-1", "text": "비빔밥..?"}],
+            [{"entity_id": "new-1", "speaker_role": "other_party", "text": "비빔밥..?"}],
             {},
         )
         self.assertIn("비빔밥", prompt)
+        self.assertIn("other_party", prompt)
+        self.assertIn("operator", prompt)
         self.assertNotIn("recent_context", prompt)
         self.assertNotIn("long_term_memory", prompt)
+
+    def test_reply_prompt_keeps_operator_context_out_of_reply_target(self):
+        prompt = module.reply_drafting_prompt(
+            "친구",
+            [{"entity_id": "incoming", "speaker_role": "other_party", "text": "봤어"}],
+            [
+                {"entity_id": "operator", "speaker_role": "operator", "text": "https://example.com/mine"},
+                {"entity_id": "incoming", "speaker_role": "other_party", "text": "봤어"},
+            ],
+            [],
+        )
+
+        self.assertIn("operator messages are context only", prompt)
+        self.assertIn("Never answer as if operator messages were sent by the other party", prompt)
 
     def test_weather_lookup_recognizes_any_current_location_question(self):
         self.assertTrue(module.is_weather_lookup("하남 오늘 날씨"))
@@ -452,8 +574,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         event = {
             "entity_id": "bibimbap-message",
             "timestamp": module.iso_now(),
-            "sender_name": "나",
-            "is_from_me": True,
+            "sender_name": "친구",
+            "is_from_me": False,
             "message_type": "text",
             "snippet": "비빔밥..?",
         }
@@ -503,8 +625,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         event = {
             "entity_id": "bibimbap-message",
             "timestamp": module.iso_now(),
-            "sender_name": "나",
-            "is_from_me": True,
+            "sender_name": "친구",
+            "is_from_me": False,
             "message_type": "text",
             "snippet": "비빔밥..?",
         }
@@ -560,8 +682,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         event = {
             "entity_id": "bibimbap-message",
             "timestamp": module.iso_now(),
-            "sender_name": "나",
-            "is_from_me": True,
+            "sender_name": "친구",
+            "is_from_me": False,
             "message_type": "text",
             "snippet": "비빔밥..?",
         }
@@ -753,8 +875,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertIn("전체", reason)
         self.assertIn("100회", reason)
 
-    def test_kakao_operations_are_routed_through_jarvis_agent_interface(self):
-        client = module.JarvisKakaoAgent.__new__(module.JarvisKakaoAgent)
+    def test_kakao_operations_use_one_deterministic_adapter_interface(self):
+        client = module.KakaoMcpAdapter.__new__(module.KakaoMcpAdapter)
         client._call_tool = mock.Mock(return_value={"ok": True})
 
         client.auth_status()
@@ -771,159 +893,68 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         list_arguments = client._call_tool.call_args_list[1].args[1]
         self.assertTrue(list_arguments["include_unread"])
 
-    def test_jarvis_kakao_agent_uses_only_kakao_toolset_and_verified_session_result(self):
-        client = module.JarvisKakaoAgent(Path("/tmp/hermes"), "jarvis", Path("/tmp/profile"))
-        usage = {
-            "model": module.PRIMARY_MODEL,
-            "provider": module.PRIMARY_PROVIDER,
-            "session_id": "session-1",
-        }
-        with mock.patch.object(module, "run_hermes_json", return_value=({"ok": True}, usage)) as run, mock.patch.object(
-            module,
-            "hermes_session_tool_payload",
-            return_value={"ok": True, "auth_state": "ok"},
-        ) as session_result:
-            result = client.auth_status()
+    def test_kakao_adapter_calls_configured_stdio_tool_without_model(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile = Path(temp_dir)
+            (profile / "config.yaml").write_text(
+                """
+mcp_servers:
+  openhuman-kakaotalk-mac:
+    command: /opt/homebrew/bin/uv
+    args: [run, python, mcp_server.py]
+    env:
+      KMSG_BIN: /opt/homebrew/bin/kmsg
+""",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                module,
+                "call_stdio_mcp_tool",
+                return_value={"ok": True, "auth_state": "ok"},
+            ) as call_tool, mock.patch.object(module, "run_hermes_json") as run_model:
+                result = module.KakaoMcpAdapter(profile).auth_status()
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["hermes_session_id"], "session-1")
-        self.assertEqual(run.call_args.kwargs["toolsets"], module.KAKAO_TOOLSET)
-        self.assertIn("kakaotalk_mac.auth_status exactly once", run.call_args.args[2])
-        session_result.assert_called_once_with(
-            Path("/tmp/profile"),
-            "session-1",
-            module.KAKAO_TOOL_PREFIX + "auth_status",
+        self.assertEqual(result["transport"], "mcp-stdio")
+        run_model.assert_not_called()
+        call_tool.assert_called_once_with(
+            {
+                "command": "/opt/homebrew/bin/uv",
+                "args": ["run", "python", "mcp_server.py"],
+                "cwd": None,
+                "env": {"KMSG_BIN": "/opt/homebrew/bin/kmsg"},
+            },
+            "kakaotalk_mac.auth_status",
             {"user_id": "", "kakaocli_bin": ""},
         )
 
-    def test_kakao_tool_prompt_requires_empty_arguments_to_stay_empty(self):
-        arguments = {"target": "이보빈", "skill_dir": "", "script_path": ""}
-        prompt = module.jarvis_kakao_tool_prompt(
-            "preview_messages",
-            arguments,
+    def test_direct_mcp_result_unwraps_structured_json(self):
+        result = mock.Mock(
+            structuredContent={
+                "result": json.dumps({"ok": True, "chat_id_validated": True})
+            },
+            content=[],
+            isError=False,
         )
 
-        self.assertIn("empty string", prompt)
-        self.assertIn("Do not omit", prompt)
-        self.assertIn("infer or substitute filesystem paths", prompt)
-        exact_json = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
-        self.assertLess(prompt.index(exact_json), prompt.index("Call kakaotalk_mac.preview_messages"))
+        payload = module.decode_direct_mcp_result(result)
 
-    def test_jarvis_session_result_counts_only_expected_send_message_call(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            profile = Path(temp_dir)
-            database = profile / "state.db"
-            expected_tool = module.KAKAO_TOOL_PREFIX + "send_message"
-            arguments = {"target": "친구", "message": "답장", "dry_run": True}
-            fetch_tool = "web_fetch"
-            calls = [
-                {"function": {"name": fetch_tool, "arguments": json.dumps({"url": "https://example.com"})}},
-                {"function": {"name": expected_tool, "arguments": json.dumps(arguments, ensure_ascii=False)}},
-            ]
-            tool_content = '<untrusted_tool_result source="mcp">\n' + json.dumps(
-                {"result": json.dumps({"ok": True, "chat_id_validated": True})}
-            ) + "\n</untrusted_tool_result>"
-            with contextlib.closing(sqlite3.connect(database)) as connection:
-                connection.execute(
-                    "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, "
-                    "content TEXT, tool_calls TEXT, tool_name TEXT)"
-                )
-                connection.execute(
-                    "INSERT INTO messages(session_id, role, tool_calls) VALUES(?,?,?)",
-                    ("session-1", "assistant", json.dumps(calls, ensure_ascii=False)),
-                )
-                connection.execute(
-                    "INSERT INTO messages(session_id, role, content, tool_name) VALUES(?,?,?,?)",
-                    ("session-1", "tool", json.dumps({"ok": True}), fetch_tool),
-                )
-                connection.execute(
-                    "INSERT INTO messages(session_id, role, content, tool_name) VALUES(?,?,?,?)",
-                    ("session-1", "tool", tool_content, expected_tool),
-                )
-                connection.commit()
+        self.assertEqual(payload, {"ok": True, "chat_id_validated": True})
 
-            result = module.hermes_session_tool_payload(
-                profile,
-                "session-1",
-                expected_tool,
-                arguments,
-            )
+    def test_direct_mcp_result_preserves_tool_error(self):
+        result = mock.Mock(
+            structuredContent={"result": json.dumps({"message": "not ready"})},
+            content=[],
+            isError=True,
+        )
 
-        self.assertEqual(result, {"ok": True, "chat_id_validated": True})
+        payload = module.decode_direct_mcp_result(result)
 
-    def test_jarvis_session_result_reports_send_message_call_count(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            profile = Path(temp_dir)
-            database = profile / "state.db"
-            expected_tool = module.KAKAO_TOOL_PREFIX + "send_message"
-            fetch_tool = "web_fetch"
-            calls = [
-                {"function": {"name": fetch_tool, "arguments": json.dumps({"url": "https://example.com"})}}
-            ]
-            with contextlib.closing(sqlite3.connect(database)) as connection:
-                connection.execute(
-                    "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, "
-                    "content TEXT, tool_calls TEXT, tool_name TEXT)"
-                )
-                connection.execute(
-                    "INSERT INTO messages(session_id, role, tool_calls) VALUES(?,?,?)",
-                    ("session-1", "assistant", json.dumps(calls)),
-                )
-                connection.execute(
-                    "INSERT INTO messages(session_id, role, content, tool_name) VALUES(?,?,?,?)",
-                    ("session-1", "tool", json.dumps({"ok": True}), fetch_tool),
-                )
-                connection.commit()
-
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "send_message 호출 수 0회, 결과 수 0회",
-            ):
-                module.hermes_session_tool_payload(
-                    profile,
-                    "session-1",
-                    expected_tool,
-                    {"target": "친구", "message": "답장", "dry_run": True},
-                )
-
-    def test_jarvis_session_result_reports_duplicate_send_message_calls(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            profile = Path(temp_dir)
-            database = profile / "state.db"
-            expected_tool = module.KAKAO_TOOL_PREFIX + "send_message"
-            arguments = {"target": "친구", "message": "답장", "dry_run": True}
-            call = {"function": {"name": expected_tool, "arguments": json.dumps(arguments)}}
-            with contextlib.closing(sqlite3.connect(database)) as connection:
-                connection.execute(
-                    "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, "
-                    "content TEXT, tool_calls TEXT, tool_name TEXT)"
-                )
-                connection.execute(
-                    "INSERT INTO messages(session_id, role, tool_calls) VALUES(?,?,?)",
-                    ("session-1", "assistant", json.dumps([call, call])),
-                )
-                connection.executemany(
-                    "INSERT INTO messages(session_id, role, content, tool_name) VALUES(?,?,?,?)",
-                    [
-                        ("session-1", "tool", json.dumps({"ok": True}), expected_tool),
-                        ("session-1", "tool", json.dumps({"ok": True}), expected_tool),
-                    ],
-                )
-                connection.commit()
-
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "send_message 호출 수 2회, 결과 수 2회",
-            ):
-                module.hermes_session_tool_payload(
-                    profile,
-                    "session-1",
-                    expected_tool,
-                    arguments,
-                )
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "not ready")
 
     def test_direct_room_requires_adapter_direct_evidence_over_mcp(self):
-        client = module.JarvisKakaoAgent.__new__(module.JarvisKakaoAgent)
+        client = module.KakaoMcpAdapter.__new__(module.KakaoMcpAdapter)
         client._call_tool = mock.Mock(
             return_value={
                 "matches": [
@@ -949,7 +980,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         )
 
     def test_direct_room_rejects_non_human_adapter_classification(self):
-        client = module.JarvisKakaoAgent.__new__(module.JarvisKakaoAgent)
+        client = module.KakaoMcpAdapter.__new__(module.KakaoMcpAdapter)
         client._call_tool = mock.Mock(
             return_value={
                 "matches": [
@@ -1011,6 +1042,71 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertEqual(assistant.state["poll_interval_seconds"], 30)
         self.assertIn("5초 이상 60분 이하", assistant.discord.send.call_args.args[0])
 
+    def test_poll_pause_resume_and_immediate_commands_update_control_state(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["enabled"] = True
+        assistant.discord = mock.Mock()
+
+        assistant._pause_polling("pause")
+        self.assertTrue(assistant.state["polling_paused"])
+        self.assertFalse(assistant.state["poll_immediate_requested"])
+
+        assistant._resume_polling("resume")
+        self.assertFalse(assistant.state["polling_paused"])
+        self.assertTrue(assistant.state["poll_immediate_requested"])
+
+        assistant.state["poll_immediate_requested"] = False
+        assistant._request_immediate_poll("now")
+        self.assertTrue(assistant.state["poll_immediate_requested"])
+
+    def test_paused_poll_skips_kakao_until_immediate_request(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.profile_dir = Path("/tmp/profile")
+        assistant.state = {
+            "gateway_identity": "same",
+            "enabled": True,
+            "polling_paused": True,
+            "poll_immediate_requested": False,
+        }
+        assistant.discord = mock.Mock()
+        assistant._poll_kakao = mock.Mock()
+        assistant.save = mock.Mock()
+        assistant._process_ready_buffers = mock.Mock()
+        assistant._try_baseline_summary = mock.Mock()
+
+        with mock.patch.object(module, "gateway_identity", return_value="same"):
+            assistant._run_locked(process_discord=False, process_kakao=True)
+            assistant.state["poll_immediate_requested"] = True
+            assistant._run_locked(process_discord=False, process_kakao=True)
+
+        assistant._poll_kakao.assert_called_once_with()
+        self.assertFalse(assistant.state["poll_immediate_requested"])
+
+    def test_baseline_summary_reuses_successful_incremental_result(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.profile_dir = Path("/tmp/profile")
+        assistant.state = {
+            "gateway_identity": "same",
+            "enabled": True,
+            "polling_paused": False,
+            "poll_immediate_requested": False,
+            "baseline_summary_pending": True,
+        }
+        assistant.discord = mock.Mock()
+        poll_result = {"ok": True, "rooms": []}
+        assistant._poll_kakao = mock.Mock(return_value=poll_result)
+        assistant.save = mock.Mock()
+        assistant._process_ready_buffers = mock.Mock()
+        assistant._try_baseline_summary = mock.Mock()
+
+        with mock.patch.object(module, "gateway_identity", return_value="same"):
+            assistant._run_locked(process_discord=False, process_kakao=True)
+
+        assistant._poll_kakao.assert_called_once_with()
+        assistant._process_ready_buffers.assert_called_once_with()
+        assistant._try_baseline_summary.assert_called_once_with(poll_result)
+
     def test_configured_poll_interval_reads_state_override(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1028,6 +1124,33 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
             interval = module.configured_poll_interval(root / "config.json", 30)
 
         self.assertEqual(interval, 75)
+
+    def test_polling_control_state_reads_pause_and_immediate_flags(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            state_dir = root / "state"
+            state_dir.mkdir()
+            (root / "config.json").write_text(
+                json.dumps({"profile_dir": str(root), "state_dir": str(state_dir)}),
+                encoding="utf-8",
+            )
+            (state_dir / "state.json").write_text(
+                json.dumps(
+                    {
+                        "poll_interval_seconds": 75,
+                        "polling_paused": True,
+                        "poll_immediate_requested": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            control = module.polling_control_state(root / "config.json", 30)
+
+        self.assertEqual(
+            control,
+            {"interval_seconds": 75, "paused": True, "immediate": True},
+        )
 
     def test_auth_complete_verifies_without_attempting_login(self):
         class FakeKakao:
@@ -1096,6 +1219,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant.discord = mock.Mock()
         assistant.kakao = mock.Mock()
         assistant._poll_kakao = mock.Mock()
+        assistant.save = mock.Mock()
         assistant._process_ready_buffers = mock.Mock()
 
         with mock.patch.object(module, "gateway_identity", return_value="same"):
@@ -1104,7 +1228,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant.kakao.auth_status.assert_not_called()
         assistant._poll_kakao.assert_called_once_with()
 
-    def test_poll_buffers_manual_from_me_message_in_direct_room(self):
+    def test_poll_manual_outgoing_cancels_older_buffer_and_pending_without_rebuffering(self):
         class FakeKakao:
             @staticmethod
             def list_since(_since, _until):
@@ -1132,16 +1256,35 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
         assistant.state = module.default_state()
         assistant.state["baseline_at"] = "2026-07-19T11:59:00+00:00"
+        assistant.state["room_buffers"]["direct-1"] = {
+            "room_name": "친구",
+            "entity_ids": ["older-incoming"],
+            "first_at": "2026-07-19T11:59:30+00:00",
+            "last_at": "2026-07-19T11:59:30+00:00",
+        }
+        assistant.state["pending"]["card-1"] = {
+            "room_id": "direct-1",
+            "status": "pending",
+        }
         assistant.allowed_chat_ids = {"direct-1"}
         assistant.kakao = FakeKakao()
         assistant.discord = mock.Mock()
-        assistant._invalidate_pending_for_room = mock.Mock()
 
-        assistant._poll_kakao()
+        with mock.patch.object(
+            module,
+            "now_utc",
+            return_value=dt.datetime(2026, 7, 19, 12, 1, tzinfo=dt.timezone.utc),
+        ):
+            assistant._poll_kakao()
 
-        self.assertEqual(assistant.state["room_buffers"]["direct-1"]["entity_ids"], ["message-1"])
+        self.assertNotIn("direct-1", assistant.state["room_buffers"])
+        self.assertEqual(assistant.state["pending"]["card-1"]["status"], "invalidated")
+        self.assertIn(
+            module.message_fingerprint("direct-1", "older-incoming"),
+            assistant.state["processed"],
+        )
 
-    def test_assistant_authored_from_me_message_is_not_a_candidate(self):
+    def test_all_from_me_messages_are_context_only_not_reply_candidates(self):
         self.assertFalse(
             module.is_candidate_message(
                 {
@@ -1158,8 +1301,68 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                 }
             )
         )
-        self.assertTrue(module.is_candidate_message({"is_from_me": True, "text": "직접 보낸 질문"}))
+        self.assertFalse(module.is_candidate_message({"is_from_me": True, "text": "직접 보낸 질문"}))
         self.assertTrue(module.is_candidate_message({"is_from_me": False, "text": "상대가 보낸 질문"}))
+        self.assertFalse(module.is_candidate_message({"text": "화자 방향이 누락된 메시지"}))
+
+    def test_poll_skips_read_and_stale_incoming_messages(self):
+        class FakeKakao:
+            @staticmethod
+            def list_since(_since, _until):
+                return {
+                    "rooms": [
+                        {
+                            "chat_id": "direct-1",
+                            "display_name": "친구",
+                            "unread_messages": [
+                                {
+                                    "entity_id": "stale",
+                                    "timestamp": "2026-07-19T11:54:00+00:00",
+                                    "is_from_me": False,
+                                    "snippet": "오래된 안 읽은 메시지",
+                                }
+                            ],
+                            "new_messages": [
+                                {
+                                    "entity_id": "read",
+                                    "timestamp": "2026-07-19T11:59:00+00:00",
+                                    "is_from_me": False,
+                                    "snippet": "이미 읽은 메시지",
+                                },
+                                {
+                                    "entity_id": "stale",
+                                    "timestamp": "2026-07-19T11:54:00+00:00",
+                                    "is_from_me": False,
+                                    "snippet": "오래된 안 읽은 메시지",
+                                },
+                            ],
+                        }
+                    ]
+                }
+
+            @staticmethod
+            def is_direct_chat(chat_id, _display_name):
+                return chat_id == "direct-1"
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["baseline_at"] = "2026-07-19T11:50:00+00:00"
+        assistant.allowed_chat_ids = {"direct-1"}
+        assistant.kakao = FakeKakao()
+        assistant.discord = mock.Mock()
+
+        with mock.patch.object(
+            module,
+            "now_utc",
+            return_value=dt.datetime(2026, 7, 19, 12, 0, tzinfo=dt.timezone.utc),
+        ):
+            assistant._poll_kakao()
+
+        self.assertNotIn("direct-1", assistant.state["room_buffers"])
+        self.assertNotIn(module.message_fingerprint("direct-1", "read"), assistant.state["processed"])
+        self.assertIn(module.message_fingerprint("direct-1", "stale"), assistant.state["processed"])
+        self.assertEqual(assistant.state["stats"]["stale_skipped"], 1)
+        assistant.discord.send.assert_called_once()
 
     def test_poll_rejects_member_count_two_without_adapter_direct_evidence(self):
         class FakeKakao:
@@ -1197,7 +1400,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         self.assertNotIn("group-1", assistant.state["room_buffers"])
 
-    def test_poll_ignores_non_allowlisted_direct_rooms_including_from_me(self):
+    def test_poll_never_buffers_from_me_in_allowlisted_or_blocked_rooms(self):
         class FakeKakao:
             @staticmethod
             def list_since(_since, _until):
@@ -1244,7 +1447,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         assistant._poll_kakao()
 
-        self.assertEqual(set(assistant.state["room_buffers"]), {"128426307555607"})
+        self.assertEqual(assistant.state["room_buffers"], {})
         self.assertNotIn("999", assistant.state["rooms"])
 
     def test_poll_all_direct_scope_buffers_only_adapter_verified_direct_rooms(self):
@@ -1256,6 +1459,14 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                         {
                             "chat_id": "direct-2",
                             "display_name": "새 친구",
+                            "unread_messages": [
+                                {
+                                    "entity_id": "direct-message",
+                                    "timestamp": "2026-07-19T12:00:00+00:00",
+                                    "is_from_me": False,
+                                    "snippet": "안녕",
+                                }
+                            ],
                             "new_messages": [
                                 {
                                     "entity_id": "direct-message",
@@ -1268,6 +1479,14 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
                         {
                             "chat_id": "group-2",
                             "display_name": "단체방",
+                            "unread_messages": [
+                                {
+                                    "entity_id": "group-message",
+                                    "timestamp": "2026-07-19T12:00:01+00:00",
+                                    "is_from_me": False,
+                                    "snippet": "안녕",
+                                }
+                            ],
                             "new_messages": [
                                 {
                                     "entity_id": "group-message",
@@ -1293,7 +1512,12 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant.discord = mock.Mock()
         assistant._invalidate_pending_for_room = mock.Mock()
 
-        assistant._poll_kakao()
+        with mock.patch.object(
+            module,
+            "now_utc",
+            return_value=dt.datetime(2026, 7, 19, 12, 1, tzinfo=dt.timezone.utc),
+        ):
+            assistant._poll_kakao()
 
         self.assertEqual(set(assistant.state["room_buffers"]), {"direct-2"})
         self.assertTrue(assistant.state["rooms"]["direct-2"]["is_direct"])

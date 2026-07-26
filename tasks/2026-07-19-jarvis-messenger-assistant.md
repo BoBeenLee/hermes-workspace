@@ -1,5 +1,114 @@
 # Jarvis Messenger Assistant
 
+## Unread-only reply triggers and speaker-attributed context
+
+- Task type: `ops-change` and `remote-config`.
+- HIL status: skipped; the user directly requested the diagnosed TO-BE fix and
+  clarified that group-derived context must distinguish each counterparty.
+- Root causes reproduced:
+  - user-authored `is_from_me=true` messages were eligible reply candidates;
+  - the unread-first selector appended every remaining incremental message,
+    including already-read history;
+  - after a stalled cursor recovered, that backlog could be drafted as one
+    turn with operator-authored links.
+- The reply-trigger seam now accepts only current unread messages from the
+  other party. Read messages and every operator-authored message are excluded.
+- Unread messages more than five minutes old are marked processed without
+  automatic reply and summarized to Discord without copying their text.
+- A manual operator reply invalidates pending drafts and cancels buffered
+  incoming messages at or before the manual reply timestamp. A later unread
+  incoming message in the same scan remains eligible.
+- `recent_context` still includes both sides, but every event now carries
+  `speaker_role`, `speaker_name`, and `speaker_key`. Operator events use
+  `speaker_key=operator`; each named counterparty uses
+  `speaker_key=other_party:<name>`, preserving multiple participants in
+  group-derived context. The adapter currently exposes names, not stable sender
+  IDs.
+- The intent and drafting prompts explicitly constrain `new_turn` to
+  `other_party` events and forbid attributing operator links or statements to
+  the other party.
+- The exact production-shape replay now returns no candidates for the
+  operator's outbound messages or Kim Seohyun's already-read historical
+  incoming message.
+- Local verification: 75 controller tests pass, including unread-only,
+  five-minute stale, operator-cancels-buffer, and multi-counterparty context
+  regressions.
+- Remote backups:
+  - `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-speaker-unread-20260726-195244`
+  - `/Users/bobeenlee/.hermes/profiles/jarvis/messenger-assistant/state.json.bak-speaker-unread-20260726-195244`
+  - `/Users/bobeenlee/.hermes/profiles/jarvis/SOUL.md.bak-speaker-unread-20260726-195244`
+- The controller and managed SOUL block were updated without rewriting the
+  existing config or launchd plists. Installed controller SHA-256 is
+  `9a0fac5c504e4ecd6655adf9268122294c780c0d660198baffb2833eeede2905`.
+- launchd returned the known transient bootstrap error 5 immediately after
+  bootout; retrying the two valid plists succeeded. The Discord listener and
+  poller run as PIDs `39491` and `39493`; Jarvis gateway PID `17319` was not
+  restarted.
+- Production verification at `2026-07-26T10:53:57+00:00`: enabled, 30-second
+  polling, successful cursor advance, no poll error, no buffer, no pending
+  approval, zero failures, and the automatic-send count remained at the
+  pre-fix value of one. No additional KakaoTalk message was sent during
+  deployment verification.
+- Completion mode: `review-required` because the recurring remote controller
+  behavior changes.
+
+## Deterministic MCP adapter and live polling controls
+
+- Task type: `ops-change` and `remote-config`.
+- HIL status: skipped; the user directly requested pulling the latest `main`
+  and deploying the agreed TO-BE messenger workflow.
+- `git pull --ff-only origin main` confirmed local `main` was already current
+  at `2891e06` before this change.
+- Root cause addressed: KakaoTalk reads and sends used GPT-5-nano as a
+  deterministic RPC proxy. Production history showed repeated zero-tool,
+  argument, JSON, and model/provider validation failures before the adapter was
+  reached.
+- `KakaoMcpAdapter` is now the single Kakao seam. It loads the existing Jarvis
+  MCP server definition, uses MCP Python SDK 1.26.0 over SDK-managed stdio,
+  calls one exact `kakaotalk_mac.*` tool with controller-owned arguments, and
+  normalizes structured results. GPT remains only for intent routing, drafting,
+  typed-memory extraction, and the existing allowlisted public-data workflow.
+- Incremental scans request and prioritize unread metadata. The first
+  successful scan also supplies the start summary, eliminating the former
+  second seven-day baseline scan. Cursor and room buffers are persisted before
+  classification, drafting, link lookup, or sending.
+- Discord controls now cover `폴링 상태`, `폴링 주기 <N초|N분>`,
+  `폴링 즉시실행`, `폴링 일시정지`, and `폴링 재개`. The persistent poller
+  reloads these durable controls while waiting.
+- Only links supplied by the other party in the current turn are opened in the
+  isolated browser. Operator-sent links remain textual context and no longer
+  trigger redundant browser calls.
+- Pre-deployment direct-MCP smoke called `list_new_messages_since` without a
+  model one-shot and returned `ok=true`, one room, and `partial=false`; no
+  message text was printed by the smoke check.
+- Remote backups:
+  - controller and state baseline:
+    `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-direct-mcp-20260726-193040`
+    and
+    `/Users/bobeenlee/.hermes/profiles/jarvis/messenger-assistant/state.json.bak-direct-mcp-20260726-193040`;
+  - installer-managed SOUL, config, and launchd backups use timestamp
+    `20260726-193047`;
+  - intermediate controllers:
+    `messenger_assistant.py.bak-single-scan-20260726-193236` and
+    `messenger_assistant.py.bak-early-save-20260726-193714`.
+- The first installer attempt applied the controller and poller but the Discord
+  listener bootstrap returned transient launchd error 5. The valid plist was
+  bootstrapped again successfully; the final poller/listener PIDs are `34353`
+  and `34491`. Jarvis gateway PID `17319` was not restarted.
+- Final production evidence at `2026-07-26T10:37:15+00:00`: enabled, 30-second
+  interval, not paused, latest attempt/success/scan cursors equal, no poll
+  error, no buffered or pending room, and connected Discord listener. No
+  `Jarvis KakaoTalk MCP execution step` one-shot remained.
+- The first direct-MCP production cycle found one eligible turn and completed
+  one automatic reply under the existing confidence/send policy. It recorded
+  zero failures.
+- Verification: Python compilation, 71 controller tests, OKF validation,
+  `git diff --check`, remote controller `--check`, direct read-only MCP smoke,
+  launchd process checks, installed SHA-256 match, SSH check, and final Hermes
+  status.
+- Completion mode: `review-required` because recurring polling and automatic
+  send execution changed.
+
 ## Unread-first polling and live interval commands
 
 - HIL status: skipped; the user directly requested unread-first processing and
