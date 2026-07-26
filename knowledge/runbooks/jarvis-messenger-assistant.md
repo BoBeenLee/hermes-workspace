@@ -289,8 +289,8 @@ Reply to an approval or audit card with:
   Discord, model, and polling information is never exposed in KakaoTalk.
 - Per-room automatic sends are capped at 300 per 30 minutes. Global automatic
   sends are capped at 100 per ten minutes.
-- Each reply candidate first calls MCP `send_message` once with `dry_run=true`
-  to obtain a versioned conversation binding. A missing, ambiguous, or
+- Each reply candidate first calls the no-send MCP `bind_conversation` tool
+  once to obtain a versioned conversation binding. A missing, ambiguous, or
   mismatched binding fails before an approval card or actual send. The later
   actual call uses `dry_run=false` and the stored binding, so it does not
   rediscover the destination from recent chats. The controller then asks
@@ -308,12 +308,17 @@ Reply to an approval or audit card with:
   corrections. An older identical fixed response cannot satisfy a newer send.
 - The KakaoTalk MCP resolves the initial conversation binding from only the 20
   most recent rooms with `kmsg chats --limit 20 --json`; same-name rooms
-  require the latest turn text to match one unique preview. Bound actual sends
-  use the stored kmsg chat ID and report `scan_limit=0`. Do not increase the
-  timeout as the first response to a binding failure. Use the returned
-  `error`, `phase`, `scan_limit`, `elapsed_ms`, and `candidate_count` to
-  distinguish binding scan timeout, unresponsive UI, missing/ambiguous target,
-  actual send failure, and read-back mismatch.
+  require the latest turn text to match one unique preview. If an exact,
+  unique human direct chat is verified on the read side but absent from the
+  recent list, the binding tool may use one unique non-stale record from the
+  persistent kmsg chat registry. Bound actual sends use the stored kmsg chat
+  ID, report `scan_limit=0`, and may use the explicitly enabled exact-unique
+  friend fallback only when that bound ID is no longer exposed by chat-list
+  search. Do not increase the timeout as the first response to a binding
+  failure. Use the returned `error`, `phase`, `scan_limit`, `elapsed_ms`,
+  `candidate_count`, and `registry_match_count` to distinguish binding scan
+  timeout, unresponsive UI, missing/ambiguous target, actual send failure, and
+  read-back mismatch.
 - Explicit-location current-weather questions and approved weather edits use
   Open-Meteo geocoding followed by a forecast lookup. Multiple plausible
   populated locations, mismatched coordinates, out-of-range fields, altered
@@ -338,8 +343,8 @@ only through MCP `auth_status`; it does not launch KakaoTalk or invoke a login
 command itself. If login is unavailable, it fails closed, disables the
 assistant, and requests manual action in Discord. After the user completes the
 interactive login, `메신저 시작` rechecks MCP read access. Each reply candidate
-performs one no-send binding dry run, then uses that binding in at most one
-actual MCP call and checks it through the read-back preview.
+performs one dedicated no-send binding call, then uses that binding in at most
+one actual MCP call and checks it through the read-back preview.
 
 Device approval, OTP, and other second-factor steps are never collected by
 Jarvis. A failed direct MCP poll does not advance the message cursor and is
