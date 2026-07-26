@@ -86,7 +86,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
     def test_default_state_is_fail_closed(self):
         state = module.default_state()
-        self.assertEqual(state["version"], 3)
+        self.assertEqual(state["version"], 4)
         self.assertFalse(state["enabled"])
         self.assertFalse(state["automatic_paused"])
         self.assertFalse(state["polling_paused"])
@@ -96,6 +96,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertEqual(state["dialogue_state"], {})
         self.assertEqual(state["session_condition"], {})
         self.assertEqual(state["condition_audit_batch"], [])
+        self.assertEqual(state["condition_skipped_fingerprints"], [])
         self.assertEqual(state["stats"]["condition_skipped"], 0)
 
     def test_start_command_supports_default_condition_and_empty_condition(self):
@@ -132,9 +133,9 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
     def test_condition_compile_prompt_keeps_controller_guards_out_of_normalized_rule(self):
         prompt = module.session_condition_compile_prompt("가족 방만")
 
-        self.assertIn("Do not copy the five-minute age guard", prompt)
-        self.assertIn("0.90 through 1.00", prompt)
-        self.assertIn("below 0.80", prompt)
+        self.assertIn('"policy_version":1', prompt)
+        self.assertIn("lookback_seconds=3600", prompt)
+        self.assertIn("reply_state must always be unanswered", prompt)
 
     def test_prioritized_room_messages_uses_only_current_unread_and_deduplicates(self):
         room = {
@@ -550,8 +551,17 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
     def test_compile_session_condition_requires_primary_model_and_point_eight(self):
         assistant = self._assistant_for_events([])
         valid = {
+            "policy_version": 1,
             "normalized_condition": "가족 방이며 질문인 경우",
-            "allows_read_messages": False,
+            "rules": {
+                "include_room_names": ["가족"],
+                "exclude_room_names": [],
+                "lookback_seconds": 0,
+                "read_state": "unread",
+                "reply_state": "unanswered",
+                "semantic_condition": "질문인 경우",
+            },
+            "unsupported_requirements": [],
             "reason": "명확함",
             "confidence": 0.80,
         }
@@ -563,6 +573,8 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertEqual(condition["raw"], "가족 방의 질문만")
         self.assertEqual(condition["normalized"], "가족 방이며 질문인 경우")
         self.assertFalse(condition["allows_read_messages"])
+        self.assertEqual(condition["policy_version"], 1)
+        self.assertEqual(condition["rules"]["include_room_names"], ["가족"])
         self.assertEqual(condition["confidence"], 0.80)
 
         low = dict(valid, confidence=0.79)
@@ -578,6 +590,230 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "fallback"),
         ):
             assistant._compile_session_condition("가족 방의 질문만")
+
+    def test_compile_session_policy_extracts_room_hour_unanswered_and_default_unread(self):
+        assistant = self._assistant_for_events([])
+        compiled = {
+            "policy_version": 1,
+            "normalized_condition": "최근 1시간 김서현 방의 미응답 메시지",
+            "rules": {
+                "include_room_names": ["김서현"],
+                "exclude_room_names": [],
+                "lookback_seconds": 3600,
+                "read_state": "unread",
+                "reply_state": "unanswered",
+                "semantic_condition": "",
+            },
+            "unsupported_requirements": [],
+            "reason": "모든 조건을 구조화함",
+            "confidence": 0.95,
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER}
+
+        with mock.patch.object(module, "run_hermes_json", return_value=(compiled, usage)):
+            policy = assistant._compile_session_condition(
+                "1시간 전부터 답하지 않은 메시지 김서현님 채팅방만"
+            )
+
+        self.assertEqual(policy["policy_version"], 1)
+        self.assertEqual(policy["rules"]["include_room_names"], ["김서현"])
+        self.assertEqual(policy["rules"]["lookback_seconds"], 3600)
+        self.assertEqual(policy["rules"]["read_state"], "unread")
+        self.assertEqual(policy["rules"]["reply_state"], "unanswered")
+        self.assertEqual(policy["rules"]["semantic_condition"], "")
+        self.assertFalse(policy["allows_read_messages"])
+
+    def test_compile_session_policy_rejects_unsupported_and_invalid_rules(self):
+        assistant = self._assistant_for_events([])
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER}
+        base = {
+            "policy_version": 1,
+            "normalized_condition": "조건",
+            "rules": {
+                "include_room_names": [],
+                "exclude_room_names": [],
+                "lookback_seconds": 0,
+                "read_state": "unread",
+                "reply_state": "unanswered",
+                "semantic_condition": "",
+            },
+            "unsupported_requirements": ["외부 CRM 상태"],
+            "confidence": 0.95,
+        }
+        with (
+            mock.patch.object(module, "run_hermes_json", return_value=(base, usage)),
+            self.assertRaisesRegex(RuntimeError, "지원하지 않는 조건"),
+        ):
+            assistant._compile_session_condition("CRM 고객만")
+
+        invalid = {
+            **base,
+            "unsupported_requirements": [],
+            "rules": {**base["rules"], "lookback_seconds": 90000},
+        }
+        with (
+            mock.patch.object(module, "run_hermes_json", return_value=(invalid, usage)),
+            self.assertRaisesRegex(RuntimeError, "24시간"),
+        ):
+            assistant._compile_session_condition("최근 25시간")
+
+        too_many_rooms = {
+            **base,
+            "unsupported_requirements": [],
+            "rules": {
+                **base["rules"],
+                "include_room_names": [f"포함 {index}" for index in range(11)],
+                "exclude_room_names": [f"제외 {index}" for index in range(10)],
+            },
+        }
+        with (
+            mock.patch.object(
+                module,
+                "run_hermes_json",
+                return_value=(too_many_rooms, usage),
+            ),
+            self.assertRaisesRegex(RuntimeError, "합쳐서 최대 20개"),
+        ):
+            assistant._compile_session_condition("방 21개")
+
+        non_string_room = {
+            **base,
+            "unsupported_requirements": [],
+            "rules": {
+                **base["rules"],
+                "include_room_names": [123],
+            },
+        }
+        with (
+            mock.patch.object(
+                module,
+                "run_hermes_json",
+                return_value=(non_string_room, usage),
+            ),
+            self.assertRaisesRegex(RuntimeError, "방 이름은 문자열"),
+        ):
+            assistant._compile_session_condition("잘못된 방 이름")
+
+        oversized_semantic = {
+            **base,
+            "unsupported_requirements": [],
+            "rules": {
+                **base["rules"],
+                "semantic_condition": "가" * (module.MAX_SESSION_CONDITION_LENGTH + 1),
+            },
+        }
+        with (
+            mock.patch.object(
+                module,
+                "run_hermes_json",
+                return_value=(oversized_semantic, usage),
+            ),
+            self.assertRaisesRegex(RuntimeError, "semantic_condition"),
+        ):
+            assistant._compile_session_condition("내용 조건")
+
+    def test_session_policy_room_matching_is_exact_and_exclude_wins(self):
+        condition = {
+            "policy_version": 1,
+            "rules": {
+                "include_room_names": ["김서현", "가족"],
+                "exclude_room_names": ["가족"],
+                "lookback_seconds": 3600,
+                "read_state": "unread",
+                "reply_state": "unanswered",
+                "semantic_condition": "",
+            },
+        }
+
+        self.assertTrue(module.session_policy_room_matches(condition, "김서현"))
+        self.assertTrue(module.session_policy_room_matches(condition, "김서현 "))
+        self.assertFalse(module.session_policy_room_matches(condition, "김서현님"))
+        self.assertFalse(module.session_policy_room_matches(condition, "가족"))
+        self.assertFalse(module.session_policy_room_matches(condition, "다른 사람"))
+        self.assertEqual(module.session_policy_lookback_seconds(condition), 3600)
+
+    def test_policy_lookback_start_moves_first_scan_boundary_and_disables_baseline_summary(self):
+        assistant = self._assistant_for_events([])
+        assistant.discord = mock.Mock()
+        compiled = {
+            "policy_version": 1,
+            "raw": "최근 1시간 김서현 방 미응답",
+            "normalized": "최근 1시간 김서현 방의 미응답 메시지",
+            "rules": {
+                "include_room_names": ["김서현"],
+                "exclude_room_names": [],
+                "lookback_seconds": 3600,
+                "read_state": "unread",
+                "reply_state": "unanswered",
+                "semantic_condition": "",
+            },
+            "allows_read_messages": False,
+            "lookback_seconds": 3600,
+            "confidence": 0.95,
+            "compiled_at": "2026-07-26T11:00:00+00:00",
+        }
+        assistant._compile_session_condition = mock.Mock(return_value=compiled)
+        current = dt.datetime(2026, 7, 26, 12, 0, tzinfo=dt.timezone.utc)
+
+        with mock.patch.object(module, "now_utc", return_value=current):
+            assistant._start("최근 1시간 김서현 방 미응답", message_id="start")
+
+        self.assertEqual(assistant.state["started_at"], "2026-07-26T12:00:00+00:00")
+        self.assertEqual(assistant.state["baseline_at"], "2026-07-26T11:00:00+00:00")
+        self.assertEqual(assistant.state["last_scan_at"], "2026-07-26T11:00:00+00:00")
+        self.assertFalse(assistant.state["baseline_summary_pending"])
+        self.assertIn("조회 범위: 최근 1시간", assistant.discord.send.call_args.args[0])
+
+    def test_historical_unanswered_selection_treats_assistant_outgoing_as_answer(self):
+        room = {
+            "unread_messages": [
+                {
+                    "entity_id": "old-incoming",
+                    "timestamp": "2026-07-26T11:10:00+00:00",
+                    "is_from_me": False,
+                },
+                {
+                    "entity_id": "new-incoming",
+                    "timestamp": "2026-07-26T11:40:00+00:00",
+                    "is_from_me": False,
+                },
+            ],
+            "new_messages": [
+                {
+                    "entity_id": "old-incoming",
+                    "timestamp": "2026-07-26T11:10:00+00:00",
+                    "is_from_me": False,
+                },
+                {
+                    "entity_id": "assistant-answer",
+                    "timestamp": "2026-07-26T11:20:00+00:00",
+                    "is_from_me": True,
+                    "text": f"{module.PREFIX} 답변",
+                },
+                {
+                    "entity_id": "new-incoming",
+                    "timestamp": "2026-07-26T11:40:00+00:00",
+                    "is_from_me": False,
+                },
+            ],
+        }
+
+        selection = module.classify_room_messages(
+            room,
+            "2026-07-26T11:00:00+00:00",
+            "2026-07-26T12:00:00+00:00",
+            max_age_seconds=3600,
+            assistant_outgoing_answers=True,
+        )
+
+        self.assertEqual(
+            [item["entity_id"] for item in selection["answered"]],
+            ["old-incoming"],
+        )
+        self.assertEqual(
+            [item["entity_id"] for item in selection["fresh"]],
+            ["new-incoming"],
+        )
 
     def test_start_with_condition_stores_compiled_policy_only_after_success(self):
         assistant = self._assistant_for_events([])
@@ -596,7 +832,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         self.assertTrue(assistant.state["enabled"])
         self.assertEqual(assistant.state["session_condition"], compiled)
         self.assertTrue(assistant.state["poll_immediate_requested"])
-        self.assertIn("일반 방 읽힌 메시지 포함: 예", assistant.discord.send.call_args.args[0])
+        self.assertIn("읽음 상태: 읽음 여부 무관", assistant.discord.send.call_args.args[0])
         self.assertEqual(assistant.discord.send.call_args.kwargs["reply_to"], "start-1")
 
     def test_default_start_clears_stale_condition_and_uses_unread_policy(self):
@@ -608,7 +844,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         self.assertTrue(assistant.state["enabled"])
         self.assertEqual(assistant.state["session_condition"], {})
-        self.assertIn("기본 안읽음 정책", assistant.discord.send.call_args.args[0])
+        self.assertIn("기본 안읽음·5분 정책", assistant.discord.send.call_args.args[0])
 
     def test_start_rejects_empty_long_secret_and_compile_failure_without_enabling(self):
         cases = [
@@ -722,9 +958,13 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
 
         assistant._send_automatic.assert_not_called()
         assistant._create_approval_card.assert_not_called()
-        self.assertIn(
+        self.assertNotIn(
             module.message_fingerprint("room-1", "message-1"),
             assistant.state["processed"],
+        )
+        self.assertIn(
+            module.message_fingerprint("room-1", "message-1"),
+            assistant.state["condition_skipped_fingerprints"],
         )
         self.assertEqual(assistant.state["stats"]["condition_skipped"], 1)
         self.assertEqual(assistant.state["condition_audit_batch"][0]["room_name"], "친구")
@@ -1851,6 +2091,124 @@ mcp_servers:
         buffer = assistant.state["room_buffers"]["direct-1"]
         self.assertEqual(buffer["entity_ids"], ["read-but-new"])
         self.assertEqual(buffer["unread_entity_ids"], [])
+
+    def test_policy_lookback_polls_history_filters_room_and_does_not_backfill_static_exception(self):
+        calls = []
+
+        class FakeKakao:
+            @staticmethod
+            def list_since(since, until, **kwargs):
+                calls.append((since, until, kwargs))
+                return {
+                    "rooms": [
+                        {
+                            "chat_id": "kim",
+                            "display_name": "김서현",
+                            "unread_messages": [
+                                {
+                                    "entity_id": "kim-unanswered",
+                                    "timestamp": "2026-07-26T11:30:00+00:00",
+                                    "is_from_me": False,
+                                }
+                            ],
+                            "new_messages": [
+                                {
+                                    "entity_id": "kim-unanswered",
+                                    "timestamp": "2026-07-26T11:30:00+00:00",
+                                    "is_from_me": False,
+                                }
+                            ],
+                        },
+                        {
+                            "chat_id": "other",
+                            "display_name": "다른 사람",
+                            "unread_messages": [
+                                {
+                                    "entity_id": "other-unanswered",
+                                    "timestamp": "2026-07-26T11:40:00+00:00",
+                                    "is_from_me": False,
+                                }
+                            ],
+                            "new_messages": [
+                                {
+                                    "entity_id": "other-unanswered",
+                                    "timestamp": "2026-07-26T11:40:00+00:00",
+                                    "is_from_me": False,
+                                }
+                            ],
+                        },
+                        {
+                            "chat_id": "ibo",
+                            "display_name": "이보빈",
+                            "unread_messages": [],
+                            "new_messages": [
+                                {
+                                    "entity_id": "ibo-before-start",
+                                    "timestamp": "2026-07-26T11:50:00+00:00",
+                                    "is_from_me": False,
+                                }
+                            ],
+                        },
+                    ]
+                }
+
+            @staticmethod
+            def is_direct_chat(_chat_id, _display_name):
+                return True
+
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state.update(
+            {
+                "enabled": True,
+                "started_at": "2026-07-26T12:00:00+00:00",
+                "baseline_at": "2026-07-26T11:00:00+00:00",
+                "last_scan_at": "2026-07-26T11:00:00+00:00",
+                "session_condition": {
+                    "policy_version": 1,
+                    "raw": "최근 1시간 김서현 방 미응답",
+                    "normalized": "최근 1시간 김서현 방의 미응답 메시지",
+                    "rules": {
+                        "include_room_names": ["김서현"],
+                        "exclude_room_names": [],
+                        "lookback_seconds": 3600,
+                        "read_state": "unread",
+                        "reply_state": "unanswered",
+                        "semantic_condition": "",
+                    },
+                },
+            }
+        )
+        assistant.allowed_chat_ids = {"kim", "other", "ibo"}
+        assistant.read_state_exempt_chat_ids = {"ibo"}
+        assistant.kakao = FakeKakao()
+        assistant.discord = mock.Mock()
+
+        with mock.patch.object(
+            module,
+            "now_utc",
+            return_value=dt.datetime(2026, 7, 26, 12, 0, tzinfo=dt.timezone.utc),
+        ):
+            assistant._poll_kakao()
+
+        self.assertEqual(calls[0][0], "2026-07-26T11:00:00+00:00")
+        self.assertEqual(
+            calls[0][2]["message_limit_per_chat"],
+            module.MAX_SESSION_HISTORY_MESSAGES_PER_CHAT,
+        )
+        self.assertEqual(set(assistant.state["room_buffers"]), {"kim"})
+        self.assertIn(
+            module.message_fingerprint("other", "other-unanswered"),
+            assistant.state["condition_skipped_fingerprints"],
+        )
+        self.assertNotIn(
+            module.message_fingerprint("ibo", "ibo-before-start"),
+            assistant.state["processed"],
+        )
+        self.assertEqual(
+            assistant.state["condition_audit_batch"][0]["room_name"],
+            "다른 사람",
+        )
 
     def test_poll_rejects_member_count_two_without_adapter_direct_evidence(self):
         class FakeKakao:

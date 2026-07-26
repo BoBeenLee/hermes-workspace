@@ -38,9 +38,10 @@ import urllib.request
 
 KST = dt.timezone(dt.timedelta(hours=9))
 UTC = dt.timezone.utc
-STATE_VERSION = 3
+STATE_VERSION = 4
 MEMORY_VERSION = 2
 DIRECT_CHAT_POLICY_VERSION = 2
+SESSION_POLICY_VERSION = 1
 WEATHER_PENDING_TTL_SECONDS = 900
 MEMORY_KINDS = frozenset({"profile", "preference", "relationship", "constraint"})
 DEFAULT_POLL_INTERVAL_SECONDS = 30
@@ -60,6 +61,9 @@ PRIMARY_PROVIDER = "custom"
 AUTO_CONFIDENCE_THRESHOLD = 0.70
 SESSION_CONDITION_CONFIDENCE_THRESHOLD = 0.80
 MAX_SESSION_CONDITION_LENGTH = 500
+MAX_SESSION_LOOKBACK_SECONDS = 86400
+MAX_SESSION_ROOM_NAMES = 20
+MAX_SESSION_HISTORY_MESSAGES_PER_CHAT = 50
 MESSAGE_BUFFER_SECONDS = 5
 MAX_AUTOMATIC_REPLY_AGE_SECONDS = 300
 ROOM_AUTO_REPLY_WINDOW_SECONDS = 1800
@@ -278,6 +282,78 @@ def parse_start_command(content: str) -> dict[str, Any] | None:
     }
 
 
+def normalize_policy_room_names(value: Any, field_name: str) -> list[str]:
+    if not isinstance(value, list):
+        raise RuntimeError(f"{field_name} must be a JSON list")
+    normalized: list[str] = []
+    known: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise RuntimeError(f"{field_name}의 방 이름은 문자열이어야 함")
+        name = " ".join(item.split())
+        if not name:
+            raise RuntimeError(f"{field_name}에 빈 방 이름이 있음")
+        if len(name) > 100:
+            raise RuntimeError(f"{field_name}의 방 이름은 100자 이하여야 함")
+        key = name.casefold()
+        if key in known:
+            continue
+        normalized.append(name)
+        known.add(key)
+    return normalized
+
+
+def session_policy_rules(condition: Any) -> dict[str, Any]:
+    if not isinstance(condition, dict) or not condition:
+        return {}
+    rules = condition.get("rules")
+    if isinstance(rules, dict):
+        return rules
+    return {
+        "include_room_names": [],
+        "exclude_room_names": [],
+        "lookback_seconds": 0,
+        "read_state": "any" if condition.get("allows_read_messages") is True else "unread",
+        "reply_state": "unanswered",
+        "semantic_condition": compact(condition.get("normalized"), MAX_SESSION_CONDITION_LENGTH),
+    }
+
+
+def session_policy_room_matches(condition: Any, room_name: str) -> bool:
+    rules = session_policy_rules(condition)
+    if not rules:
+        return True
+    normalized = str(room_name or "").strip().casefold()
+    included = {
+        str(item).strip().casefold()
+        for item in rules.get("include_room_names") or []
+        if str(item).strip()
+    }
+    excluded = {
+        str(item).strip().casefold()
+        for item in rules.get("exclude_room_names") or []
+        if str(item).strip()
+    }
+    if normalized in excluded:
+        return False
+    return not included or normalized in included
+
+
+def session_policy_lookback_seconds(condition: Any) -> int:
+    rules = session_policy_rules(condition)
+    value = rules.get("lookback_seconds", 0) if rules else 0
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(MAX_SESSION_LOOKBACK_SECONDS, seconds))
+
+
+def later_boundary(*values: Any) -> str:
+    parsed = [value for value in (parse_time(item) for item in values) if value is not None]
+    return max(parsed).replace(microsecond=0).isoformat() if parsed else ""
+
+
 def normalize_poll_interval_seconds(value: Any, fallback: int = DEFAULT_POLL_INTERVAL_SECONDS) -> int:
     try:
         seconds = int(value)
@@ -339,6 +415,7 @@ def classify_room_messages(
     *,
     max_age_seconds: int = MAX_AUTOMATIC_REPLY_AGE_SECONDS,
     require_unread: bool = True,
+    assistant_outgoing_answers: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     """Separate reply triggers from operator context and suppressed unread backlog."""
     boundary = parse_time(since)
@@ -355,8 +432,27 @@ def classify_room_messages(
             continue
         manual_outgoing.append(item)
     manual_outgoing.sort(key=lambda item: item.get("timestamp") or "")
-    latest_manual_at = max(
-        (timestamp for item in manual_outgoing if (timestamp := parse_time(item.get("timestamp"))) is not None),
+    answering_outgoing = list(manual_outgoing)
+    if assistant_outgoing_answers:
+        answering_outgoing.extend(
+            item
+            for item in room.get("new_messages") or []
+            if is_assistant_authored_message(item)
+            and str(item.get("entity_id") or "")
+            and (
+                boundary is None
+                or (
+                    (timestamp := parse_time(item.get("timestamp"))) is not None
+                    and timestamp >= boundary
+                )
+            )
+        )
+    latest_answer_at = max(
+        (
+            timestamp
+            for item in answering_outgoing
+            if (timestamp := parse_time(item.get("timestamp"))) is not None
+        ),
         default=None,
     )
 
@@ -365,7 +461,7 @@ def classify_room_messages(
     answered: list[dict[str, Any]] = []
     for item in prioritized_room_messages(room, since, require_unread=require_unread):
         timestamp = parse_time(item.get("timestamp"))
-        if latest_manual_at and timestamp and timestamp <= latest_manual_at:
+        if latest_answer_at and timestamp and timestamp <= latest_answer_at:
             answered.append(item)
         elif (
             observed_at
@@ -423,6 +519,7 @@ def default_state() -> dict[str, Any]:
         "dialogue_state": {},
         "session_condition": {},
         "condition_audit_batch": [],
+        "condition_skipped_fingerprints": [],
     }
 
 
@@ -679,29 +776,43 @@ class KakaoMcpAdapter:
             )
         return False
 
-    def list_since(self, since: str, until: str) -> dict[str, Any]:
+    def list_since(
+        self,
+        since: str,
+        until: str,
+        *,
+        message_limit_per_chat: int = 10,
+    ) -> dict[str, Any]:
+        limit = max(10, min(MAX_SESSION_HISTORY_MESSAGES_PER_CHAT, int(message_limit_per_chat)))
         return self._call_tool(
             "list_new_messages_since",
             {
                 "since": since,
                 "until": until,
                 "chat_limit": 100,
-                "message_limit_per_chat": 10,
+                "message_limit_per_chat": limit,
                 "include_unknown": True,
                 "include_unread": True,
-                "unread_message_limit": 10,
+                "unread_message_limit": limit,
                 "snippet_chars": 500,
                 "kakaocli_bin": "",
                 "user_id": "",
             },
         )
 
-    def preview(self, target: str, chat_id: str) -> dict[str, Any]:
+    def preview(
+        self,
+        target: str,
+        chat_id: str,
+        *,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        bounded_limit = max(10, min(MAX_SESSION_HISTORY_MESSAGES_PER_CHAT, int(limit)))
         return self._call_tool(
             "preview_messages",
             {
                 "target": target,
-                "limit": 20,
+                "limit": bounded_limit,
                 "scan_limit": 100,
                 "chat_id": int(chat_id),
                 "skill_dir": "",
@@ -1131,30 +1242,42 @@ def session_condition_compile_prompt(condition: str) -> str:
     payload = {
         "now_kst": now_utc().astimezone(KST).replace(microsecond=0).isoformat(),
         "condition": condition,
-        "default_policy": "Only current unread incoming messages received within five minutes.",
+        "default_policy": {
+            "lookback_seconds": 0,
+            "read_state": "unread",
+            "reply_state": "unanswered",
+        },
+        "limits": {
+            "maximum_lookback_seconds": MAX_SESSION_LOOKBACK_SECONDS,
+            "maximum_room_names": MAX_SESSION_ROOM_NAMES,
+        },
         "available_fields": [
-            "room_name",
-            "message text and media metadata in the current incoming turn",
-            "whether each current message was unread when scanned",
+            "exact KakaoTalk room display name",
+            "message timestamp, text, and media metadata",
+            "whether each message was unread when scanned",
+            "whether an operator or messenger-assistant outgoing message follows an incoming message",
             "current KST time",
         ],
     }
     return (
         "Compile the trusted Discord operator's natural-language KakaoTalk automatic-reply "
-        "condition. Do not evaluate any KakaoTalk message yet. Return one JSON object only with "
-        "schema: "
-        '{"normalized_condition":"","allows_read_messages":false,"reason":"","confidence":0.0}. '
-        "Preserve all room, content, intent, and time constraints in normalized_condition. "
-        "Set allows_read_messages=true only when the condition explicitly permits already-read "
-        "messages in at least one ordinary room. Omitting read state keeps the unread-only "
-        "default. The default unread and five-minute age guards are controller-owned behavior, "
-        "not part of the operator condition. Do not copy the five-minute age guard into "
-        "normalized_condition, do not turn it into an absolute time window, and do not add any "
-        "criterion that the operator did not state. Use this confidence rubric: 0.90 through "
-        "1.00 for an unambiguous condition fully evaluable from the available fields; 0.80 "
-        "through 0.89 for a fully evaluable condition with minor paraphrase uncertainty; below "
-        "0.80 only when the condition is ambiguous, contradictory, or needs unavailable or "
-        "external data. Do not add external-data requirements."
+        "condition into a versioned policy. Do not evaluate any KakaoTalk message yet. Return "
+        "one JSON object only with this exact schema: "
+        '{"policy_version":1,"normalized_condition":"","rules":{'
+        '"include_room_names":[],"exclude_room_names":[],"lookback_seconds":0,'
+        '"read_state":"unread|any","reply_state":"unanswered",'
+        '"semantic_condition":""},"unsupported_requirements":[],"reason":"","confidence":0.0}. '
+        "Extract exact room display names without honorific suffixes such as 님 or generic words "
+        "such as 채팅방. A phrase such as 최근 1시간 or 1시간 전부터 means "
+        "lookback_seconds=3600. Set read_state=any only when already-read messages are explicitly "
+        "allowed; otherwise use unread. reply_state must always be unanswered so a later operator "
+        "or messenger-assistant outgoing message prevents another reply. Put only remaining "
+        "content, intent, or current-time criteria in semantic_condition; leave it empty when "
+        "room, lookback, read state, and unanswered state fully express the condition. Put every "
+        "requirement that cannot be evaluated from available_fields or exceeds limits into "
+        "unsupported_requirements. Do not add criteria the operator did not state. Use confidence "
+        "0.90 through 1.00 for an unambiguous supported policy, 0.80 through 0.89 for minor "
+        "paraphrase uncertainty, and below 0.80 for ambiguous or contradictory input."
         "\n\nINPUT_JSON:\n"
         + json.dumps(payload, ensure_ascii=False)
     )
@@ -1168,14 +1291,15 @@ def session_condition_match_prompt(
     payload = {
         "now_kst": now_utc().astimezone(KST).replace(microsecond=0).isoformat(),
         "trusted_operator_condition": {
-            "raw": condition.get("raw") or "",
-            "normalized": condition.get("normalized") or "",
+            "semantic_condition": session_policy_rules(condition).get("semantic_condition") or "",
         },
         "room_name": room_name,
         "new_turn": new_turn,
     }
     return (
-        "Decide whether the current KakaoTalk turn matches the trusted operator condition. "
+        "Decide whether the current KakaoTalk turn matches only semantic_condition from the "
+        "trusted operator policy. Room, lookback, read state, and unanswered-state rules have "
+        "already been enforced deterministically by the controller. "
         "Return one JSON object only with schema: "
         '{"match":false,"reason":"","confidence":0.0}. '
         "Use only room_name, new_turn, per-message is_unread, and now_kst. Do not use prior "
@@ -1504,6 +1628,14 @@ class MessengerAssistant:
         self.state.setdefault("poll_immediate_requested", False)
         self.state.setdefault("session_condition", {})
         self.state.setdefault("condition_audit_batch", [])
+        self.state.setdefault("condition_skipped_fingerprints", [])
+        condition = self.state.get("session_condition")
+        if isinstance(condition, dict) and condition and not condition.get("policy_version"):
+            rules = session_policy_rules(condition)
+            condition["policy_version"] = SESSION_POLICY_VERSION
+            condition["rules"] = rules
+            condition["lookback_seconds"] = 0
+            condition["allows_read_messages"] = rules.get("read_state") == "any"
         stats = self.state.setdefault("stats", fresh_stats())
         for key, value in fresh_stats().items():
             stats.setdefault(key, json.loads(json.dumps(value)))
@@ -1517,6 +1649,9 @@ class MessengerAssistant:
 
     def _prune_state(self) -> None:
         self.state["processed"] = list(self.state.get("processed") or [])[-5000:]
+        self.state["condition_skipped_fingerprints"] = list(
+            self.state.get("condition_skipped_fingerprints") or []
+        )[-5000:]
         cutoff = now_utc() - dt.timedelta(days=7)
         for collection_name in ("pending", "audit_cards"):
             collection = self.state.get(collection_name) or {}
@@ -1610,6 +1745,7 @@ class MessengerAssistant:
             self.state["automatic_paused"] = False
             self.state["session_condition"] = {}
             self.state["condition_audit_batch"] = []
+            self.state["condition_skipped_fingerprints"] = []
             self.discord.send(
                 "🛑 **메신저 비서 자동 종료**\nJarvis gateway 재시작을 감지해 fail-closed 상태로 전환했습니다. 다시 시작하려면 `메신저 시작`을 입력하세요."
             )
@@ -1687,8 +1823,10 @@ class MessengerAssistant:
             "**시작·종료**\n"
             "- `메신저 시작`: 일반 방은 현재 안읽은 상대 메시지만 자동응답 후보로 시작\n"
             "- `메신저 시작: <조건>`: 이번 실행 세션에 자연어 조건 적용\n"
-            "  예: `메신저 시작: 가족 방에서 질문이거나 약속 변경 요청일 때만`\n"
+            "  예: `메신저 시작: 최근 1시간 동안 김서현님 방의 답하지 않은 메시지만`\n"
             "  예: `메신저 시작: 오후 6시 이후 업무 관련 메시지는 읽음 여부와 무관하게`\n"
+            "- 방·조회기간·읽음·미응답은 구조화 정책으로 판별하고 내용 조건만 모델이 판별\n"
+            "- 과거 조회 조건은 최대 24시간, 방 이름은 정확히 일치하는 최대 20개 지원\n"
             "- `메신저 종료`: 실행 종료 및 세션 조건 삭제\n"
             "- 정적 읽음 예외 방은 세션 조건보다 우선하지만 기존 발신 안전장치는 유지\n\n"
             "**상태·폴링**\n"
@@ -1740,7 +1878,12 @@ class MessengerAssistant:
     def _polling_status(self, message_id: str) -> None:
         interval = normalize_poll_interval_seconds(self.state.get("poll_interval_seconds"))
         condition = self.state.get("session_condition") or {}
-        condition_text = compact(condition.get("normalized"), 300) or "없음(기본 안읽음 정책)"
+        policy_lines = "\n".join(self._session_policy_description(condition))
+        candidate_summary = (
+            "구조화 세션 정책(정적 예외 우선)"
+            if condition
+            else "현재 안 읽은 상대 메시지(수신 5분 이내, 정적 예외 우선)"
+        )
         self.discord.send(
             "⏱️ **카카오톡 폴링 상태**\n"
             f"- 상태: {'일시정지' if self.state.get('polling_paused') else '실행 가능'}\n"
@@ -1748,10 +1891,9 @@ class MessengerAssistant:
             f"- 최근 시도: {self.state.get('last_kakao_poll_at') or '-'}\n"
             f"- 최근 성공: {self.state.get('last_kakao_poll_success_at') or '-'}\n"
             f"- 최근 오류: {compact(self.state.get('last_kakao_poll_error'), 200) or '-'}\n"
-            f"- 세션 조건: {condition_text}\n"
-            f"- 일반 방 읽힌 메시지 포함: {'예' if condition.get('allows_read_messages') else '아니오'}\n"
+            f"{policy_lines}\n"
             f"- 조건 일치 신뢰도: {SESSION_CONDITION_CONFIDENCE_THRESHOLD:.2f} 이상\n"
-            "- 기본 자동답변 대상: 현재 안 읽은 상대 메시지(수신 5분 이내)",
+            f"- 자동답변 판별 기준: {candidate_summary}",
             reply_to=message_id,
         )
 
@@ -1819,21 +1961,127 @@ class MessengerAssistant:
         )
         if str(usage.get("model") or "") != PRIMARY_MODEL or str(usage.get("provider") or "") != PRIMARY_PROVIDER:
             raise RuntimeError("primary nano가 아닌 fallback/unknown 모델 사용")
-        normalized = compact(result.get("normalized_condition"), MAX_SESSION_CONDITION_LENGTH)
+        normalized_value = result.get("normalized_condition")
+        if not isinstance(normalized_value, str):
+            raise RuntimeError("normalized_condition이 문자열이 아님")
+        normalized = " ".join(normalized_value.split())
+        if len(normalized) > MAX_SESSION_CONDITION_LENGTH:
+            raise RuntimeError(
+                f"normalized_condition은 {MAX_SESSION_CONDITION_LENGTH}자 이하여야 함"
+            )
         confidence = model_confidence(result.get("confidence"))
         if not normalized:
             raise RuntimeError("조건을 명확한 판별 규칙으로 정규화하지 못함")
-        if not isinstance(result.get("allows_read_messages"), bool):
-            raise RuntimeError("읽음 상태 확장 여부가 올바른 boolean이 아님")
         if confidence < SESSION_CONDITION_CONFIDENCE_THRESHOLD:
             raise RuntimeError(f"조건 해석 신뢰도 부족({confidence:.2f})")
+        policy_version = result.get("policy_version")
+        if (
+            isinstance(policy_version, bool)
+            or not isinstance(policy_version, int)
+            or policy_version != SESSION_POLICY_VERSION
+        ):
+            raise RuntimeError("지원하지 않는 세션 정책 버전")
+        unsupported = result.get("unsupported_requirements")
+        if not isinstance(unsupported, list):
+            raise RuntimeError("unsupported_requirements가 JSON list가 아님")
+        unsupported = [compact(item, 160) for item in unsupported if compact(item, 160)]
+        if unsupported:
+            raise RuntimeError("지원하지 않는 조건: " + ", ".join(unsupported))
+        raw_rules = result.get("rules")
+        if not isinstance(raw_rules, dict):
+            raise RuntimeError("세션 정책 rules가 객체가 아님")
+        include_room_names = normalize_policy_room_names(
+            raw_rules.get("include_room_names"),
+            "include_room_names",
+        )
+        exclude_room_names = normalize_policy_room_names(
+            raw_rules.get("exclude_room_names"),
+            "exclude_room_names",
+        )
+        if len(include_room_names) + len(exclude_room_names) > MAX_SESSION_ROOM_NAMES:
+            raise RuntimeError(
+                f"포함·제외 방은 합쳐서 최대 {MAX_SESSION_ROOM_NAMES}개만 지정할 수 있음"
+            )
+        overlap = {
+            name.casefold() for name in include_room_names
+        } & {
+            name.casefold() for name in exclude_room_names
+        }
+        if overlap:
+            raise RuntimeError("같은 방을 포함·제외 조건에 동시에 지정할 수 없음")
+        lookback = raw_rules.get("lookback_seconds")
+        if isinstance(lookback, bool) or not isinstance(lookback, int):
+            raise RuntimeError("lookback_seconds가 정수가 아님")
+        if not 0 <= lookback <= MAX_SESSION_LOOKBACK_SECONDS:
+            raise RuntimeError(
+                f"조회 기간은 0초 이상 {MAX_SESSION_LOOKBACK_SECONDS // 3600}시간 이하여야 함"
+            )
+        read_state = str(raw_rules.get("read_state") or "")
+        if read_state not in {"unread", "any"}:
+            raise RuntimeError("read_state는 unread 또는 any여야 함")
+        if str(raw_rules.get("reply_state") or "") != "unanswered":
+            raise RuntimeError("reply_state는 unanswered만 지원함")
+        semantic_value = raw_rules.get("semantic_condition")
+        if not isinstance(semantic_value, str):
+            raise RuntimeError("semantic_condition이 문자열이 아님")
+        semantic_condition = " ".join(semantic_value.split())
+        if len(semantic_condition) > MAX_SESSION_CONDITION_LENGTH:
+            raise RuntimeError(
+                f"semantic_condition은 {MAX_SESSION_CONDITION_LENGTH}자 이하여야 함"
+            )
+        rules = {
+            "include_room_names": include_room_names,
+            "exclude_room_names": exclude_room_names,
+            "lookback_seconds": lookback,
+            "read_state": read_state,
+            "reply_state": "unanswered",
+            "semantic_condition": semantic_condition,
+        }
         return {
+            "policy_version": SESSION_POLICY_VERSION,
             "raw": condition_text,
             "normalized": normalized,
-            "allows_read_messages": result["allows_read_messages"],
+            "rules": rules,
+            "allows_read_messages": read_state == "any",
+            "lookback_seconds": lookback,
             "confidence": confidence,
             "compiled_at": iso_now(),
         }
+
+    def _session_policy_description(self, condition: dict[str, Any]) -> list[str]:
+        if not condition:
+            return ["- 세션 정책: 없음(일반 방은 기본 안읽음·5분 정책)"]
+        rules = session_policy_rules(condition)
+        include = ", ".join(rules.get("include_room_names") or []) or "모든 일반 방"
+        exclude = ", ".join(rules.get("exclude_room_names") or []) or "-"
+        lookback = session_policy_lookback_seconds(condition)
+        lookback_text = (
+            f"최근 {lookback // 3600}시간"
+            if lookback and lookback % 3600 == 0
+            else f"최근 {lookback // 60}분"
+            if lookback
+            else "시작 이후"
+        )
+        semantic = compact(rules.get("semantic_condition"), 300) or "없음"
+        return [
+            f"- 정책 버전: v{condition.get('policy_version') or SESSION_POLICY_VERSION}",
+            f"- 조건 대상 방: {include}",
+            f"- 제외 방: {exclude}",
+            f"- 조회 범위: {lookback_text}",
+            f"- 읽음 상태: {'읽음 여부 무관' if rules.get('read_state') == 'any' else '안읽음'}",
+            "- 응답 상태: 미응답만",
+            f"- 추가 내용·시간 조건: {semantic}",
+            f"- 조건 해석 신뢰도: {model_confidence(condition.get('confidence')):.2f}",
+        ]
+
+    def _static_exception_names(self) -> list[str]:
+        rooms = self.state.get("rooms") or {}
+        return [
+            str((rooms.get(room_id) or {}).get("name") or room_id)
+            for room_id in sorted(
+                getattr(self, "read_state_exempt_chat_ids", frozenset())
+            )
+        ]
 
     def _start(self, condition_text: str | None = None, *, message_id: str | None = None) -> None:
         if self.state.get("enabled"):
@@ -1873,13 +2121,20 @@ class MessengerAssistant:
                     reply_to=message_id,
                 )
                 return
-        stamp = iso_now()
+        started = now_utc().replace(microsecond=0)
+        stamp = started.isoformat()
+        lookback = session_policy_lookback_seconds(condition)
+        scan_boundary = (
+            started - dt.timedelta(seconds=lookback)
+            if lookback
+            else started
+        ).isoformat()
         self.state.update(
             {
                 "enabled": True,
                 "started_at": stamp,
-                "baseline_at": stamp,
-                "last_scan_at": stamp,
+                "baseline_at": scan_boundary,
+                "last_scan_at": scan_boundary,
                 "last_kakao_poll_at": "",
                 "last_kakao_poll_success_at": "",
                 "last_kakao_poll_error": "",
@@ -1887,11 +2142,12 @@ class MessengerAssistant:
                 "automatic_pause_reason": "",
                 "polling_paused": False,
                 "poll_immediate_requested": True,
-                "baseline_summary_pending": True,
+                "baseline_summary_pending": not bool(lookback),
                 "baseline_last_error": "",
                 "stats": fresh_stats(),
                 "session_condition": condition,
                 "condition_audit_batch": [],
+                "condition_skipped_fingerprints": [],
             }
         )
         buffers = self.state.setdefault("room_buffers", {})
@@ -1913,18 +2169,24 @@ class MessengerAssistant:
                 "first_at": pending.get("latest_at") or stamp,
                 "last_at": pending.get("latest_at") or stamp,
             }
-        condition_summary = (
-            f"\n- 세션 조건: {condition['normalized']}\n"
-            f"- 일반 방 읽힌 메시지 포함: {'예' if condition['allows_read_messages'] else '아니오'}\n"
-            f"- 조건 해석 신뢰도: {condition['confidence']:.2f}"
+        condition_summary = "\n" + "\n".join(self._session_policy_description(condition))
+        static_exceptions = self._static_exception_names()
+        if static_exceptions:
+            condition_summary += (
+                "\n- 세션 조건을 우회하는 정적 예외: "
+                + ", ".join(static_exceptions)
+            )
+        candidate_summary = (
+            "일반 방은 아래 세션 정책으로 후보를 판별합니다. "
             if condition
-            else "\n- 세션 조건: 없음(기본 안읽음 정책)"
+            else "일반 방은 현재 안 읽은 수신 5분 이내 상대 메시지만 후보로 판별합니다. "
         )
         self.discord.send(
             "✅ **메신저 비서 시작**\n시작 시점을 기준선으로 설정했습니다. "
             f"이후 허용된 1:1 카카오톡 방만 {format_poll_interval(normalize_poll_interval_seconds(self.state.get('poll_interval_seconds')))} 주기로 확인합니다. "
-            "현재 안 읽은 상대 메시지만 처리하되 명시된 읽음 상태 예외 방은 새 상대 메시지를 읽음 여부와 무관하게 처리합니다. "
-            "수신 후 5분이 지난 backlog와 기준선 이전의 기존 승인 대기 건은 자동 답변 버퍼에 넣지 않습니다."
+            f"{candidate_summary}"
+            "명시된 읽음 상태 예외 방은 새 상대 메시지를 읽음 여부와 무관하게 처리합니다. "
+            "세션 정책에 조회 범위가 있으면 그 범위의 미응답 메시지를 첫 조회에서 확인합니다."
             f"{condition_summary}",
             reply_to=message_id,
         )
@@ -1935,6 +2197,7 @@ class MessengerAssistant:
         self.state["poll_immediate_requested"] = False
         self.state["session_condition"] = {}
         self.state["condition_audit_batch"] = []
+        self.state["condition_skipped_fingerprints"] = []
         stats = self.state.get("stats") or fresh_stats()
         pending_count = sum(1 for value in (self.state.get("pending") or {}).values() if value.get("status") == "pending")
         rooms = ", ".join(sorted(set(stats.get("rooms") or []))) or "없음"
@@ -1958,12 +2221,14 @@ class MessengerAssistant:
         pending_count = sum(1 for value in (self.state.get("pending") or {}).values() if value.get("status") == "pending")
         excluded = [value.get("name") or key for key, value in (self.state.get("rooms") or {}).items() if value.get("excluded")]
         approval_only = [value.get("name") or key for key, value in (self.state.get("rooms") or {}).items() if value.get("approval_only")]
-        rooms = self.state.get("rooms") or {}
-        read_state_exempt = [
-            (rooms.get(room_id) or {}).get("name") or room_id
-            for room_id in sorted(self.read_state_exempt_chat_ids)
-        ]
+        read_state_exempt = self._static_exception_names()
         condition = self.state.get("session_condition") or {}
+        policy_lines = "\n".join(self._session_policy_description(condition))
+        candidate_summary = (
+            "구조화 세션 정책(정적 예외 우선)"
+            if condition
+            else "현재 안 읽은 상대 메시지(수신 5분 이내, 정적 예외 우선)"
+        )
         self.discord.send(
             "📋 **메신저 비서 상태**\n"
             f"- 상태: {'실행 중' if self.state.get('enabled') else '종료'}\n"
@@ -1974,10 +2239,9 @@ class MessengerAssistant:
             f"- 폴링 주기: {format_poll_interval(normalize_poll_interval_seconds(self.state.get('poll_interval_seconds')))}\n"
             f"- 폴링 일시정지: {'예' if self.state.get('polling_paused') else '아니오'}\n"
             f"- 세션 조건 원문: {compact(condition.get('raw'), 300) or '-'}\n"
-            f"- 세션 조건 해석: {compact(condition.get('normalized'), 300) or '-'}\n"
-            f"- 일반 방 읽힌 메시지 포함: {'예' if condition.get('allows_read_messages') else '아니오'}\n"
+            f"{policy_lines}\n"
             f"- 조건 일치 신뢰도: {SESSION_CONDITION_CONFIDENCE_THRESHOLD:.2f} 이상\n"
-            "- 자동답변 대상: 현재 안 읽은 상대 메시지(수신 5분 이내), 읽음 상태 예외 방은 새 상대 메시지\n"
+            f"- 자동답변 판별 기준: {candidate_summary}\n"
             f"- 읽음 상태 예외 방: {', '.join(read_state_exempt) or '-'}\n"
             f"- 오래된 자동답변 제외: {(self.state.get('stats') or {}).get('stale_skipped', 0)}\n"
             f"- 세션 조건 불일치 제외: {(self.state.get('stats') or {}).get('condition_skipped', 0)}\n"
@@ -2058,9 +2322,18 @@ class MessengerAssistant:
     def _poll_kakao(self) -> dict[str, Any] | None:
         until = iso_now()
         since = str(self.state.get("last_scan_at") or self.state.get("baseline_at") or until)
+        condition = self.state.get("session_condition") or {}
+        lookback = session_policy_lookback_seconds(condition)
         self.state["last_kakao_poll_at"] = until
         try:
-            result = self.kakao.list_since(since, until)
+            if lookback and since == str(self.state.get("baseline_at") or ""):
+                result = self.kakao.list_since(
+                    since,
+                    until,
+                    message_limit_per_chat=MAX_SESSION_HISTORY_MESSAGES_PER_CHAT,
+                )
+            else:
+                result = self.kakao.list_since(since, until)
         except Exception as exc:
             result = {"ok": False, "error": compact(exc, 300)}
         if result.get("ok") is False or result.get("error"):
@@ -2087,6 +2360,7 @@ class MessengerAssistant:
         )
         direct = self._direct_chat_map(result_rooms)
         processed = set(self.state.get("processed") or [])
+        condition_skipped = set(self.state.get("condition_skipped_fingerprints") or [])
         buffers = self.state.setdefault("room_buffers", {})
         for room in result_rooms:
             room_id = str(room.get("chat_id") or "")
@@ -2099,16 +2373,31 @@ class MessengerAssistant:
             room_state["name"] = room_name
             if room_state.get("excluded"):
                 continue
-            condition = self.state.get("session_condition") or {}
             read_state_exempt = room_id in getattr(self, "read_state_exempt_chat_ids", frozenset())
-            require_unread = not (
-                read_state_exempt or condition.get("allows_read_messages") is True
-            )
+            rules = session_policy_rules(condition)
+            if read_state_exempt:
+                room_since = later_boundary(since, self.state.get("started_at")) or since
+                max_age_seconds = MAX_AUTOMATIC_REPLY_AGE_SECONDS
+                require_unread = False
+                assistant_outgoing_answers = False
+            else:
+                room_since = since
+                max_age_seconds = max(
+                    MAX_AUTOMATIC_REPLY_AGE_SECONDS,
+                    lookback,
+                )
+                require_unread = not (
+                    condition
+                    and rules.get("read_state") == "any"
+                )
+                assistant_outgoing_answers = bool(condition)
             selection = classify_room_messages(
                 room,
-                since,
+                room_since,
                 until,
+                max_age_seconds=max_age_seconds,
                 require_unread=require_unread,
+                assistant_outgoing_answers=assistant_outgoing_answers,
             )
             manual_outgoing = selection["manual_outgoing"]
             if manual_outgoing:
@@ -2153,7 +2442,7 @@ class MessengerAssistant:
                 self.discord.send(
                     f"⏭️ **오래된 {'unread ' if require_unread else ''}자동답변 제외**\n"
                     f"방: {compact(room_name, 100)}\n"
-                    f"수신 후 {MAX_AUTOMATIC_REPLY_AGE_SECONDS // 60}분이 지난 메시지 {len(stale)}건은 "
+                    f"수신 후 {max_age_seconds // 60}분이 지난 메시지 {len(stale)}건은 "
                     "자동답변하지 않았습니다."
                 )
 
@@ -2162,9 +2451,32 @@ class MessengerAssistant:
             for item in candidates:
                 entity_id = str(item.get("entity_id") or "")
                 fingerprint = message_fingerprint(room_id, entity_id)
-                if entity_id and fingerprint not in processed:
+                if (
+                    entity_id
+                    and fingerprint not in processed
+                    and fingerprint not in condition_skipped
+                ):
                     new_items.append(item)
             if not new_items:
+                continue
+            if condition and not read_state_exempt and not session_policy_room_matches(
+                condition,
+                room_name,
+            ):
+                self._record_condition_skip(
+                    room_name,
+                    len(new_items),
+                    "세션 정책 대상 방이 아님",
+                )
+                self._mark_condition_skipped(
+                    room_id,
+                    [str(item.get("entity_id") or "") for item in new_items],
+                )
+                condition_skipped.update(
+                    message_fingerprint(room_id, str(item.get("entity_id") or ""))
+                    for item in new_items
+                    if str(item.get("entity_id") or "")
+                )
                 continue
             unread_ids = {
                 str(item.get("entity_id") or "")
@@ -2206,6 +2518,18 @@ class MessengerAssistant:
             fingerprint = message_fingerprint(room_id, entity_id)
             if fingerprint not in known:
                 processed.append(fingerprint)
+                known.add(fingerprint)
+
+    def _mark_condition_skipped(self, room_id: str, entity_ids: Iterable[str]) -> None:
+        skipped = self.state.setdefault("condition_skipped_fingerprints", [])
+        known = set(skipped)
+        for entity_id in entity_ids:
+            normalized = str(entity_id or "")
+            if not normalized:
+                continue
+            fingerprint = message_fingerprint(room_id, normalized)
+            if fingerprint not in known:
+                skipped.append(fingerprint)
                 known.add(fingerprint)
 
     def _invalidate_pending_for_room(
@@ -2276,6 +2600,11 @@ class MessengerAssistant:
         room_name: str,
         new_turn: list[dict[str, Any]],
     ) -> tuple[bool, str]:
+        if not compact(
+            session_policy_rules(condition).get("semantic_condition"),
+            MAX_SESSION_CONDITION_LENGTH,
+        ):
+            return True, ""
         result, usage = run_hermes_json(
             self.hermes_bin,
             str(self.config.get("profile") or "jarvis"),
@@ -2319,7 +2648,17 @@ class MessengerAssistant:
         if not self._room_is_sendable(room_id):
             return
         room_name = str(buffer.get("room_name") or room_id)
-        preview = self.kakao.preview(room_name, room_id)
+        lookback = session_policy_lookback_seconds(
+            self.state.get("session_condition") or {}
+        )
+        if lookback:
+            preview = self.kakao.preview(
+                room_name,
+                room_id,
+                limit=MAX_SESSION_HISTORY_MESSAGES_PER_CHAT,
+            )
+        else:
+            preview = self.kakao.preview(room_name, room_id)
         context = recent_context(preview)
         wanted = set(buffer.get("entity_ids") or [])
         new_turn = [item for item in context if item.get("entity_id") in wanted and is_candidate_message(item)]
@@ -2329,27 +2668,32 @@ class MessengerAssistant:
         condition = self.state.get("session_condition") or {}
         static_exception = room_id in getattr(self, "read_state_exempt_chat_ids", frozenset())
         if condition and not static_exception:
-            unread_ids = {
-                str(entity_id)
-                for entity_id in buffer.get("unread_entity_ids") or []
-                if str(entity_id)
-            }
-            condition_turn = [
-                {
-                    **item,
-                    "is_unread": str(item.get("entity_id") or "") in unread_ids,
-                }
-                for item in new_turn
-            ]
-            matches, skip_reason = self._session_condition_decision(
-                condition,
-                room_name,
-                condition_turn,
+            semantic_condition = compact(
+                session_policy_rules(condition).get("semantic_condition"),
+                MAX_SESSION_CONDITION_LENGTH,
             )
-            if not matches:
-                self._record_condition_skip(room_name, len(wanted), skip_reason)
-                self._mark_processed(room_id, wanted)
-                return
+            if semantic_condition:
+                unread_ids = {
+                    str(entity_id)
+                    for entity_id in buffer.get("unread_entity_ids") or []
+                    if str(entity_id)
+                }
+                condition_turn = [
+                    {
+                        **item,
+                        "is_unread": str(item.get("entity_id") or "") in unread_ids,
+                    }
+                    for item in new_turn
+                ]
+                matches, skip_reason = self._session_condition_decision(
+                    condition,
+                    room_name,
+                    condition_turn,
+                )
+                if not matches:
+                    self._record_condition_skip(room_name, len(wanted), skip_reason)
+                    self._mark_condition_skipped(room_id, wanted)
+                    return
         dialogue_state = self._active_dialogue_state(room_id)
         route, route_usage = run_hermes_json(
             self.hermes_bin,

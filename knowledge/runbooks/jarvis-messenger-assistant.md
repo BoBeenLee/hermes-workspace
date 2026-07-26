@@ -129,7 +129,8 @@ assistant config and accepted by the controller.
 - `메신저 시작`: clear any old session condition, set a new baseline, and
   enable the default unread-first policy
 - `메신저 시작: <자연어 조건>`: compile and confirm a session-only condition,
-  then set a new baseline and enable polling
+  then set a policy-derived scan boundary and enable polling. For example,
+  `메신저 시작: 최근 1시간 동안 김서현님 방의 답하지 않은 메시지만`
 - `메신저 종료`: block every KakaoTalk send and post a session report
 - `메신저 상태`: show state, recent poll, pending approvals, and room controls
 - `도움말` / `메신저 도움말`: show the same grouped command reference for
@@ -217,13 +218,22 @@ Reply to an approval or audit card with:
   start/scan boundary or more than five minutes old are not automatically
   answered; stale items are marked processed and reported to Discord without
   copying their message text.
-- An active condition may expand ordinary-room collection to all new incoming
-  messages only when its compiled `allows_read_messages` value is true. Every
-  expanded message still passes the per-turn condition decision. Static
+- Session policy schema v1 extracts exact included/excluded room names, a
+  bounded lookback of up to 24 hours, `unread|any` read state, mandatory
+  `unanswered` reply state, and an optional semantic condition. Room, lookback,
+  read state, and unanswered state are evaluated deterministically. Only the
+  remaining content, intent, or current-time rule uses the per-turn model.
+- A lookback policy moves only the first ordinary-room scan boundary and raises
+  the bounded per-chat history/preview limit to 50. An incoming message is
+  already answered when a later operator or `[메신저 비서]` outgoing message
+  exists. Nonmatching fingerprints are scoped to the active session so a
+  later policy may reconsider them.
+- An active policy may expand ordinary-room collection to read messages only
+  when its compiled `read_state` is `any`. Static
   `read_state_exempt_chat_ids` take precedence over session conditions: those
-  rooms bypass condition matching as well as unread filtering, while all
-  direct-room, age, reply-confidence, duplicate, and rate controls remain
-  active.
+  rooms bypass condition matching and unread filtering, but never inherit a
+  session lookback before the current start time. All direct-room,
+  reply-confidence, duplicate, and rate controls remain active.
 - `recent_context` preserves both sides of the conversation. Every event has
   `speaker_role=operator|other_party`, `speaker_name`, and a `speaker_key`.
   Counterparties use `speaker_key=other_party:<name>`, so multiple participants
@@ -270,9 +280,10 @@ Reply to an approval or audit card with:
   message. There is no CuaDriver fallback and no second actual-send attempt.
   An adapter timeout or uncertain read-back is reported with its specific
   reason while the approval remains pending.
-- State schema v3 adds `session_condition`, `condition_audit_batch`, and the
-  `condition_skipped` statistic. Existing v2 state is migrated in place with an
-  empty condition and no audit batch.
+- State schema v4 stores the versioned policy and session-scoped skipped
+  fingerprints in addition to `condition_audit_batch` and the
+  `condition_skipped` statistic. Existing string-style session conditions are
+  migrated to policy v1 with their normalized text as a semantic rule.
 - Duplicate suppression and post-send read-back require both exact message
   text and an outgoing timestamp at or after the triggering boundary. The
   boundary is the latest incoming turn for automatic replies, the pending
@@ -421,14 +432,17 @@ Before live use, confirm in the private Discord channel:
     recognizes an outgoing match after that trigger and does not resend.
 12. `도움말` and `메신저 도움말` return identical grouped help without IDs,
     paths, secrets, or raw configuration values.
-13. `메신저 시작: 가족 방에서 질문일 때만` starts only after a primary-model
-    condition compilation at confidence `0.80` or higher. Empty, secret-like,
-    over-500-character, malformed, fallback-model, and low-confidence
+13. `메신저 시작: 최근 1시간 동안 김서현님 방의 답하지 않은 메시지만`
+    compiles to policy v1 with exact room `김서현`, 3600-second lookback,
+    `read_state=unread`, `reply_state=unanswered`, and no semantic matcher.
+    Unsupported, over-24-hour, malformed, fallback-model, and low-confidence
     conditions leave the assistant stopped.
-14. A non-exempt condition mismatch creates no send or approval card, is
-    marked processed, and appears only in the poll-level metadata summary. A
-    condition-call exception retains the buffer.
-15. The configured 이보빈 static exception bypasses the session matcher but
+14. A non-exempt policy mismatch creates no send or approval card, is recorded
+    only for the current session, and appears in the poll-level metadata
+    summary. A semantic-condition call exception retains the buffer.
+15. A policy lookback never backfills a static read-state exception room before
+    the current start time.
+16. The configured 이보빈 static exception bypasses the session matcher but
     still passes reply confidence, direct-room, duplicate, and rate guards.
 
 For controller-only updates, back up and replace the installed script, then

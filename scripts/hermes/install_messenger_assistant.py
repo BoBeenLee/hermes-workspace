@@ -193,13 +193,16 @@ def update_soul(path: Path) -> None:
 - The deterministic controller, not ordinary Jarvis conversation, processes
   `메신저 시작`, `메신저 종료`, approval replies, corrections, room controls,
   contact-memory commands, polling controls, and `도움말` in that channel.
-- `메신저 시작: <자연어 조건>` compiles one session-only condition with the
-  configured primary nano model. A low-confidence or malformed condition must
-  fail closed before enabling the assistant. The condition is cleared on stop
-  or gateway-identity shutdown.
+- `메신저 시작: <자연어 조건>` compiles one session-only policy v1 with the
+  configured primary nano model. Exact room, bounded lookback, read state, and
+  unanswered state are controller-evaluated; only remaining semantic criteria
+  use a per-turn model decision. A low-confidence, malformed, unsupported, or
+  over-24-hour policy must fail closed before enabling the assistant. The
+  policy is cleared on stop or gateway-identity shutdown.
 - The polling controller replies only to current unread messages from the
   other party received within five minutes, except for explicitly configured
-  read-state-exempt chat IDs, and calls the configured
+  session-policy lookback/read-state rules and read-state-exempt chat IDs, and
+  calls the configured
   `openhuman-kakaotalk-mac` stdio MCP server through its deterministic adapter.
   Operator messages remain attributed context and never become reply triggers.
   Jarvis models classify and draft replies but never select KakaoTalk tools or
@@ -491,7 +494,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
         state_path.write_text(
             json.dumps(
                 {
-                    "version": 3,
+                    "version": 4,
                     "enabled": False,
                     "started_at": "",
                     "baseline_at": "",
@@ -529,6 +532,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
                     "dialogue_state": {},
                     "session_condition": {},
                     "condition_audit_batch": [],
+                    "condition_skipped_fingerprints": [],
                 },
                 ensure_ascii=False,
                 indent=2,
