@@ -55,8 +55,8 @@
   Python compilation, OKF validation, `git diff --check`, live controller
   `--check`, SSH validation, and Hermes status checks passed.
 - KakaoTalk adapter source commit:
-  `92bb357 fix: exclude non-human direct chats` on
-  `codex/nonhuman-messenger-filter-20260726`.
+  `5bd8b10 fix: exclude non-human direct chats` on `main`, cherry-picked from
+  the reviewed `92bb357` branch commit.
 - Only the messenger poller/listener restarted, as PIDs `9048` and `9046`.
   Jarvis gateway PID `2255` remained unchanged, the assistant remained enabled,
   and the Discord listener reconnected.
