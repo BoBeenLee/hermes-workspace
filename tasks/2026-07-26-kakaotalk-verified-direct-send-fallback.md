@@ -33,6 +33,9 @@ date: 2026-07-26
 - If multiple recent chats have the same display name, the latest incoming message text is used as an exact anchor. A missing or ambiguous anchor fails closed and no approval card is created.
 - The controller persists the binding in the pending-card record.
 - Approval and edited replies pass the stored binding back to the MCP.
+- Automatic replies now acquire the same binding before the approval/automatic
+  branch and pass it directly to the actual send.
+- Automatic-send audit cards persist the binding, and `정정:` replies reuse it.
 - A bound send validates the stored read chat ID and display name, skips the recent-chat scan entirely, and invokes kmsg with only the bound send chat ID.
 - A missing, malformed, or mismatched binding fails before send. Legacy cards are never backfilled by room name and remain unusable for sending.
 - Read-back verification still uses the read-side chat ID and the existing one-attempt idempotency boundary.
@@ -54,12 +57,14 @@ date: 2026-07-26
   - `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-conversation-binding-20260726-231220`
   - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/adapters/kakaotalk/mcp_server.py.bak-binding-schema-20260726-231336`
   - `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-binding-object-20260726-231437`
+- Automatic-binding follow-up backup:
+  - `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-automatic-binding-20260726-232451`
 - The poller and Discord listener were restarted. The Jarvis gateway and schedule were not changed.
 
 ## Verification
 
 - KakaoTalk MCP: `python3 -m unittest discover -s tests -p 'test_*.py'` — 135 passed
-- Hermes controller: `python3 -m unittest tests/test_messenger_assistant.py` — 113 passed
+- Hermes controller: `python3 -m unittest tests/test_messenger_assistant.py` — 117 passed
 - `python3 scripts/hermes/validate_okf.py`
 - `bin/hermes-remote check-ssh`
 - `bin/hermes-remote status`
@@ -72,12 +77,19 @@ date: 2026-07-26
   - `message_sent=false`
   - `scan_limit=0`
 - Read-back confirmed zero outgoing matches for the negative probe text.
+- The installed automatic-send path was exercised with a mocked sender:
+  - `binding_reused=true`
+  - `actual_kakao_send_called=false`
+- The installed controller hash matched the tested source, both launchd
+  services were running, and the durable room buffer was empty after restart.
 
 ## Live validation result
 
 The pre-existing `이보빈` approval card was created before conversation bindings existed and is now invalidated. It was not resent or backfilled. A newly generated card is required before an approval reply can be sent through the binding-only path.
 
 No additional actual KakaoTalk send was attempted during this binding deployment.
+No actual KakaoTalk send was attempted during the automatic-binding follow-up
+deployment either.
 
 ## Source ledger
 

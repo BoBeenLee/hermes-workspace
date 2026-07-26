@@ -561,6 +561,12 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
         assistant.hermes_bin = Path("/tmp/hermes")
         assistant.kakao = mock.Mock()
         assistant.kakao.preview.return_value = {"observed": [{"events": events}]}
+        assistant.kakao.bind.side_effect = lambda target, chat_id, _anchor: {
+            "version": 1,
+            "read_chat_id": chat_id,
+            "display_name": target,
+            "send_chat_id": f"kmsg-{chat_id}",
+        }
         assistant.weather = mock.Mock()
         assistant.discord = mock.Mock()
         assistant._send_automatic = mock.Mock()
@@ -2749,7 +2755,7 @@ mcp_servers:
             ],
         )
 
-    def test_create_approval_card_persists_card_time_conversation_binding(self):
+    def test_create_approval_card_persists_precomputed_conversation_binding(self):
         binding = {
             "version": 1,
             "read_chat_id": "128426307555607",
@@ -2758,8 +2764,6 @@ mcp_servers:
         }
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
         assistant.state = module.default_state()
-        assistant.kakao = mock.Mock()
-        assistant.kakao.bind.return_value = binding
         assistant.discord = mock.Mock()
         assistant.discord.send.side_effect = [None, {"id": "card-1"}]
         assistant._touch_room_stats = mock.Mock()
@@ -2783,13 +2787,9 @@ mcp_servers:
                 "last_at": "2026-07-26T00:00:00+00:00",
                 "entity_ids": ["message-1"],
             },
+            conversation_binding=binding,
         )
 
-        assistant.kakao.bind.assert_called_once_with(
-            "이보빈",
-            "128426307555607",
-            "수정할 내용이 뭐야?",
-        )
         self.assertEqual(
             assistant.state["pending"]["card-1"]["conversation_binding"],
             binding,
@@ -2977,6 +2977,12 @@ mcp_servers:
         self.assertEqual(FakeKakao.send_calls, 0)
 
     def test_automatic_send_uses_latest_incoming_timestamp_as_verification_boundary(self):
+        binding = {
+            "version": 1,
+            "read_chat_id": "123",
+            "display_name": "친구",
+            "send_chat_id": "chat_friend",
+        }
         assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
         assistant.state = module.default_state()
         assistant._send_verified = mock.Mock(return_value=True)
@@ -2995,6 +3001,7 @@ mcp_servers:
             "답장",
             "요약",
             "감사",
+            conversation_binding=binding,
         )
 
         assistant._send_verified.assert_called_once_with(
@@ -3002,7 +3009,141 @@ mcp_servers:
             "123",
             f"{module.PREFIX} 답장",
             not_before=module.parse_time(latest),
+            conversation_binding=binding,
         )
+        self.assertEqual(
+            assistant.state["audit_cards"]["audit-1"]["conversation_binding"],
+            binding,
+        )
+
+    def test_process_buffer_binds_once_before_automatic_reply(self):
+        event = {
+            "entity_id": "message-1",
+            "timestamp": module.iso_now(),
+            "sender_name": "이보빈",
+            "is_from_me": False,
+            "message_type": "text",
+            "snippet": "안녕",
+        }
+        assistant = self._assistant_for_events([event])
+        result = {
+            "intent": "assistant_status",
+            "reply_kind": "answer",
+            "reply": "내부 상태",
+            "summary": "상태",
+            "confidence": 0.95,
+            "weather_location": "",
+            "flags": {},
+            "memory_updates": [],
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER}
+
+        with mock.patch.object(module, "run_hermes_json", return_value=(result, usage)):
+            assistant._process_room_buffer(
+                "room-1",
+                {
+                    "room_name": "이보빈",
+                    "entity_ids": ["message-1"],
+                    "last_at": event["timestamp"],
+                },
+            )
+
+        expected_binding = {
+            "version": 1,
+            "read_chat_id": "room-1",
+            "display_name": "이보빈",
+            "send_chat_id": "kmsg-room-1",
+        }
+        assistant.kakao.bind.assert_called_once_with("이보빈", "room-1", "안녕")
+        self.assertEqual(
+            assistant._send_automatic.call_args.kwargs["conversation_binding"],
+            expected_binding,
+        )
+
+    def test_process_buffer_binding_failure_stops_before_reply_branch(self):
+        event = {
+            "entity_id": "message-1",
+            "timestamp": module.iso_now(),
+            "sender_name": "이보빈",
+            "is_from_me": False,
+            "message_type": "text",
+            "snippet": "안녕",
+        }
+        assistant = self._assistant_for_events([event])
+        assistant.kakao.bind.side_effect = module.KakaoPreSendFailure("binding unavailable")
+        result = {
+            "intent": "assistant_status",
+            "reply_kind": "answer",
+            "reply": "내부 상태",
+            "summary": "상태",
+            "confidence": 0.95,
+            "weather_location": "",
+            "flags": {},
+            "memory_updates": [],
+        }
+        usage = {"model": module.PRIMARY_MODEL, "provider": module.PRIMARY_PROVIDER}
+
+        with (
+            mock.patch.object(module, "run_hermes_json", return_value=(result, usage)),
+            self.assertRaisesRegex(module.KakaoPreSendFailure, "binding unavailable"),
+        ):
+            assistant._process_room_buffer(
+                "room-1",
+                {
+                    "room_name": "이보빈",
+                    "entity_ids": ["message-1"],
+                    "last_at": event["timestamp"],
+                },
+            )
+
+        assistant._send_automatic.assert_not_called()
+        assistant._create_approval_card.assert_not_called()
+
+    def test_automatic_correction_uses_stored_conversation_binding(self):
+        binding = {
+            "version": 1,
+            "read_chat_id": "123",
+            "display_name": "친구",
+            "send_chat_id": "chat_friend",
+        }
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["enabled"] = True
+        assistant.state["audit_cards"]["audit-1"] = {
+            "created_at": "2026-07-26T00:00:00+00:00",
+            "room_id": "123",
+            "room_name": "친구",
+            "conversation_binding": binding,
+        }
+        assistant.discord = mock.Mock()
+        assistant._send_verified = mock.Mock(return_value=True)
+
+        assistant._handle_reply_command("reply-1", "audit-1", "정정: 다시 확인할게")
+
+        assistant._send_verified.assert_called_once_with(
+            "친구",
+            "123",
+            f"{module.PREFIX} 정정드립니다. 다시 확인할게",
+            not_before="2026-07-26T00:00:00+00:00",
+            conversation_binding=binding,
+        )
+
+    def test_automatic_correction_without_binding_fails_closed(self):
+        assistant = module.MessengerAssistant.__new__(module.MessengerAssistant)
+        assistant.state = module.default_state()
+        assistant.state["enabled"] = True
+        assistant.state["audit_cards"]["legacy-audit"] = {
+            "created_at": "2026-07-26T00:00:00+00:00",
+            "room_id": "123",
+            "room_name": "친구",
+        }
+        assistant.discord = mock.Mock()
+        assistant._send_verified = mock.Mock()
+
+        assistant._handle_reply_command("reply-1", "legacy-audit", "정정: 다시 확인할게")
+
+        assistant._send_verified.assert_not_called()
+        self.assertIn("대화 바인딩이 없는 이전 완료 카드", assistant.discord.send.call_args.args[0])
 
     def test_verified_send_fails_closed_with_jarvis_mcp_reason_and_no_fallback(self):
         class FakeKakao:

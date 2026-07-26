@@ -4,7 +4,7 @@ title: Jarvis Messenger Assistant
 description: Fail-closed KakaoTalk messenger assistant operated by the existing Jarvis profile through a private Discord control channel.
 resource: repo://hermes-workspace/knowledge/runbooks/jarvis-messenger-assistant.md
 tags: [hermes, jarvis, kakaotalk, discord, gateway, cron, human-in-the-loop]
-timestamp: 2026-07-26T17:15:00+09:00
+timestamp: 2026-07-26T23:24:19+09:00
 ---
 
 # Jarvis Messenger Assistant
@@ -53,6 +53,11 @@ gateway restart, and future policy changes remain `review-required`.
   exactly one `kakaotalk_mac.*` tool with controller-owned arguments, normalizes
   structured output, and closes the subprocess. The controller never invokes
   `kakaocli`, `kmsg`, or CuaDriver directly.
+- After drafting and policy evaluation, but before choosing automatic send or
+  approval, the controller performs one no-send MCP binding call. The binding
+  connects the verified read-side direct chat ID and display name to the exact
+  kmsg send chat ID. Automatic replies use it immediately; approval and
+  automatic-send audit cards persist it for later approval, edit, or correction.
 - Jarvis models are no longer part of KakaoTalk tool selection, argument
   construction, or MCP result transport. They remain responsible for intent
   routing, drafting, typed-memory extraction, and allowlisted public-data
@@ -284,12 +289,14 @@ Reply to an approval or audit card with:
   Discord, model, and polling information is never exposed in KakaoTalk.
 - Per-room automatic sends are capped at 300 per 30 minutes. Global automatic
   sends are capped at 100 per ten minutes.
-- Sends call MCP `send_message` exactly once with `dry_run=false` for the
-  adapter-verified direct-room `chat_id`; there is no pre-send MCP dry-run.
-  The controller then asks Jarvis for an MCP preview to verify the visible
-  message. There is no CuaDriver fallback and no second actual-send attempt.
-  An adapter timeout or uncertain read-back is reported with its specific
-  reason while the approval remains pending.
+- Each reply candidate first calls MCP `send_message` once with `dry_run=true`
+  to obtain a versioned conversation binding. A missing, ambiguous, or
+  mismatched binding fails before an approval card or actual send. The later
+  actual call uses `dry_run=false` and the stored binding, so it does not
+  rediscover the destination from recent chats. The controller then asks
+  Jarvis for an MCP preview to verify the visible message. There is no
+  CuaDriver fallback and no second actual-send attempt. An adapter timeout or
+  uncertain read-back is reported with its specific reason.
 - State schema v4 stores the versioned policy and session-scoped skipped
   fingerprints in addition to `condition_audit_batch` and the
   `condition_skipped` statistic. Existing string-style session conditions are
@@ -299,13 +306,14 @@ Reply to an approval or audit card with:
   boundary is the latest incoming turn for automatic replies, the pending
   turn for approved or edited replies, and the audit-card creation time for
   corrections. An older identical fixed response cannot satisfy a newer send.
-- The KakaoTalk MCP resolves a send destination from only the 20 most recent
-  rooms with `kmsg chats --limit 20 --json`. Do not increase the timeout as the
-  first response to a send failure. Use the returned `error`, `phase`,
-  `scan_limit`, `elapsed_ms`, and `candidate_count` to distinguish destination
-  scan timeout, unresponsive UI, missing/ambiguous recent target, actual send
-  failure, and read-back mismatch. The controller includes these diagnostics
-  in its Discord failure report.
+- The KakaoTalk MCP resolves the initial conversation binding from only the 20
+  most recent rooms with `kmsg chats --limit 20 --json`; same-name rooms
+  require the latest turn text to match one unique preview. Bound actual sends
+  use the stored kmsg chat ID and report `scan_limit=0`. Do not increase the
+  timeout as the first response to a binding failure. Use the returned
+  `error`, `phase`, `scan_limit`, `elapsed_ms`, and `candidate_count` to
+  distinguish binding scan timeout, unresponsive UI, missing/ambiguous target,
+  actual send failure, and read-back mismatch.
 - Explicit-location current-weather questions and approved weather edits use
   Open-Meteo geocoding followed by a forecast lookup. Multiple plausible
   populated locations, mismatched coordinates, out-of-range fields, altered
@@ -329,10 +337,9 @@ directly:
 only through MCP `auth_status`; it does not launch KakaoTalk or invoke a login
 command itself. If login is unavailable, it fails closed, disables the
 assistant, and requests manual action in Discord. After the user completes the
-interactive login, `메신저 시작` rechecks MCP read access. Each send uses the
-adapter-verified direct-room `chat_id` in its single actual MCP call and is
-checked afterward through the read-back preview; there is no pre-send readiness
-dry-run.
+interactive login, `메신저 시작` rechecks MCP read access. Each reply candidate
+performs one no-send binding dry run, then uses that binding in at most one
+actual MCP call and checks it through the read-back preview.
 
 Device approval, OTP, and other second-factor steps are never collected by
 Jarvis. A failed direct MCP poll does not advance the message cursor and is
@@ -436,9 +443,11 @@ Before live use, confirm in the private Discord channel:
    `speaker_key` values to each named counterparty.
 9. A forced read-only preview argument mismatch leaves the room buffer present;
    a subsequent successful run consumes it exactly once.
-10. A forced destination scan failure reports `phase=resolve_destination` and
-   `scan_limit=20`; a recent-target miss is distinguishable from a scan timeout
-   and from an actual `kmsg send` failure.
+10. A forced binding scan failure reports `phase=resolve_destination` and
+    `scan_limit=20`, creates no card, and makes no actual send. An automatic
+    reply, approval reply, edited approval, and automatic-send correction all
+    reuse their captured binding; their actual MCP call does not scan recent
+    chats.
 11. Repeating an `assistant_status` request after an older identical fixed
     response still performs one new actual send; retrying the same trigger
     recognizes an outgoing match after that trigger and does not resend.

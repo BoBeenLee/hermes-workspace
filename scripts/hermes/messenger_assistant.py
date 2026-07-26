@@ -2905,10 +2905,41 @@ class MessengerAssistant:
                 self.discord.send(f"⏸️ **자동 답변 일시 중지**\n{rate_reason}\n`자동답변 재개` 명령 전까지 승인 전용으로 처리합니다.")
         reply = compact(result.get("reply"), 1400)
         summary = compact(result.get("summary"), 500)
+        binding_anchor = next(
+            (
+                str(item.get("text") or "").strip()
+                for item in reversed(new_turn)
+                if str(item.get("text") or "").strip()
+            ),
+            "",
+        )
+        conversation_binding = self.kakao.bind(
+            room_name,
+            room_id,
+            binding_anchor,
+        )
         if reason:
-            self._create_approval_card(room_id, room_name, new_turn, reply, summary, reason, audit, buffer)
+            self._create_approval_card(
+                room_id,
+                room_name,
+                new_turn,
+                reply,
+                summary,
+                reason,
+                audit,
+                buffer,
+                conversation_binding=conversation_binding,
+            )
         else:
-            self._send_automatic(room_id, room_name, new_turn, reply, summary, audit)
+            self._send_automatic(
+                room_id,
+                room_name,
+                new_turn,
+                reply,
+                summary,
+                audit,
+                conversation_binding=conversation_binding,
+            )
         self._mark_processed(room_id, wanted)
 
     def _summarize_links(self, links: list[str]) -> str:
@@ -2984,20 +3015,9 @@ class MessengerAssistant:
         reason: str,
         audit: str,
         buffer: dict[str, Any],
+        *,
+        conversation_binding: dict[str, Any],
     ) -> None:
-        binding_anchor = next(
-            (
-                str(item.get("text") or "").strip()
-                for item in reversed(new_turn)
-                if str(item.get("text") or "").strip()
-            ),
-            "",
-        )
-        conversation_binding = self.kakao.bind(
-            room_name,
-            room_id,
-            binding_anchor,
-        )
         raw = "\n".join(
             f"{'나' if item.get('is_from_me') else item.get('sender') or '상대'}: "
             f"{item.get('text') or '[첨부/비텍스트]'}"
@@ -3037,6 +3057,8 @@ class MessengerAssistant:
         reply: str,
         summary: str,
         audit: str,
+        *,
+        conversation_binding: dict[str, Any],
     ) -> None:
         message = f"{PREFIX} {reply.strip()}"
         triggered_at = max(
@@ -3044,7 +3066,13 @@ class MessengerAssistant:
             default=now_utc(),
         )
         try:
-            self._send_verified(room_name, room_id, message, not_before=triggered_at)
+            self._send_verified(
+                room_name,
+                room_id,
+                message,
+                not_before=triggered_at,
+                conversation_binding=conversation_binding,
+            )
         except Exception as exc:
             self.state.setdefault("stats", fresh_stats())["failed"] += 1
             self.discord.send(
@@ -3068,6 +3096,7 @@ class MessengerAssistant:
                 "created_at": iso_now(),
                 "room_id": room_id,
                 "room_name": room_name,
+                "conversation_binding": conversation_binding,
             }
 
     def _send_verified(
@@ -3174,6 +3203,13 @@ class MessengerAssistant:
             if not self.state.get("enabled"):
                 self.discord.send("⛔ 종료 상태에서는 정정 메시지를 발신하지 않습니다.", reply_to=message_id)
                 return
+            conversation_binding = audit.get("conversation_binding")
+            if not isinstance(conversation_binding, dict):
+                self.discord.send(
+                    "⛔ 대화 바인딩이 없는 이전 완료 카드라 정정 메시지를 발신하지 않았습니다.",
+                    reply_to=message_id,
+                )
+                return
             correction = content.split(":", 1)[1].strip()
             if correction:
                 try:
@@ -3182,6 +3218,7 @@ class MessengerAssistant:
                         audit["room_id"],
                         f"{PREFIX} 정정드립니다. {correction}",
                         not_before=audit.get("created_at"),
+                        conversation_binding=conversation_binding,
                     )
                 except Exception as exc:
                     self.discord.send(
