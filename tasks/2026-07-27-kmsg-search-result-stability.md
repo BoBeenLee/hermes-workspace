@@ -122,3 +122,58 @@ date: 2026-07-27
 
 None; this task used repository code, automated tests, and direct remote
 diagnostics.
+
+## Follow-up: bounded pre-open search-miss retry
+
+### Lifecycle
+
+- Task type: `ops-change`
+- HIL status: `skipped`; the user directly approved the recommended retry
+  change in Codex
+- Implementation branch:
+  `codex/kmsg-search-miss-retry-20260727`
+- Implementation worktree:
+  `/Users/mac_al03241161/Documents/mygit/kakaotalk-mac-message-skill/.worktrees/kmsg-search-miss-retry-20260727`
+- Source commit:
+  `3c31cfd` (`fix(kmsg): retry pre-open search misses once`)
+- Changed files:
+  - `vendor/kmsg/Sources/kmsg/KakaoTalk/ChatSearchRetryPolicy.swift`
+  - `vendor/kmsg/Sources/kmsg/KakaoTalk/ChatWindowResolver.swift`
+  - `vendor/kmsg/SwiftTests/ChatSearchRetryPolicyTests.swift`
+  - `vendor/kmsg/tests/test_send_command_contract.py`
+- Completion mode: `review-required`
+
+### Cause and change
+
+- The initial chat lookup, recovered chat lookup, and exact friend lookup
+  shared one 12-second deadline. When the earlier stages consumed that budget,
+  the final friend search could observe zero AX rows before KakaoTalk finished
+  refreshing them.
+- Only a final pre-open `SEARCH_MISS` now triggers one retry.
+- Before that retry, kmsg presses Escape, clears the search-field AX cache,
+  returns to the Chats tab, and then re-enters the Friends tab.
+- The retry receives a fresh 12-second deadline.
+- Focus failures, input failures, result-open failures, and failures after a
+  candidate click are not retried, preserving duplicate-send protection.
+
+### Verification and deployment
+
+- Red regression loop initially failed because `ChatSearchRetryPolicy` did not
+  exist.
+- Swift tests: 7 passed.
+- Vendored kmsg Python tests: 34 passed.
+- Release build and `git diff --check`: passed.
+- Branch pushed to
+  `origin/codex/kmsg-search-miss-retry-20260727`.
+- Configured remote runtime binary SHA-256:
+  `0e079ba55652e9b7fc3262ccdf1ad7638a3fe4b32528261b19a4c6dc08cea446`.
+- Remote backup:
+  `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/vendor/kmsg/.build/release/kmsg.bak-search-miss-retry-20260727-1556`.
+- `scripts/verify-remote-kmsg-deploy.sh bobeen` passed with 15 MCP tools.
+- Remote `kmsg status --verbose` confirmed Accessibility granted,
+  authentication ready, and KakaoTalk running.
+- No gateway restart was needed because each send launches the configured
+  binary as a new process.
+- No live KakaoTalk message was sent during verification.
+- Source ledger: none; the task used repository code, automated tests, and
+  direct remote diagnostics.
