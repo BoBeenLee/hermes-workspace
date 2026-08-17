@@ -1,5 +1,9 @@
 # Knowledge Log
 
+## 2026-08-17
+
+- Recorded the `platform_toolsets` validation warning as a documented false positive: `hermes config migrate` cannot see MCP-server toolset aliases because they are only registered on MCP connect, so editing the config to silence it would disable those tools.
+
 ## 2026-07-05
 
 - Moved the detailed KakaoTalk Mac MCP runbook to the canonical skill repo:

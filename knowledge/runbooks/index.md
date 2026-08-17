@@ -8,3 +8,4 @@
 - [Jarvis Messenger Assistant](jarvis-messenger-assistant.md)
 - [Linux Target Profile](linux-target-profile.md)
 - [macOS Target Profile](macos-target-profile.md)
+- [Platform Toolsets Validation Warning](platform-toolsets-validation-warning.md)
