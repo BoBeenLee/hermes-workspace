@@ -212,6 +212,38 @@ Installed paths:
 
 The app can select the active local LLM model, restart the single `llama-local.service` slot, and start, stop, restart, or toggle boot auto-start for `llama-local.service` and `comfyui.service`. It uses only `systemctl --user`, stores no sudo password, and does not expose any network ports.
 
+## Shutdown and Power Off
+
+Confirm the box is idle before powering it off:
+
+```bash
+uptime
+nvidia-smi
+curl -sS --max-time 5 http://127.0.0.1:8188/prompt
+loginctl list-sessions
+ps -eo pid,user,etime,args | grep -Ei 'llama-|hf |huggingface|wget|rsync|cmake|train' | grep -v grep
+find ~/ComfyUI/output ~/models -mmin -120 -type f 2>/dev/null | head
+```
+
+Idle looks like load average near `0.00`, GPU util `0%` with only the ComfyUI Python process and `Xorg`/`gnome-shell` holding GPU memory, `{"exec_info": {"queue_remaining": 0}}` from the ComfyUI prompt endpoint, no transfer or build processes, and no writes under `output/` or `models/` in the recent window.
+
+Power off from the Control MacBook. `bobeenlee` is in the `sudo` group but has no `NOPASSWD` entry, so shutdown needs the user's password at an interactive prompt; allocate a TTY with `ssh -t`:
+
+```bash
+ssh -t -i ~/.ssh/id_ed25519_bobeenlee_nopass bobeenlee@100.103.30.62 'sudo shutdown -h now'
+```
+
+Non-interactive paths fail, so an agent session cannot power the device off unattended (measured 2026-08-19 KST):
+
+```text
+sudo -n shutdown -h now   ->  sudo: 암호가 필요합니다
+systemctl poweroff        ->  Call to PowerOff failed: Interactive authentication required.
+```
+
+polkit refuses the power-off request from a remote SSH session, so `systemctl poweroff` needs either the local desktop session on `tty1` (GNOME power menu) or the same interactive password. `/etc/sudoers.d/comfyops-comfyui` covers only ComfyUI service operations for the `comfyui-ops` group and does not grant power-off. To make remote shutdown unattended, the user has to add a sudoers drop-in such as `bobeenlee ALL=(root) NOPASSWD: /sbin/shutdown, /sbin/poweroff`; treat that as `review-required`.
+
+After the next boot, verified state on 2026-08-19: `Linger=yes` for `bobeenlee`, so `comfyui.service` is `enabled` and starts on its own, while `llama-local.service` stays `disabled` and `inactive`. Re-select a model with `dgx-ai-control select-model <name>` when the local LLM is needed, and re-open any SSH tunnels; nothing is served off loopback.
+
 ## DGX Dashboard
 
 The DGX Dashboard service was observed running locally on the device:
