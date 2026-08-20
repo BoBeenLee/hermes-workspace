@@ -1,7 +1,7 @@
 ---
 type: Runbook
 title: DGX Spark Remote Access
-description: Runbook for SSH, dashboard, model service, browser, and remote desktop access to the DGX Spark host.
+description: Runbook and entry point for the DGX Spark host: doc map, SSH, Tailscale, the account and service-control boundary, dashboard, model service, browser, shutdown, and remote desktop access.
 resource: repo://hermes-workspace/knowledge/runbooks/dgx-spark-remote-access.md
 tags: [dgx-spark, remote-access, linux]
 timestamp: 2026-06-27T00:00:00+09:00
@@ -23,6 +23,18 @@ This guide records the working access path for the user's NVIDIA DGX Spark so fu
 - DGX Dashboard service: bound on the device at `127.0.0.1:11000`
 
 Do not commit passwords or private keys. Ask the user for the current password when an interactive SSH, sudo, RDP, or xrdp credential is needed.
+
+## DGX Doc Map
+
+This runbook is the entry point for anything on the DGX Spark. It owns the host, OS, network access, remote desktop, shutdown, the DGX Dashboard, and the local LLM service. The ComfyUI service layer is owned by a separate repo; do not restate its facts here.
+
+| Topic | Owner | Path |
+| --- | --- | --- |
+| Host, SSH, Tailscale, RDP, shutdown, DGX Dashboard, `llama-local.service`, `dgx-ai-control` | this runbook | you are here |
+| ComfyUI service internals: systemd unit, `COMFY_ROOT` / `COMFY_VENV`, model directories, the `comfyops` account, `sudo /usr/local/sbin/comfyui-ops`, the MCP target | `remote-comfyui` repo | `references/dgx-comfyui.md` |
+| ComfyUI generation workflows, model recommendations, run packages | `remote-comfyui` repo | `docs/`, `knowledge/` |
+
+Under the `bbl-ai-lab` superproject checkout, `remote-comfyui` is mounted at `ops/remote-comfyui/`.
 
 ## What Happened During First Setup
 
@@ -157,6 +169,27 @@ bin/hermes-remote check-llm-endpoint http://127.0.0.1:8000/v1
 
 Provider changes are `remote-config` work and should finish as `review-required`.
 
+## Accounts And Control Paths
+
+Two accounts operate this DGX. Know which one you are before running anything.
+
+| Account | Role | sudo | Owns |
+| --- | --- | --- | --- |
+| `bobeenlee` | owner and desktop session | in the `sudo` group, no `NOPASSWD` entry | the `--user` systemd units (`llama-local.service`, `comfyui.service`), `/home/bobeenlee/src/ComfyUI`, `/home/bobeenlee/venvs/comfyui`, `/home/bobeenlee/models`, the GNOME session |
+| `comfyops` | restricted ComfyUI service account used by the `remote-comfyui` repo | `NOPASSWD: /usr/local/sbin/comfyui-ops` only | nothing; its home is `/home/comfyops` |
+
+Both accounts are members of the `comfyui-ops` group, and the sudoers drop-in is `/etc/sudoers.d/comfyops-comfyui`. `comfyops` does not own the ComfyUI tree, so `$HOME`-relative ComfyUI paths are wrong under `comfyops`. The literal paths on this device are `/home/bobeenlee/src/ComfyUI` and `/home/bobeenlee/venvs/comfyui`; the deployed `/usr/local/sbin/comfyui-ops` carries the same values as its `OWNER_USER`, `COMFY_ROOT`, and `COMFY_VENV` defaults.
+
+Three control paths exist for `comfyui.service`, and all three end at the same unit, `bobeenlee`'s user unit:
+
+1. As `bobeenlee` over SSH: `systemctl --user restart comfyui.service`.
+2. In the local desktop session: the `dgx-ai-control` GTK app, which uses `systemctl --user` only, with no sudo and no ports.
+3. As `comfyops`: `sudo /usr/local/sbin/comfyui-ops restart`, which runs `runuser -u bobeenlee -- systemctl --user restart comfyui.service`. This is what `remote-comfyui`'s `bin/comfyui-ops restart` calls.
+
+Pick one path per session; do not interleave them.
+
+Port `8188` is reached with an SSH `-L` tunnel; see [Tailscale Access](#tailscale-access) for the tunnel and the `tailscale serve` rule. Two equivalent tunnels exist: the owner tunnel in that section, and `bin/comfyui-ops connect` in `remote-comfyui`, which forwards the same port over the `comfyops` account. Both land on `http://127.0.0.1:8188`. The agent and MCP target `http://dgx-comfyui.localhost:8188` is that same local port, because `*.localhost` resolves to loopback. Do not rename that host: it is hard-coded in `remote-comfyui`'s `.codex/config.toml` and in the Claude Code `comfyui-mcp` registration.
+
 ## Local AI Services
 
 `llama-server` is configured as a single selected-model user service. Only one local LLM is served at a time on `127.0.0.1:8080`; model selection is handled by `dgx-ai-control`.
@@ -188,6 +221,8 @@ systemctl --user status comfyui.service
 systemctl --user restart comfyui.service
 journalctl --user -u comfyui.service -n 100 --no-pager
 ```
+
+ComfyUI service internals, meaning the systemd unit file, `COMFY_ROOT`, `COMFY_VENV`, the model directories, the `comfyops` account, and the guarded ops wrapper, are owned by the `remote-comfyui` repo (`references/dgx-comfyui.md`). Do not restate them here.
 
 Both services are intended to bind only to loopback:
 
