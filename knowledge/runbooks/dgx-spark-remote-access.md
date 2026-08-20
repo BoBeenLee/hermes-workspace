@@ -222,7 +222,7 @@ nvidia-smi
 curl -sS --max-time 5 http://127.0.0.1:8188/prompt
 loginctl list-sessions
 ps -eo pid,user,etime,args | grep -Ei 'llama-|hf |huggingface|wget|rsync|cmake|train' | grep -v grep
-find ~/ComfyUI/output ~/models -mmin -120 -type f 2>/dev/null | head
+find ~/src/ComfyUI/output ~/models -mmin -120 -type f 2>/dev/null | head
 ```
 
 Idle looks like load average near `0.00`, GPU util `0%` with only the ComfyUI Python process and `Xorg`/`gnome-shell` holding GPU memory, `{"exec_info": {"queue_remaining": 0}}` from the ComfyUI prompt endpoint, no transfer or build processes, and no writes under `output/` or `models/` in the recent window.
