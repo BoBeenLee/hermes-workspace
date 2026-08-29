@@ -103,6 +103,42 @@ default만 v39였다. 이번에 적용했다.
   `knowledge/runbooks/platform-toolsets-validation-warning.md`에 기록된 알려진
   false positive다. 조치 없음.
 
+## jarvis 역할 재정의
+
+프로필을 줄인 뒤에도 jarvis는 자기소개에서 여전히 "AI PM 어시스턴트로, 요청하신
+작업을 정리하고 실행하거나 위임해서 결과를 보고"한다고 답했다. 위임할 워커가
+없는데 위임을 전제한 정체성이 남아 있었다.
+
+출처는 두 곳뿐이었다. 프로필에 `USER.md` / `AGENTS.md` / `MEMORY.md`는 없고
+(`~/.hermes` 최상위에도 없다), 워크스페이스 문서에도 이 프레이밍은 없다.
+
+- `SOUL.md`
+  - `chief AI PM for a Discord-based AI workspace` →
+    `operator agent on this Mac, reachable through Discord and the CLI`
+  - Mission의 `execute or delegate` → `do the work yourself`
+  - Bot Mode 위임 규칙 2줄(`@<bot>` 멘션, `message_agent()`, 3-round 캡) 삭제.
+    티메이트 프로필이 0개라 죽은 규칙이었다. 두 번째 봇을 만들 때 되살린다.
+  - 추가: `You are the only agent profile on this host. There is no worker to
+    delegate to: do the work, or say plainly why you cannot.` 와
+    `Do not describe yourself as a PM who routes or hands off work.`
+  - Ops Log Format의 `owner: jarvis|<bot>` 줄 삭제. 프로필이 하나라 항상 jarvis다.
+  - `<!-- messenger-assistant:managed -->` 블록은 보존(마커 2개 확인).
+- `profile.yaml` description (kanban orchestrator가 읽는다)
+  - `Chief AI PM that coordinates product service development and content production.` →
+    `Operator agent on this Mac: Discord and CLI interface, desktop control via
+    computer_use/cua-driver, and the KakaoTalk messenger assistant.`
+  - `hermes profile describe jarvis --text ...`
+
+백업: `hermes-archive-20260829/jarvis-SOUL.md.pre-role-change`.
+`SOUL.md`는 매 메시지마다 새로 읽히므로 게이트웨이 재시작은 불필요하다.
+
+검증:
+
+- `SOUL.md` 3939 chars, managed 블록 마커 2개 잔존
+- `hermes profile describe jarvis` → 새 description 반환
+- 라이브 자기소개 확인은 로컬 MLX Qwen3.8-27B의 한국어 생성이 250초 타임아웃을
+  넘겨 이번에는 응답을 받지 못했다. 파일 수준 변경만 확인된 상태다.
+
 ## Follow-up (미실행)
 
 - `knowledge/runbooks/hermes-workflow-optimization.md`,
