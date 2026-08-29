@@ -69,11 +69,9 @@ The default macOS Hermes host is `bobeen` / `bobeenlee` and its runtime currentl
 | --- | --- | --- |
 | `default` | `custom:mlx-qwen` | `lmstudio-community/Qwen3.8-27B-MLX-4bit` |
 | `jarvis` | `custom:mlx-qwen` | `lmstudio-community/Qwen3.8-27B-MLX-4bit` |
-| `content` | `groq` | `openai/gpt-oss-120b` |
-| `product` | `groq` | `openai/gpt-oss-120b` |
-| `preflight` | `custom:mlx-qwen` | `lmstudio-community/Qwen3.8-27B-MLX-4bit` |
 
-The three local-primary profiles fall back in this order:
+`content`, `product`, and `preflight` were deleted on 2026-08-29. Both remaining
+profiles are local-primary and fall back in this order:
 
 ```yaml
 # default and jarvis
@@ -89,9 +87,8 @@ fallback_providers:
     base_url: https://api.groq.com/openai/v1
 ```
 
-`preflight` keeps the single OpenRouter Laguna S 2.1 free fallback, as do
-`content` and `product`. Verify a chain from the host with
-`hermes fallback list` (or the `jarvis` / `preflight` wrapper): Hermes prints
+Verify a chain from the host with
+`hermes fallback list` (or the `jarvis` wrapper): Hermes prints
 `(via custom:altalt)` for custom-provider entries, which is the cheapest proof
 that a hand-edited chain parsed.
 
@@ -224,7 +221,10 @@ Verification status:
 - The five gateway profiles restarted successfully and remained supervised by
   launchd.
 
-Remote rollback copies were created before the config change:
+Remote rollback copies were created before the config change. The
+`content`/`product`/`preflight` copies went with those profiles on 2026-08-29,
+and the `jarvis` copy was pruned in the same cleanup; only the `default` copy
+still exists:
 
 ```text
 /Users/bobeenlee/.hermes/config.yaml.vision-fallback.20260726-165609.bak
