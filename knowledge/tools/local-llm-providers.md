@@ -56,7 +56,7 @@ Provider config changes are `remote-config` work and finish as `review-required`
 
 ## Current Remote Mac Routing
 
-Last checked from the control host on 2026-07-06:
+Last checked from the control host on 2026-08-21:
 
 ```bash
 bin/hermes-remote check-ssh
@@ -67,17 +67,20 @@ The default macOS Hermes host is `bobeen` / `bobeenlee` and its runtime currentl
 
 | Profile | Primary provider | Primary model |
 | --- | --- | --- |
-| `default` | `custom:altalt` | `openai/gpt-5-nano` |
-| `jarvis` | `custom:altalt` | `openai/gpt-5-nano` |
+| `default` | `custom:mlx-qwen` | `lmstudio-community/Qwen3.8-27B-MLX-4bit` |
+| `jarvis` | `custom:mlx-qwen` | `lmstudio-community/Qwen3.8-27B-MLX-4bit` |
 | `content` | `groq` | `openai/gpt-oss-120b` |
 | `product` | `groq` | `openai/gpt-oss-120b` |
-| `preflight` | `custom:mlx-qwen` | `samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed` |
+| `preflight` | `custom:mlx-qwen` | `lmstudio-community/Qwen3.8-27B-MLX-4bit` |
 
-The `default` and `jarvis` profiles currently fall back to the fixed OpenRouter
-Laguna S 2.1 free route, then Groq:
+The three local-primary profiles fall back in this order:
 
 ```yaml
+# default and jarvis
 fallback_providers:
+  - provider: custom:altalt
+    model: openai/gpt-5-nano
+    base_url: https://api.altalt.io/v1
   - provider: openrouter
     model: poolside/laguna-s-2.1:free
     base_url: https://openrouter.ai/api/v1
@@ -86,20 +89,84 @@ fallback_providers:
     base_url: https://api.groq.com/openai/v1
 ```
 
-The named `content`, `product`, and `preflight` profiles use the same fixed
-OpenRouter Laguna S 2.1 free route as their single text fallback. The
-`preflight` profile and default config also include a local MLX Qwen provider:
+`preflight` keeps the single OpenRouter Laguna S 2.1 free fallback, as do
+`content` and `product`. Verify a chain from the host with
+`hermes fallback list` (or the `jarvis` / `preflight` wrapper): Hermes prints
+`(via custom:altalt)` for custom-provider entries, which is the cheapest proof
+that a hand-edited chain parsed.
+
+A custom provider referenced by a profile's `model:` block must also be defined
+in that profile's own `custom_providers`. A profile does not inherit
+`custom_providers` from `~/.hermes/config.yaml`; the missing block fails at run
+time with `Unknown provider 'custom:mlx-qwen'`, not at config load.
+
+Hermes rejects any primary model whose context window is below `64000`
+("Choose a model with at least 64K context"), so `context_length: 65536` is the
+floor for a local provider, not a preference.
 
 ```yaml
 custom_providers:
   - name: mlx-qwen
     base_url: http://127.0.0.1:8080/v1
     api_mode: chat_completions
-    model: samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed
+    model: lmstudio-community/Qwen3.8-27B-MLX-4bit
     models:
-      samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed:
+      lmstudio-community/Qwen3.8-27B-MLX-4bit:
         context_length: 65536
 ```
+
+### MLX Server On The Remote Mac
+
+`mlx_lm.server` runs under launchd as `ai.hermes.mlx-qwen`, bound to
+`127.0.0.1:8080`, started by
+`/Users/bobeenlee/Workspaces/local-llm/scripts/start-mlx-qwen.sh`. Models live
+in the Hugging Face cache and are exposed to the script through a symlink under
+`~/Workspaces/local-llm/models/`. Logs are in `~/Workspaces/local-llm/logs/`.
+
+The stock `mlx_lm.server` defaults are unsafe for a large dense model on a 32GB
+Mac. Defaults keep up to `10` distinct KV caches (`--prompt-cache-size`) and
+batch `32` decodes / `8` prompts at once. The 27B dense Qwen3.x models cost
+about `0.25MB` of KV per token (64 layers, 4 KV heads, head_dim 256), so a
+couple of cached agent prompts on top of `16.1GB` of weights aborts the process:
+
+```text
+libc++abi: terminating due to uncaught exception of type std::runtime_error:
+[METAL] Command buffer execution failed: Insufficient Memory
+```
+
+launchd `KeepAlive` restarts it, so the symptom reaching the user is a macOS
+"Python quit unexpectedly" report plus a stalled agent run. The serving flags
+that hold the footprint down:
+
+```text
+--prompt-cache-size 1
+--prompt-cache-bytes 4294967296
+--decode-concurrency 1
+--prompt-concurrency 1
+--prefill-step-size 512
+--max-tokens 4096
+--chat-template-args '{"enable_thinking":false}'
+```
+
+Measured on this host with a fixed 256-token completion, three runs, median:
+
+| Model | Weights | KV per token | Throughput |
+| --- | --- | --- | --- |
+| `samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed` (MoE, A3B) | 19GB | 0.08MB | `40.1 tok/s` |
+| `lmstudio-community/Qwen3.6-27B-MLX-4bit` (dense) | 16.1GB | 0.25MB | `10.3 tok/s` |
+| `lmstudio-community/Qwen3.8-27B-MLX-4bit` (dense, current) | 16.1GB | 0.25MB | `10.2 tok/s` |
+
+A dense 27B is roughly `4x` slower than the A3B MoE it replaced even though its
+weights are smaller, and a Qwen3.6 → 3.8 upgrade does not move that number:
+the two share layer count, KV heads, head_dim, vocab, and quantization, so they
+are interchangeable at the serving layer and identical in cost. Budget for the
+speed before pointing an interactive profile at a dense local model.
+
+MTP draft repos such as `mlx-community/Qwen3.8-27B-MTP-4bit` cannot be used as
+`--draft-model` here: they carry `model_type: qwen3_5_mtp`, and mlx-lm `0.31.3`
+ships only `qwen3_5.py` and `qwen3_5_moe.py`. Speculative decoding needs either
+a newer mlx-lm with that module or a self-contained MTPLX-style conversion whose
+`model_type` is a supported one.
 
 ## Cloud Vision Bridge
 
@@ -173,11 +240,13 @@ organization-policy change and requires separate operator review.
 
 ## Altalt Routing
 
-The `default` and `jarvis` profile routes are configured as:
+Since 2026-08-21 `altalt` is the first fallback of the `default` and `jarvis`
+profiles rather than their primary:
 
-1. Primary: `altalt` custom OpenAI-compatible endpoint, model `openai/gpt-5-nano`.
-2. Fallback 1: OpenRouter `poolside/laguna-s-2.1:free`.
-3. Fallback 2: Groq.
+1. Primary: `custom:mlx-qwen`, local MLX `lmstudio-community/Qwen3.8-27B-MLX-4bit`.
+2. Fallback 1: `altalt` custom OpenAI-compatible endpoint, model `openai/gpt-5-nano`.
+3. Fallback 2: OpenRouter `poolside/laguna-s-2.1:free`.
+4. Fallback 3: Groq.
 
 Hermes tries `fallback_providers` in list order when the primary model fails.
 
