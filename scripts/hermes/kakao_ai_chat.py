@@ -1039,6 +1039,10 @@ def acquire_single_instance_lock(takeover_timeout: float = 15.0):
         log(f"another instance (pid {stale_pid}) holds the lock; asking it to exit")
         with contextlib.suppress(OSError):
             os.kill(stale_pid, signal.SIGTERM)
+    else:
+        # Pre-takeover builds opened the lock with "w" and left no usable pid, so
+        # there is nothing to signal. One manual kill clears it; see the runbook.
+        log("lock is held but records no pid (pre-upgrade instance?); cannot hand over")
 
     deadline = time.monotonic() + takeover_timeout
     while time.monotonic() < deadline:
