@@ -14,6 +14,13 @@ confirms it queued an Android intent; with a stale `NotificationReferer` it
 returns the same payload and nothing leaves the device. Verify against
 `chat_logs`, never against the response body.
 
+**`/query` decrypts `message` and `attachment` only when the SELECT also asks
+for `user_id` and `v`.** Iris feeds those two to `KakaoDecrypt.decrypt(enc,
+ciphertext, user_id)` - `v` carries the `enc` type, `user_id` seeds the key
+salt. Leave either out and the column comes back as base64 ciphertext with no
+error and no warning, which reads exactly like working code. `require_columns`
+below turns that into a refusal.
+
 **`/query` reaches KakaoTalk.db only.** `chat_logs`, `chat_rooms` and
 `open_chat_member` are there; the `friends` table that maps a user id to a
 display name lives in KakaoTalk2.db, which Iris does not attach. Sender names
@@ -82,6 +89,7 @@ class IrisClient:
         Iris answers with dicts keyed by the SELECT alias; everything upstream of
         this was written against kakaocli's positional output.
         """
+        require_decryptable(sql)
         return [[row.get(name) for name in columns] for row in self.query(sql)]
 
     def reply(self, chat_id, text: str) -> dict:
@@ -116,6 +124,32 @@ class IrisClient:
                 # The feed is best-effort garnish on top of the polled messages.
                 # Never let it take the daemon down; just back off and retry.
                 time.sleep(5)
+
+
+DECRYPT_INPUTS = ("user_id", "v")
+ENCRYPTED_COLUMNS = ("message", "attachment")
+
+
+def require_decryptable(sql: str) -> None:
+    """Refuse a SELECT that would silently hand back ciphertext.
+
+    Asking for `message` or `attachment` without `user_id` and `v` is not an
+    error to Iris - it just returns base64. Catching it here costs one check and
+    saves a debugging session against data that looks corrupt rather than locked.
+    """
+    lowered = sql.lower()
+    if not lowered.lstrip().startswith("select"):
+        return
+    body = lowered.split(" from ", 1)[0]
+    wanted = [c for c in ENCRYPTED_COLUMNS if c in body]
+    if not wanted:
+        return
+    missing = [c for c in DECRYPT_INPUTS if c not in body]
+    if missing:
+        raise IrisError(
+            f"select asks for {', '.join(wanted)} but omits {', '.join(missing)}; "
+            "Iris would return ciphertext. Add both user_id and v to the column list."
+        )
 
 
 def record_names(cache: dict, raw) -> None:
@@ -161,6 +195,28 @@ def demo() -> None:
             return [{"b": 2, "a": 1}]
 
     assert FakeClient().query_rows("select 1", ("a", "b", "c")) == [[1, 2, None]]
+
+    # the ciphertext trap: message/attachment without user_id and v
+    for bad in ("select id, message from chat_logs where chat_id = 1",
+                "select id, user_id, attachment from chat_logs",
+                "SELECT id, v, MESSAGE FROM chat_logs"):
+        try:
+            require_decryptable(bad)
+        except IrisError:
+            pass
+        else:
+            raise AssertionError(f"should have refused: {bad}")
+    # both present, and columns that carry no ciphertext, are fine
+    require_decryptable("select id, user_id, type, message, attachment, v from chat_logs")
+    require_decryptable("select id, chat_id from chat_rooms")
+    require_decryptable("select count(*) from chat_logs")
+    # a where clause naming user_id must not count as selecting it
+    try:
+        require_decryptable("select id, message, v from chat_logs where user_id = 5")
+    except IrisError:
+        pass
+    else:
+        raise AssertionError("where-clause user_id must not satisfy the guard")
 
     print("iris_client demo ok")
 

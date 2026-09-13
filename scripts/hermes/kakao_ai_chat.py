@@ -89,6 +89,10 @@ DEFAULT_CONFIG: dict = {
     "hermes_bin": str(HOME / ".local" / "bin" / "hermes"),
     # The "jarvis" identity moved to the DGX; the Mac-side profile is "mac-jarvis".
     "profile": "mac-jarvis",
+    # "mac" = kakaocli + kmsg (needs macOS, TCC and a Keychain). "iris" = the
+    # Android container's HTTP API, which is the only option on Linux.
+    "backend": "mac",
+    "iris_base_url": "http://172.17.0.2:3000",
     # `stt` shows up in `hermes tools list` but is not a valid `-t` entry; hermes
     # drops unknown names with a warning. Verified list: terminal, file, vision,
     # video, web, browser, tts, skills, memory, todo, code_execution, image_gen,
@@ -350,6 +354,24 @@ def process_discord_commands(config: dict, state: dict, discord) -> None:
 # --------------------------------------------------------------------------
 
 
+def backend_name(config: dict) -> str:
+    """`mac` drives kakaocli/kmsg; `iris` drives the Android container over HTTP."""
+    return str(config.get("backend") or DEFAULT_CONFIG["backend"]).strip().lower()
+
+
+def iris_client(config: dict):
+    from iris_client import IrisClient
+
+    return IrisClient(str(config.get("iris_base_url") or DEFAULT_CONFIG["iris_base_url"]))
+
+
+def backend_query(config: dict, sql: str, columns: tuple[str, ...]) -> list[list]:
+    """One choke point for reads, positional rows either way."""
+    if backend_name(config) == "iris":
+        return iris_client(config).query_rows(sql, columns)
+    return kakaocli_query(config, sql)
+
+
 def kakaocli_query(config: dict, sql: str) -> list[list]:
     command = [str(config["kakaocli_bin"]), "query"]
     user_id = str(config.get("kakaotalk_user_id") or "").strip()
@@ -397,6 +419,11 @@ def room_for(config: dict, chat_id: int) -> dict | None:
 DETECT_COLUMNS = ("log_id", "chat_id", "author_id", "type", "message", "attachment", "sent_at")
 CONTEXT_COLUMNS = DETECT_COLUMNS + ("sender_name", "local_file_path")
 
+# Iris answers keyed by SQL column name; as_row() speaks the internal names.
+# `v` rides along because Iris only decrypts when it is in the SELECT.
+IRIS_SQL_COLUMNS = ("id", "chat_id", "user_id", "type", "message", "attachment", "created_at", "v")
+IRIS_ROW_COLUMNS = ("log_id", "chat_id", "author_id", "type", "message", "attachment", "sent_at", "v")
+
 
 def as_row(values: list, columns: tuple[str, ...]) -> dict:
     row = dict(zip(columns, values))
@@ -413,6 +440,16 @@ def fetch_new_rows(config: dict, cursor: int) -> list[dict]:
     if not chat_ids:
         return []
     id_list = ",".join(str(value) for value in chat_ids)
+    if backend_name(config) == "iris":
+        # user_id and v are not decoration: Iris decrypts message/attachment only
+        # when both are in the SELECT, and returns base64 silently otherwise.
+        sql = (
+            "SELECT id, chat_id, user_id, type, message, attachment, created_at, v "
+            "FROM chat_logs "
+            f"WHERE chat_id IN ({id_list}) AND id > {int(cursor)} "
+            f"ORDER BY id ASC LIMIT {DETECT_LIMIT}"
+        )
+        return [as_row(values, IRIS_ROW_COLUMNS) for values in backend_query(config, sql, IRIS_SQL_COLUMNS)]
     sql = (
         "SELECT logId, chatId, authorId, type, message, attachment, sentAt "
         "FROM NTChatMessage "
@@ -423,6 +460,16 @@ def fetch_new_rows(config: dict, cursor: int) -> list[dict]:
 
 
 def fetch_room_context(config: dict, chat_id: int, up_to_log_id: int, limit: int) -> list[dict]:
+    if backend_name(config) == "iris":
+        sql = (
+            "SELECT id, chat_id, user_id, type, message, attachment, created_at, v "
+            "FROM chat_logs "
+            f"WHERE chat_id = {int(chat_id)} AND id <= {int(up_to_log_id)} "
+            f"ORDER BY id DESC LIMIT {int(limit)}"
+        )
+        rows = [as_row(v, IRIS_ROW_COLUMNS) for v in backend_query(config, sql, IRIS_SQL_COLUMNS)]
+        rows.reverse()
+        return rows
     sql = (
         "SELECT m.logId, m.chatId, m.authorId, m.type, m.message, m.attachment, m.sentAt, "
         "COALESCE(u.displayName, u.friendNickName, u.nickName) AS senderName, m.localFilePath "
@@ -437,6 +484,13 @@ def fetch_room_context(config: dict, chat_id: int, up_to_log_id: int, limit: int
 
 
 def fetch_row_by_log_id(config: dict, chat_id: int, log_id: int) -> dict | None:
+    if backend_name(config) == "iris":
+        sql = (
+            "SELECT id, chat_id, user_id, type, message, attachment, created_at, v "
+            f"FROM chat_logs WHERE chat_id = {int(chat_id)} AND id = {int(log_id)} LIMIT 1"
+        )
+        rows = backend_query(config, sql, IRIS_SQL_COLUMNS)
+        return as_row(rows[0], IRIS_ROW_COLUMNS) if rows else None
     sql = (
         "SELECT m.logId, m.chatId, m.authorId, m.type, m.message, m.attachment, m.sentAt, "
         "COALESCE(u.displayName, u.friendNickName, u.nickName) AS senderName, m.localFilePath "
@@ -631,12 +685,20 @@ def select_triggers(rows: list[dict], config: dict, parent_is_bot) -> dict[int, 
     return chosen
 
 
+IRIS_NAME_CACHE: dict = {}
+
+
 def speaker_for(row: dict, config: dict) -> str:
     if is_bot_message(row.get("message"), config["bot_prefix"]):
         return "jarvis"
     if row.get("author_id") == int(config.get("my_user_id") or 0):
         return "나"
     name = row.get("sender_name")
+    if not (isinstance(name, str) and name):
+        # Iris rows carry no sender_name - the friends table lives in a database
+        # Iris does not attach. The /ws feed resolves names, so fall back to
+        # whatever it has cached; an unknown speaker is the pre-existing default.
+        name = IRIS_NAME_CACHE.get(str(row.get("author_id") or ""))
     return name if isinstance(name, str) and name else "알 수 없음"
 
 
@@ -817,6 +879,13 @@ def run_hermes(config: dict, prompt: str) -> str:
 
 
 def send_message(config: dict, room: dict, text: str) -> None:
+    if backend_name(config) == "iris":
+        # chat_id is the same key on both sides, so the mac side's separate
+        # kmsg_chat_id has no counterpart here and needs no resolving step.
+        # A success reply only means Iris queued the intent - the poll loop's
+        # next tick is what actually proves delivery.
+        iris_client(config).reply(room["chat_id"], text)
+        return
     command = [str(config["kmsg_bin"]), "send", "--chat-id", str(room["kmsg_chat_id"]), text]
     result = subprocess.run(
         command,
@@ -942,7 +1011,7 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
         if room_state.get("paused"):
             log(f"chat {chat_id}: 일시 정지 상태라 건너뛴다")
             continue
-        if not room or not room.get("kmsg_chat_id"):
+        if not room or (backend_name(config) != "iris" and not room.get("kmsg_chat_id")):
             state["last_error"] = f"chat {chat_id}: kmsg_chat_id 가 없다. --resolve-rooms 를 돌려라"
             log(state["last_error"])
             continue
@@ -1063,6 +1132,14 @@ def poll_loop(config_path: Path) -> int:
         time.sleep(60)
         return 0
 
+    if backend_name(load_config(config_path)) == "iris":
+        # Best-effort: sender names come only from the push feed, and a miss
+        # degrades a context line rather than breaking a tick.
+        try:
+            iris_client(load_config(config_path)).watch_names(IRIS_NAME_CACHE)
+        except Exception as exc:
+            log(f"iris name feed unavailable: {exc}")
+
     deadline = time.monotonic()
     while True:
         config = load_config(config_path)
@@ -1084,13 +1161,21 @@ def check(config_path: Path) -> int:
         "config": config_path.is_file(),
         "my_user_id": bool(config.get("my_user_id")),
         "rooms": len(config.get("rooms") or []),
-        "rooms_resolved": sum(1 for room in config.get("rooms") or [] if room.get("kmsg_chat_id")),
+        "rooms_resolved": sum(
+            1
+            for room in config.get("rooms") or []
+            if backend_name(config) == "iris" or room.get("kmsg_chat_id")
+        ),
+        "backend": backend_name(config),
         "hermes_bin": Path(str(config["hermes_bin"])).is_file(),
-        "kakaocli_bin": Path(str(config["kakaocli_bin"])).is_file(),
-        "kmsg_bin": Path(str(config["kmsg_bin"])).is_file(),
         "disabled": DISABLED_PATH.exists(),
         "enabled": bool(load_state().get("enabled")),
     }
+    if backend_name(config) == "iris":
+        report["iris_reachable"] = iris_client(config).health()
+    else:
+        report["kakaocli_bin"] = Path(str(config["kakaocli_bin"])).is_file()
+        report["kmsg_bin"] = Path(str(config["kmsg_bin"])).is_file()
     discord = build_discord(config)
     report["discord_token"] = bool(discord.token)
     report["discord_channel_id"] = bool(discord.channel_id)
