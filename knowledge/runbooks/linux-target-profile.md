@@ -33,11 +33,15 @@ HERMES_REMOTE_WORKSPACE=/home/<user>/Workspaces/hermes-workspace
 Optional local LLM provider hints:
 
 ```env
-HERMES_LLM_PROVIDER=vllm
-HERMES_LLM_BASE_URL=http://127.0.0.1:8000/v1
+HERMES_LLM_PROVIDER=custom:llama-local
+HERMES_LLM_BASE_URL=http://127.0.0.1:8080/v1
 HERMES_LLM_MODEL=<served-model-name>
 HERMES_LLM_CONTEXT_LENGTH=65536
 ```
+
+These are hints only: `model-status` uses them to probe reachability and to redact
+the URL. They do not configure Hermes. `65536` is a hard floor, not a preference -
+Hermes rejects a primary model under 64K context.
 
 Supported operations:
 
@@ -60,8 +64,32 @@ Adding a Linux desktop-control backend would still not bring KakaoTalk with it. 
 [KakaoTalk Control Portability](kakaotalk-control-portability.md) for what the macOS
 stack actually depends on and why the account device slot decides the question.
 
+## Verified On The DGX Spark (2026-09-13)
+
+Everything in the "Supported operations" list above is now measured, not assumed, on
+`config/targets/dgx-spark.env` (Ubuntu 24.04.4 aarch64, Hermes Agent v0.21.2):
+
+| Command | Result |
+| --- | --- |
+| `check-ssh` | ok |
+| `status` | `target_os=linux service_manager=systemd computer_use_backend=none` |
+| `model-status` / `check-llm-endpoint http://127.0.0.1:8080/v1` | ok, llama.cpp `/v1/models` answers |
+| `run "Reply with exactly: OK"` | `OK` |
+| `setup-kanban` | board created |
+| `setup-computer-use` / `grant-computer-use` / `verify-computer-use` | **exit 2**, `computer_use is unsupported for this target.` |
+
+The gateway runs as the systemd **user** unit `hermes-gateway.service` with lingering
+enabled, installed by `hermes gateway install` with no sudo. `doctor.sh` now reports
+`systemd_gateway_active`, `systemd_gateway_enabled`, and `systemd_linger`.
+
+Still unverified: long-run gateway stability, behaviour across a host reboot, and
+whether the local model survives memory pressure from a concurrent ComfyUI job.
+
 Linux notes:
 
+- `HERMES_REMOTE_HOST` must include the remote user (`user@host`) unless an
+  `~/.ssh/config` alias supplies it. `bin/hermes-remote` sshs to that value verbatim;
+  only `install.sh` / `doctor.sh` prepend `HERMES_REMOTE_USER`.
 - Keep the example profile non-runnable until a real SSH host is known.
 - Do not add root/system daemon commands to this repo. Prefer the Hermes CLI gateway commands and document any host-specific service setup separately.
 - The workspace repo remains `git@github.com:BoBeenLee/hermes-workspace.git` unless the target intentionally uses a fork.

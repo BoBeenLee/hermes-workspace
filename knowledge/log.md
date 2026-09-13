@@ -2,6 +2,16 @@
 
 ## 2026-09-13
 
+- The DGX is a Hermes host now, not a candidate for one. Hermes Agent v0.21.2 installs per-user on Ubuntu 24.04 aarch64 with no sudo at all, and the gateway really is a systemd **user** unit (`hermes-gateway.service`, lingering already enabled). That last point was the open unknown the portability study left behind; it is answered.
+- What actually cost time was never the install. `bin/hermes-remote` sshs to `$HERMES_REMOTE_HOST` verbatim while `install.sh`/`doctor.sh` build `user@host`, so a bare IP installs cleanly and then fails every subcommand with `Permission denied`. Putting the user in the host value satisfies both.
+- Two stdin traps worth remembering: `hermes model` refuses a non-TTY outright, and `hermes config migrate` prompts — it will eat the remainder of an `ssh 'bash -s' <<EOF` script as its answer and the rest of your script silently never runs.
+- Did not clone the Mac's `config.yaml` onto the DGX. The Mac is v0.20.6 / 699 lines, the DGX shipped v0.21.2 / 2138 commented lines; ported the identity-bearing sections with `hermes config set` (it takes JSON for nested keys, but rewrites a bare `model` to `model.default` and stores the JSON as a string) and let `config migrate` carry the version to 44.
+- The macOS-only MCP servers went to `enabled: false` rather than being deleted, so the Linux port of each one is a path swap rather than an archaeology exercise.
+- Split the Discord identity by host: the DGX holds it in its **default** profile (aliased `dgx-jarvis`) because `bin/hermes-remote` only passes `--profile` for Hallmark — a named profile there would leave 40 subcommands addressing an empty default.
+- Recovered the `product` profile deleted on 2026-08-29 from `backups/pre-update-2026-08-29-163521.zip` and renamed it `mac-jarvis`. Its Discord channels are deliberately blank: the restored `.env` still pointed at the channel the DGX now owns, and a different bot answering on the same channel is the one failure this split exists to prevent.
+- Those backup zips exclude every `.git` directory, so a restored profile's `skill-sources/` checkout has files and no history. Worth knowing before trusting one as a recovery source.
+- `bin/hermes-remote`'s Hallmark commands had hardcoded the `product` profile and were therefore dead for two weeks without anyone noticing. They read `HERMES_HALLMARK_PROFILE` now.
+
 - Completing the MCP server rename took four more places than the config edit suggested, and each one failed quietly: the `jarvis` profile keeps its own `mcp_servers` block, `bin/kakaocli-self-ssh` hard-codes the vendored binary path, and `messenger_assistant.py` and `kakao_ai_chat.py` pin the name as module constants while running from deployed copies outside this repo. Wrote it up as [Renaming An MCP Server](runbooks/renaming-an-mcp-server.md).
 - The lesson worth keeping: `hermes -t <name> -z` answering OK proves the toolset resolves and nothing else. Both dependent services were broken while that check was green.
 
