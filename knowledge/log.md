@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-09-14
+
+- Moved the Mac-side role from the leftover `jarvis` profile to `mac-jarvis`. Six places had to follow, and only one of them was code: the messenger assistant already reads `profile`/`profile_dir` from its config.json, so the `"jarvis"` literals scattered through `messenger_assistant.py` are defaults that never fire.
+- `install_messenger_assistant.py` was the real hazard - it hardcoded the profile in module constants, so the next install would have silently pulled everything back to `jarvis`. It reads `HERMES_MESSENGER_PROFILE` now. Its launchd labels and cron name stay as they are: those are registered identifiers, and renaming them orphans the installed agents.
+- Not every "jarvis" in that codebase is a profile. `kakao_ai_chat.py`'s `speaker_for()` returns "jarvis" as the bot's display name in a chat transcript, matching `bot_prefix`. Grepping a name and replacing it everywhere would have renamed the bot in people's KakaoTalk rooms.
+- mac-jarvis inherited the jarvis bot token rather than keeping its own restored one. The channel it polls was set up for that bot, and REST-polling it does not collide with the DGX's websocket - an arrangement already verified. Using the restored profile's own bot would have needed a human in the Discord UI, for a bot that may no longer exist.
+
 ## 2026-09-13
 
 - Stood the Mac hermes stack down and went DGX-only. The prompt for it was a good question I had answered too fast: `메신저 시작` re-enables a *Mac* process, so "run everything from the DGX" and "the KakaoTalk assistant works" cannot both be true today.

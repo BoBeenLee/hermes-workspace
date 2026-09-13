@@ -87,7 +87,8 @@ SYSTEM_TYPE = 0
 DEFAULT_CONFIG: dict = {
     "my_user_id": 0,
     "hermes_bin": str(HOME / ".local" / "bin" / "hermes"),
-    "profile": "jarvis",
+    # The "jarvis" identity moved to the DGX; the Mac-side profile is "mac-jarvis".
+    "profile": "mac-jarvis",
     # `stt` shows up in `hermes tools list` but is not a valid `-t` entry; hermes
     # drops unknown names with a warning. Verified list: terminal, file, vision,
     # video, web, browser, tts, skills, memory, todo, code_execution, image_gen,
@@ -115,7 +116,7 @@ DEFAULT_CONFIG: dict = {
     # messenger assistant will both react in it.
     "discord_channel_id": "",
     "discord_user_id": "",
-    "discord_token_env": str(HOME / ".hermes" / "profiles" / "jarvis" / ".env"),
+    "discord_token_env": str(HOME / ".hermes" / "profiles" / "mac-jarvis" / ".env"),
     "reply_char_limit": 800,
     "global_reply_limit": 20,
     "global_reply_window_seconds": 600,

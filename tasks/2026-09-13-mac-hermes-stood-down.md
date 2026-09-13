@@ -64,6 +64,39 @@ KakaoTalk.app 은 건드리지 않았다 — 계정 슬롯을 유지해야 나�
 | Mac hermes | **전부 down + disabled** |
 | 카카오톡 | **어둡다** — Mac 비서도 DGX 경로도 안 돈다 |
 
+## 잔존 jarvis 역할을 mac-jarvis 로 넘김 (2026-09-14)
+
+Mac 에 `jarvis` 가 남아 있던 이유는 메신저 비서가 그 디렉터리를 읽기 때문이었다. 신원은
+DGX 로 갔으니 Mac 쪽 역할도 `mac-jarvis` 가 받아야 맞다. 여섯 군데를 옮겼다.
+
+| 옮긴 것 | 내용 |
+| --- | --- |
+| `scripts/`, `messenger-assistant/` | `ditto` 로 **복사** (jarvis 는 롤백용으로 남김) |
+| `messenger-assistant/config.json` | `profile`·`profile_dir`·`state_dir` → mac-jarvis |
+| `mac-jarvis/config.yaml` | `mcp_servers.openhuman-kakaotalk` 추가 (jarvis 에서 복사). 바이너리 실재 확인 |
+| `mac-jarvis/.env` | `DISCORD_BOT_TOKEN` ← jarvis 것(`9ff5af…`) |
+| LaunchAgent plist ×2 | ProgramArguments·WorkingDirectory·로그 경로 전부 mac-jarvis |
+| `kakao-ai-chat/config.json` | `profile`, `discord_token_env` → mac-jarvis |
+
+**봇 토큰은 jarvis 것을 물려받았다**, mac-jarvis 가 원래 갖고 있던 product 봇(`6fd532…`)이
+아니라. 채널 …9918 이 jarvis 봇 기준으로 세팅돼 있고, 메신저 비서는 REST 폴링이라 DGX 의
+websocket 과 안 겹치는 구조가 이미 검증돼 있다. product 봇을 쓰려면 그 봇을 …9918 에
+초대해야 하는데 사람이 Discord UI 에서 해야 하고, 그 봇이 아직 살아 있는지도 모른다.
+
+**모델은 일부러 안 바꿨다.** jarvis 는 `custom:mlx-qwen` @ 127.0.0.1:8080 이었는데 그 서버는
+방금 내렸다(10GB 상주). mac-jarvis 는 `groq openai/gpt-oss-120b` 라 로컬 서버 없이 돈다.
+Mac 을 되살릴 때 mlx 를 같이 켤 생각이면 모델도 바꿔야 한다.
+
+repo 쪽도 같이 고쳤다 — 안 그러면 다음 설치기 실행이 `jarvis` 로 되돌린다:
+- `install_messenger_assistant.py`: `PROFILE = os.environ.get("HERMES_MESSENGER_PROFILE", "mac-jarvis")`.
+  `PROFILE_DIR`, 생성되는 config.json 의 `profile`, cron 호출 두 곳이 이걸 따른다.
+  **라벨(`ai.hermes.jarvis-messenger-assistant-*`)과 `CRON_NAME` 은 그대로 뒀다** — 등록된
+  식별자라 바꾸면 이미 설치된 에이전트가 고아가 된다.
+- `kakao_ai_chat.py`: `DEFAULT_CONFIG` 의 `profile` 과 `discord_token_env` 를 mac-jarvis 로.
+  `speaker_for()` 의 `return "jarvis"` 는 **프로필이 아니라 대화 로그의 화자 이름**이라 유지.
+
+`jarvis` 프로필 자체는 지우지 않았다. 지금은 아무도 안 읽지만 롤백 경로다.
+
 ## 되돌리려면
 
 ```bash
