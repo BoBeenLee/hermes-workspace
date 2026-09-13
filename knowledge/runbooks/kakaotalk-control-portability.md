@@ -22,7 +22,7 @@ The two halves have opposite answers. Do not answer them together.
 
 ## What Actually Implements KakaoTalk Control
 
-`openhuman-kakaotalk-mac` is a thin wrapper, not the mechanism. Its `mcp_server.py`
+`openhuman-kakaotalk` is a thin wrapper, not the mechanism. Its `mcp_server.py`
 contains zero calls to `osascript`, `AXUIElement`, `CGEvent`, or `NSWorkspace`; it
 shells out to two vendored Swift binaries. The macOS dependency lives there.
 
@@ -34,8 +34,8 @@ shells out to two vendored Swift binaries. The macOS dependency lives there.
 Re-check on the default macOS target:
 
 ```bash
-ssh bobeen 'cd ~/.hermes/mcp-servers/openhuman-kakaotalk-mac/vendor && otool -L kmsg/.build/release/kmsg | head -5'
-ssh bobeen 'cd ~/.hermes/mcp-servers/openhuman-kakaotalk-mac/vendor && otool -L kakaocli/.build/release/kakaocli | head -3'
+ssh bobeen 'cd ~/.hermes/mcp-servers/openhuman-kakaotalk/vendor && otool -L kmsg/.build/release/kmsg | head -5'
+ssh bobeen 'cd ~/.hermes/mcp-servers/openhuman-kakaotalk/vendor && otool -L kakaocli/.build/release/kakaocli | head -3'
 ```
 
 **Side effect warning:** `kmsg status` launches KakaoTalk.app if it is not already
