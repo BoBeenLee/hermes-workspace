@@ -106,8 +106,16 @@ DEFAULT_CONFIG: dict = {
     # drops unknown names with a warning. Verified list: terminal, file, vision,
     # video, web, browser, tts, skills, memory, todo, code_execution, image_gen,
     # computer_use, plus enabled MCP server names.
-    # `cronjob` is what lets an answer schedule something instead of promising it.
-    "toolsets": "terminal,file,vision,video,web,skills,cronjob,antigravity-worker,kanban",
+    # Measured with get_tool_definitions(..., skip_tool_search_assembly=True), not read
+    # off `hermes tools list` and not guessed: every name here resolves to at least one
+    # tool. Use that flag - the default view folds rarely-used tools behind tool_search,
+    # so a present tool can look absent. `cronjob` lets an answer schedule instead of
+    # promising it; `memory` is what carries a fact between turns, each of which is a
+    # fresh session. `cua-driver` is deliberately absent: it is the MCP server behind
+    # `computer_use`, not a toolset, and naming it adds nothing. `antigravity-worker`
+    # likewise - it sits in agent.disabled_toolsets and is subtracted after enabling.
+    "toolsets": ("terminal,file,vision,video,web,skills,"
+                 "cronjob,memory,session_search,computer_use,kanban"),
     # The jarvis default (local MLX Qwen3.8-27B) needs minutes per turn, which is
     # unusable for chat: an image question timed out past 7 minutes on it and took
     # 17s here. Blank these two to inherit the profile default when depth beats speed.
@@ -996,6 +1004,9 @@ PROMPT_TEMPLATE = """너는 카카오톡 방에서 나(운영자)를 돕는 어�
       python3 {send_bin} --send-to {chat_id} --text "<보낼 본문>"
   job 프롬프트는 그 자체로 완결돼야 한다 - 예약된 실행은 이 대화를 못 보고 되물을 수도 없다.
   만든 뒤에는 무엇을 언제로 잡았는지 한 줄로 알려라.
+- 주소·전화·영업시간·링크 같은 사실은 `web_search` 로 확인하고 써라. 확인이 안 되면 모른다고 말해라.
+- **좌표를 지어내지 마라.** 장소 지도는 좌표 링크 대신 검색 링크로 보낸다: `https://map.kakao.com/?q=<장소 이름>`
+  MY_THREAD 에 이미 있는 지도 링크는 **그때 그 장소의 것**이다. 지금 묻는 장소가 다르면 그 링크를 다시 쓰지 마라.
 - 답은 카카오톡 메시지 한 개로 간다. 짧고 실용적으로, 머리말 없이 본론부터.
 - 사진을 보내려면 `[[image: /절대/경로]]` 를 **한 줄로** 넣어라. 그 줄은 본문에서 빠지고 사진으로 나간다.
   보낼 수 있는 곳은 `~/.hermes/kakao-ai-chat/outbox` 와 `media` 뿐이다. 그 밖의 경로는 무시된다.
