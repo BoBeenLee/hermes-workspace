@@ -8,6 +8,7 @@
 - [Hermes Workflow Optimization](hermes-workflow-optimization.md)
 - [Iris On DGX](iris-on-dgx.md)
 - [Jarvis Messenger Assistant](jarvis-messenger-assistant.md)
+- [KakaoTalk AI Chat Daemon](kakao-ai-chat.md)
 - [KakaoTalk Control Portability](kakaotalk-control-portability.md)
 - [Linux Target Profile](linux-target-profile.md)
 - [macOS Target Profile](macos-target-profile.md)
