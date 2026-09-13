@@ -281,11 +281,18 @@ class PromptTests(unittest.TestCase):
     def test_empty_mention_gets_a_standing_instruction(self):
         self.assertIn("방 문맥을 보고", module.build_prompt([], [], "(없음)", ""))
 
-    def test_prompt_forbids_the_agent_from_sending_kakaotalk_itself(self):
+    def test_prompt_forbids_the_agent_from_sending_this_turn_itself(self):
         # MCP tools reach the agent through tool_search/tool_call even when the
         # kakao server is left out of --toolsets, so the rule has to be in the prompt.
-        self.assertIn("카카오톡으로 직접 메시지를 보내지 마라",
+        self.assertIn("지금 이 턴의 답은 직접 보내지 마라",
                       module.build_prompt([], [], "(없음)", "x"))
+
+    def test_a_scheduled_job_is_told_how_to_reach_this_room(self):
+        # the no-send rule above must not also silence a cron job, which has no other
+        # way back: hermes deliver has no KakaoTalk target
+        prompt = module.build_prompt([], [], "(없음)", "x", chat_id=4242)
+        self.assertIn("cronjob_manage", prompt)
+        self.assertIn("--send-to 4242", prompt)
 
     def test_default_toolsets_hold_only_names_hermes_accepts(self):
         names = set(module.DEFAULT_CONFIG["toolsets"].split(","))
@@ -434,6 +441,19 @@ class NicknameTests(unittest.TestCase):
 
     def test_a_blank_name_is_nothing(self):
         self.assertIsNone(module.plain_nickname(self.config, "   ", 31))
+
+
+class HermesInvocationTests(unittest.TestCase):
+    def test_the_run_declares_itself_a_gateway_session(self):
+        # without this cronjob_manage is filtered out and `cronjob` in --toolsets is a no-op
+        with mock.patch.object(module.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
+            module.run_hermes(dict(CONFIG, hermes_bin="/bin/true"), "안녕")
+        self.assertEqual(run.call_args.kwargs["env"]["HERMES_GATEWAY_SESSION"], "1")
+        self.assertIn("PATH", run.call_args.kwargs["env"])
+
+    def test_the_scheduler_toolset_is_offered(self):
+        self.assertIn("cronjob", module.DEFAULT_CONFIG["toolsets"].split(","))
 
 
 class AttachmentTests(unittest.TestCase):
