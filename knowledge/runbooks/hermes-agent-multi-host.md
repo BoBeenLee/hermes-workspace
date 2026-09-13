@@ -151,6 +151,14 @@ argument and land as proper YAML. Prefer this over editing `config.yaml` by hand
 v0.21.2 default config is 2138 heavily-commented lines and a YAML round-trip strips
 every comment.
 
+**`config migrate` moves `custom_providers` into `providers`, and it looks like data
+loss.** After migrating to `_config_version` 44, `hermes config get custom_providers`
+answers `Config key not set` — the entries are still there, converted into the v44
+`providers.<name>` shape (`api`, `name`, `models`, `default_model`, `transport`,
+`extra_headers`). Re-adding a legacy `custom_providers:` block after a migrate just
+creates a stale duplicate. Check `hermes config get providers` before concluding
+anything was dropped.
+
 **Do not clone the Mac's `config.yaml`.** The Mac is on v0.20.6 (`_config_version` 39,
 699 lines); the DGX shipped v0.21.2 with sections the older file has never heard of
 (`database`, `runtime`, `prompt_caching`, `telemetry`, …). Port the identity-bearing
@@ -190,6 +198,29 @@ The DGX uses the **default** profile rather than a named one because
 `HERMES_CONFIG` defaults to `~/.hermes/config.yaml`. A named profile on the DGX would
 leave those 40 subcommands talking to an empty default. The alias wrapper supplies the
 name instead.
+
+### Secret Policy: Migration Is The Carve-Out
+
+The rule above ("never copy `~/.hermes/.env`") holds for standing up an *independent*
+host. It does not fit an identity **migration**, which is what dgx-jarvis is: the DGX
+is taking over a Discord identity the Mac already owns, so the two must present the
+same bot token and the same provider keys. For that case the Mac's
+`~/.hermes/profiles/jarvis/.env` was streamed straight into the DGX's
+`~/.hermes/.env` (`ssh src 'cat' | ssh dst 'umask 077; cat > …'`, never landing on the
+operator's laptop), then adjusted on arrival:
+
+- `AGENT_BROWSER_EXECUTABLE_PATH`, `CAMOFOX_PROFILE_DIR`, `SSL_CERT_FILE` all held
+  macOS paths that do not exist on Linux — blanked.
+- `providers.altalt.extra_headers.X-Machine-ID` lives in `config.yaml`, not `.env`, so
+  it is missed by an `.env` copy. Move it separately, and keep it off `argv` (a piped
+  `python3` reading stdin, not `hermes config set` with the value inline).
+
+Verify each rung of the chain afterwards rather than trusting the key list:
+`hermes --provider openrouter|groq|custom:altalt --model <m> -z "Reply with exactly: OK"`.
+Known difference: `groq` answers on the Mac (v0.20.6) and returns
+`Request payload too large (413). Cannot compress further.` on the DGX (v0.21.2), even
+though the DGX has *fewer* skills enabled (0 vs 24). It is a version difference in the
+built-in tool schema, not a porting mistake, and it only costs the third fallback rung.
 
 `mac-jarvis` is the restored `product` profile (deleted 2026-08-29, recovered from
 `~/.hermes/backups/pre-update-2026-08-29-163521.zip`). Two things to know about it: its

@@ -64,18 +64,45 @@ verify-computer-use      exit 2
 doctor.sh                systemd_gateway_active=active / enabled / linger=yes
 ```
 
+## Credentials - 복사로 구성함 (사용자 지시)
+
+런북의 "`.env` 복사 금지" 는 **독립 호스트**를 세울 때의 규칙이다. dgx-jarvis 는
+신원 이전이라 Mac 과 같은 봇 토큰·같은 provider 키를 들어야 한다. 그래서 Mac 의
+`~/.hermes/profiles/jarvis/.env` 를 두 ssh 파이프로 DGX `~/.hermes/.env` 에 직접 흘렸다
+(운영자 랩톱 디스크에 안 떨어뜨림, `umask 077`, 최종 권한 600).
+
+도착 후 조정:
+- `AGENT_BROWSER_EXECUTABLE_PATH`, `CAMOFOX_PROFILE_DIR`, `SSL_CERT_FILE`(`/etc/ssl/cert.pem`)
+  은 Linux 에 없는 macOS 경로라 비웠다.
+- `providers.altalt.extra_headers.X-Machine-ID` 는 `.env` 가 아니라 `config.yaml` 에 있어서
+  `.env` 복사로는 안 따라온다. 별도로, argv 에 노출하지 않고(stdin 을 읽는 python) 옮겼다.
+
+**`config migrate` 가 `custom_providers` 를 `providers` 로 옮긴다.** 옮긴 뒤
+`hermes config get custom_providers` 가 `Config key not set` 이라 답해서 유실처럼 보이는데
+아니다 — v44 의 `providers.<name>` 모양(`api`/`name`/`models`/`default_model`/`transport`)
+으로 변환돼 있다. 모르고 레거시 블록을 다시 넣었다가 중복이 생겨 걷어냈다.
+
+체인 검증 (각 단을 직접 호출):
+
+| provider | 결과 |
+| --- | --- |
+| `custom:llama-local` (primary) | OK |
+| `custom:altalt` | OK — X-Machine-ID 동작 확인 |
+| `openrouter` | OK |
+| `groq` | **413 Request payload too large. Cannot compress further.** |
+
+groq 413 은 DGX 만 그렇다. 같은 키로 Mac(v0.20.6)에서는 OK 가 나오고, DGX 는 스킬이
+오히려 적다(0개 대 24개). v0.21.2 의 내장 툴 스키마 크기 차이로 보이며 fallback 3순위
+하나만 잃는다. 이번 이식이 만든 문제가 아니다.
+
 ## Not Done - 사람이 해야 하는 단계
 
-1. **DGX `~/.hermes/.env` 에 키 입력** (파일 복사 금지, 시크릿 정책).
-   `GEMINI_API_KEY` `GOOGLE_API_KEY` `GROQ_API_KEY` `OPENROUTER_API_KEY`
-   `CLOUDFLARE_ACCOUNT_ID` `CLOUDFLARE_API_TOKEN`, 그리고 altalt 의 `X-Machine-ID`
-   (`hermes config set custom_providers` 로 넣은 항목에 빈 값으로 남겨 뒀다).
-   현재 DGX 는 로컬 LLM 만으로 돌고 fallback 은 전부 미인증 상태다.
-2. **Discord 신원 컷오버.** 순서를 지켜야 한다 — websocket 소비자는 하나여야 한다.
+1. **Discord 신원 컷오버.** 순서를 지켜야 한다 — websocket 소비자는 하나여야 한다.
+   DGX `.env` 에는 토큰과 채널(…3051 / IGNORED …9918)이 **이미 들어 있다.** 겹침을
+   막으려고 DGX 게이트웨이를 내려 둔 상태이므로, 남은 건 순서뿐이다.
    ```bash
    ssh bobeen 'launchctl bootout gui/$(id -u)/ai.hermes.gateway-jarvis'
    ssh bobeen 'launchctl list | grep gateway-jarvis'          # 사라져야 한다
-   # DGX ~/.hermes/.env 에 jarvis 봇 토큰 + HOME/ALLOWED=…3051, IGNORED=…9918
    HERMES_TARGET=config/targets/dgx-spark.env bin/hermes-remote gateway-restart
    ```
    Mac 의 `~/.hermes/profiles/jarvis/` 는 지우지 않는다 — 메신저 비서가 그
@@ -91,6 +118,7 @@ doctor.sh                systemd_gateway_active=active / enabled / linger=yes
   ComfyUI 큐가 비어 있었고 가용 메모리는 115GB 였다.
 - `mac-jarvis` 의 product 봇(`6fd532…`)이 Discord 에서 아직 살아 있는지. 채널을 비워
   뒀으므로 이번에는 드러나지 않는다.
+- DGX 의 `groq` fallback 413. 위 표 참고.
 - 복구된 `skill-sources/hallmark` 는 파일만 있고 `.git` 이 없다 — 백업 zip 이 모든 `.git`
   디렉터리를 제외했다. `check-hallmark-update` 가 그걸 보고한다. `setup-hallmark` 로
   재생성 가능.
@@ -100,7 +128,8 @@ doctor.sh                systemd_gateway_active=active / enabled / linger=yes
 | 대상 | 변경 | 되돌리기 |
 | --- | --- | --- |
 | DGX `~/.hermes` | 신규 설치 (Hermes v0.21.2, node, uv, venv) | `hermes uninstall` 또는 디렉터리 삭제 |
-| DGX `hermes-gateway.service` | user unit 설치·기동·enable | `hermes gateway uninstall` |
+| DGX `hermes-gateway.service` | user unit 설치·enable. **컷오버 전까지 stop 상태** | `hermes gateway uninstall` |
+| DGX `~/.hermes/.env` | Mac jarvis `.env` 복사본 (키 + Discord 토큰·채널) | `.env.bak-pre-jarvis-*` 로 복원 |
 | DGX `llama-local.service` | 기동 (boot enable 은 **안 했다**) | `dgx-ai-control --service llama --action stop` |
 | DGX `~/Workspaces/hermes-workspace` | 클론 | 디렉터리 삭제 |
 | Mac `~/.hermes/profiles/mac-jarvis` | 복구 + 개명 | `hermes profile delete mac-jarvis` |
