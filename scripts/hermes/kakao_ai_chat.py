@@ -775,6 +775,25 @@ def save_name_cache() -> None:
         save_json(NAMES_PATH, IRIS_NAME_CACHE)
 
 
+CIPHERTEXT = re.compile(r"^[A-Za-z0-9+/]{8,}={0,2}$")
+
+
+def plain_nickname(config: dict, raw, enc) -> str | None:
+    """A nickname in the clear. `/query` leaves this column encrypted.
+
+    Only `message` and `attachment` are decrypted on the way out of `/query`, so a
+    nickname arrives as base64 and putting that straight into the prompt is worse
+    than the 알 수 없음 it replaced. Shape-test first: a Korean or punctuated name
+    cannot be base64, so most rows never touch the network.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    name = raw.strip()
+    if not (CIPHERTEXT.match(name) and len(name) % 4 == 0):
+        return name
+    return iris_client(config).decrypt(enc, name, int(config.get("my_user_id") or 0))
+
+
 def learn_room_names(config: dict, chat_id: int) -> None:
     """Pull whatever nicknames KakaoTalk has cached for this open chat.
 
@@ -787,13 +806,16 @@ def learn_room_names(config: dict, chat_id: int) -> None:
     with contextlib.suppress(Exception):
         rows = backend_query(
             config,
-            "SELECT user_id, nickname FROM open_chat_member "
+            "SELECT user_id, nickname, enc FROM open_chat_member "
             f"WHERE involved_chat_id = {int(chat_id)}",
-            ("user_id", "nickname"),
+            ("user_id", "nickname", "enc"),
         )
-        for user_id, nickname in rows:
-            if user_id and isinstance(nickname, str) and nickname.strip():
-                IRIS_NAME_CACHE.setdefault(str(user_id), nickname.strip())
+        for user_id, nickname, enc in rows:
+            if not user_id or str(user_id) in IRIS_NAME_CACHE:
+                continue
+            name = plain_nickname(config, nickname, enc)
+            if name:
+                IRIS_NAME_CACHE[str(user_id)] = name
 
 # Live rows arrive on the push feed, which hands over a whole decrypted row, so the
 # tick drains this instead of polling. It starts empty, which means a daemon that

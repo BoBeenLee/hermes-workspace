@@ -406,6 +406,36 @@ class SpeakerTests(unittest.TestCase):
         self.assertEqual(module.speaker_for({"message": "안녕", "author_id": 11}, self.config), "조창희")
 
 
+class NicknameTests(unittest.TestCase):
+    """`/query` leaves nickname encrypted; base64 in the prompt is worse than 알 수 없음."""
+
+    def setUp(self):
+        self.config = dict(CONFIG, backend="iris", my_user_id=ME)
+
+    def test_a_plain_name_never_hits_the_network(self):
+        with mock.patch.object(module, "iris_client") as client:
+            self.assertEqual(module.plain_nickname(self.config, "오민영", 31), "오민영")
+            client.assert_not_called()
+
+    def test_a_ciphertext_name_is_decrypted(self):
+        with mock.patch.object(module, "iris_client") as client:
+            client.return_value.decrypt.return_value = "조창희"
+            self.assertEqual(
+                module.plain_nickname(self.config, "jsEp4CHd4XNDWhFZpwdjXA==", 31), "조창희"
+            )
+            client.return_value.decrypt.assert_called_once_with(
+                31, "jsEp4CHd4XNDWhFZpwdjXA==", ME
+            )
+
+    def test_an_undecryptable_name_is_dropped_not_shown(self):
+        with mock.patch.object(module, "iris_client") as client:
+            client.return_value.decrypt.return_value = None
+            self.assertIsNone(module.plain_nickname(self.config, "jsEp4CHd4XNDWhFZpwdjXA==", 31))
+
+    def test_a_blank_name_is_nothing(self):
+        self.assertIsNone(module.plain_nickname(self.config, "   ", 31))
+
+
 class AttachmentTests(unittest.TestCase):
     """The outbox fence is load-bearing: open-chat text reaches the model as context."""
 

@@ -104,6 +104,23 @@ class IrisClient:
             raise IrisError(f"Iris reply refused: {str(payload)[:300]}")
         return payload
 
+    def decrypt(self, enc, ciphertext: str, user_id) -> str | None:
+        """One KakaoTalk field in the clear, or None when Iris cannot unlock it.
+
+        `/query` only decrypts `message` and `attachment`. Every other encrypted
+        column - `open_chat_member.nickname` above all - comes back as base64 and has
+        to come through here. The salt is the *viewer's* user id, not the row's.
+        """
+        try:
+            payload = self._post(
+                "/decrypt",
+                {"enc": int(enc or 0), "b64_ciphertext": ciphertext, "user_id": int(user_id)},
+            )
+        except IrisError:
+            return None
+        plain = payload.get("plain_text")
+        return plain if isinstance(plain, str) and plain else None
+
     def reply_images(self, chat_id, images: list[str]) -> dict:
         """Queue one or more base64 images. Queued is not delivered - read it back.
 
