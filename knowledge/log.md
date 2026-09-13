@@ -2,6 +2,9 @@
 
 ## 2026-09-13
 
+- Renamed the KakaoTalk skill repo to `kakaotalk-message-skill` (GitHub and local) now that it covers both platforms, and pointed the canonical-doc reference in this log at the new path. Nothing on the default macOS target had to change: it holds no clone of that repo and no `~/.openhuman/skills/`, and the deployed MCP servers under `~/.hermes/mcp-servers/` keep their names.
+- Added a Linux backend to that skill, covering the redroid plus Iris path built here, with a backend-selection section at the top of `SKILL.md` because most of the macOS guidance does not apply. The skill directory and the `openhuman-kakaotalk-mac` server name were deliberately left alone, since both are deployed identifiers and renaming them belongs with the Hermes config change.
+
 - Made the Android container a first-class service in the DGX AI Control app (`~/src/dgx-ai-control`, commit `07217a8`): Start / Stop / Restart / Logs plus `--android start|stop|restart|status`, with the binder prep, container start, boot wait and Iris launch behind one action. Measured ~9s to start, ~10s to stop.
 - Restyled that app, which had no styling at all, and recorded the reasoning in its own `PRODUCT.md` and `DESIGN.md`. It is light rather than dark because it is seen over RDP inside a macOS window, where compression bands dark tonal steps.
 
@@ -53,7 +56,7 @@
 ## 2026-07-05
 
 - Moved the detailed KakaoTalk Mac MCP runbook to the canonical skill repo:
-  `/Users/mac_al03241161/Documents/mygit/kakaotalk-mac-message-list-skill/docs/hermes/kakaotalk-mac-mcp.md`.
+  `/Users/mac_al03241161/Documents/mygit/kakaotalk-message-skill/docs/hermes/kakaotalk-mac-mcp.md`.
 - Verified direct Discord mention-based KakaoTalk MCP lookup through Jarvis with KST timestamps, after adding short-lived cache fallback guidance.
 - Recorded the Jarvis Discord KakaoTalk timeout incident, root cause, bounded MCP scan behavior, and recovery verification.
 - Documented Hermes Mac Manager power schedule controls, including default-disabled behavior, `pmset` effects, the keep-awake LaunchAgent, and review-required safety notes.
