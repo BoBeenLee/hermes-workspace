@@ -2,6 +2,10 @@
 
 ## 2026-09-13
 
+- **Completed the round trip: Iris sends as well as reads.** `POST /reply` delivered a message into the target room, and it came back through the observer as a new `chat_logs` row (253 → 254), confirmed on screen.
+- Resolved the `NotificationReferer` question: KakaoTalk 26.7.2 still writes the key, and it overwrote the injected placeholder with a real ~20-character token the moment an incoming message from another party raised a notification. No version incompatibility. Iris reads it once at startup, so it needs a restart whenever the referer changes.
+- Recorded that Iris `/reply` returns `{"success":true}` merely for queuing the intent — with a bogus referer it says the same and nothing is sent, so sends must be verified against `chat_logs`, not the response body.
+
 - **Ported the read half of the KakaoTalk assistant to the DGX.** Iris v0.32 runs in the redroid container and forwards live decrypted messages: a phone-sent `123` went KakaoTalk → encrypted DB → DBObserver → decrypted → HTTP, with `chat_logs` going 251 → 252. Recorded as [Iris On DGX](runbooks/iris-on-dgx.md).
 - Two non-obvious blockers: `docker exec` has no Android environment so `app_process` exits silently (replicate it from `/proc/$(pidof system_server)/environ`, skipping `ANDROID_SOCKET_*`), and `Main.kt:18` reads `NotificationReferer` before anything else and kills the whole process when it is absent — even though only the send path uses it.
 - The send path is left inert on purpose by injecting a bogus `NotificationReferer`, so nothing can leave the container by accident. A real referer needs an incoming notification from another party, which a self-sent message never produces.

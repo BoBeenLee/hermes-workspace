@@ -84,8 +84,13 @@ cp $F $F.bak-iris-poc
 sed -i 's#</map>#    <string name="NotificationReferer">iris-poc-placeholder</string>\n</map>#' $F
 ```
 
-**Keep the value bogus on purpose.** The send path then cannot work, so no message can leave the
-container by accident. Swap in a real referer only when sending is actually intended.
+A bogus value keeps the send path inert, which is a useful safety default while validating
+reads — nothing can leave the container by accident.
+
+**KakaoTalk overwrites the placeholder with a real referer the moment it handles an incoming
+notification from another party** (a ~20-character token). Version 26.7.2 still uses this key, so
+the placeholder is a bootstrap, not a permanent patch. Once a real value lands, **restart Iris** —
+`readNotificationReferer()` runs once at startup and the process keeps the old value in memory.
 
 `PathUtils.getAppPath()` logging `/data_mirror/data_ce/null/0/com.kakao.talk/` is **not** a bug —
 `null` is the internal-storage volume UUID and the path resolves to the same inode as
@@ -108,8 +113,24 @@ any external interface.
 
 That is structural parity with `kakaocli`: encrypted DB in, structured decrypted events out.
 
+## Verified Send Path
+
+Once a real referer was in place and Iris restarted, `POST /reply` with
+`{"type":"text","room":"<chatId>","data":"..."}` delivered a message that appeared in KakaoTalk,
+reached the server, and came back through the observer loop as a new `chat_logs` row
+(253 → 254). Confirmed on screen in the target room.
+
+`Replier.sendMessageInternal` does this by firing an intent at
+`com.kakao.talk/.notification.NotificationActionService` with action
+`com.kakao.talk.notification.REPLY_MESSAGE`, carrying `noti_referer`, `chat_id`, and the text in
+a RemoteInput results bundle — it is the notification inline-reply path, which is why the referer
+gates it.
+
+**`/reply` returning `{"success":true}` does not mean the message was sent.** It only confirms
+Iris queued the intent; with a bogus referer it returns the same thing and nothing leaves. Verify
+against `chat_logs` or the observer loop-back, never against the response body.
+
 ## Not Verified
 
-- **Sending.** Blocked by the placeholder referer, by design. Getting a real one needs an actual incoming notification from another party.
-- **Long-run stability**, reconnect behaviour, and what happens when KakaoTalk rewrites `shared_prefs` and drops the injected key.
-- Iris v0.32 predates KakaoTalk 26.7.2, so the referer key may have moved or been removed upstream rather than merely being unwritten. A real incoming notification would settle it.
+- **Long-run stability**, reconnect behaviour, and whether an injected or stale referer survives KakaoTalk rewriting `shared_prefs`. Since the referer is issued per notification handling, expect it to rotate and plan an Iris restart around that.
+- Whether upstream redroid breaking on a kernel update takes this stack with it.
