@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Iris HTTP/WebSocket client - the Linux counterpart of kakaocli + kmsg.
+
+Iris runs inside the redroid Android container and exposes KakaoTalk's own
+SQLite database over HTTP. It replaces two macOS binaries at once:
+
+    kakaocli query <sql>   ->  POST /query
+    kmsg send --chat-id    ->  POST /reply
+
+Two things about it decide how callers must be written.
+
+**`/reply` returning success does not mean the message was sent.** Iris only
+confirms it queued an Android intent; with a stale `NotificationReferer` it
+returns the same payload and nothing leaves the device. Verify against
+`chat_logs`, never against the response body.
+
+**`/query` reaches KakaoTalk.db only.** `chat_logs`, `chat_rooms` and
+`open_chat_member` are there; the `friends` table that maps a user id to a
+display name lives in KakaoTalk2.db, which Iris does not attach. Sender names
+therefore cannot be joined in SQL - they arrive on the `/ws` push feed, which
+Iris resolves itself. That is what `watch_names` is for.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+import time
+import urllib.error
+import urllib.request
+
+DEFAULT_BASE_URL = "http://172.17.0.2:3000"
+DEFAULT_TIMEOUT_SECONDS = 20.0
+
+
+class IrisError(RuntimeError):
+    pass
+
+
+class IrisClient:
+    def __init__(self, base_url: str = DEFAULT_BASE_URL, timeout: float = DEFAULT_TIMEOUT_SECONDS):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    def _post(self, path: str, payload: dict) -> dict:
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                body = response.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            raise IrisError(f"Iris {path} HTTP {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise IrisError(f"Iris {path} unreachable: {exc.reason}") from exc
+        try:
+            return json.loads(body or "{}")
+        except json.JSONDecodeError as exc:
+            raise IrisError(f"Iris {path} returned non-JSON: {body[:200]}") from exc
+
+    def health(self) -> bool:
+        try:
+            with urllib.request.urlopen(f"{self.base_url}/dashboard", timeout=self.timeout) as r:
+                return r.status == 200
+        except OSError:
+            return False
+
+    def query(self, sql: str) -> list[dict]:
+        payload = self._post("/query", {"query": sql})
+        if payload.get("status") is False:
+            raise IrisError(f"Iris query rejected: {str(payload.get('message'))[:300]}")
+        data = payload.get("data")
+        return data if isinstance(data, list) else []
+
+    def query_rows(self, sql: str, columns: tuple[str, ...]) -> list[list]:
+        """Positional rows, so callers can keep using a zip-into-dict helper.
+
+        Iris answers with dicts keyed by the SELECT alias; everything upstream of
+        this was written against kakaocli's positional output.
+        """
+        return [[row.get(name) for name in columns] for row in self.query(sql)]
+
+    def reply(self, chat_id, text: str) -> dict:
+        """Queue one text message. Success here is not delivery - read it back."""
+        payload = self._post("/reply", {"type": "text", "room": str(chat_id), "data": text})
+        if payload.get("success") is not True:
+            raise IrisError(f"Iris reply refused: {str(payload)[:300]}")
+        return payload
+
+    def watch_names(self, cache: dict, stop: threading.Event | None = None) -> threading.Thread:
+        """Fill `cache` with user_id -> sender name from the push feed, in a daemon thread.
+
+        Names exist nowhere else reachable (see the module docstring), and a miss
+        is not fatal: callers already fall back to an unknown-speaker label.
+        """
+        thread = threading.Thread(
+            target=self._watch_names_loop, args=(cache, stop), name="iris-names", daemon=True
+        )
+        thread.start()
+        return thread
+
+    def _watch_names_loop(self, cache: dict, stop: threading.Event | None) -> None:
+        url = self.base_url.replace("http://", "ws://", 1).replace("https://", "wss://", 1) + "/ws"
+        while stop is None or not stop.is_set():
+            try:
+                import websockets.sync.client as ws_client
+
+                with ws_client.connect(url, open_timeout=10) as socket:
+                    while stop is None or not stop.is_set():
+                        record_names(cache, socket.recv(timeout=30))
+            except Exception:
+                # The feed is best-effort garnish on top of the polled messages.
+                # Never let it take the daemon down; just back off and retry.
+                time.sleep(5)
+
+
+def record_names(cache: dict, raw) -> None:
+    """Pull user_id -> sender out of one push frame. Tolerates shape drift."""
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", "replace")
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError:
+        return
+    if not isinstance(payload, dict):
+        return
+    sender = payload.get("sender")
+    raw_row = payload.get("raw") if isinstance(payload.get("raw"), dict) else payload
+    user_id = raw_row.get("user_id") if isinstance(raw_row, dict) else None
+    if user_id in (None, "") or not isinstance(sender, str) or not sender.strip():
+        return
+    cache[str(user_id)] = sender.strip()
+
+
+def demo() -> None:
+    """Self-check for the parts that do not need a live Iris."""
+    cache: dict = {}
+
+    record_names(cache, json.dumps({"sender": "조창희", "raw": {"user_id": 993369}}))
+    assert cache == {"993369": "조창희"}, cache
+
+    # flat shape, no nested raw
+    record_names(cache, json.dumps({"sender": "Iris", "user_id": "502396"}))
+    assert cache["502396"] == "Iris", cache
+
+    # frames with nothing usable must not raise or pollute the cache
+    for junk in ("not json", json.dumps({"sender": "  "}), json.dumps([1, 2]),
+                 json.dumps({"raw": {"user_id": 7}}), b'{"sender":"X","raw":{"user_id":8}}'):
+        record_names(cache, junk)
+    assert "7" not in cache and cache.get("8") == "X", cache
+
+    assert IrisClient("http://example.invalid:3000/").base_url == "http://example.invalid:3000"
+
+    # query_rows must project in the caller's column order, missing keys as None
+    class FakeClient(IrisClient):
+        def query(self, sql: str) -> list[dict]:
+            return [{"b": 2, "a": 1}]
+
+    assert FakeClient().query_rows("select 1", ("a", "b", "c")) == [[1, 2, None]]
+
+    print("iris_client demo ok")
+
+
+if __name__ == "__main__":
+    demo()

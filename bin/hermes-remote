@@ -57,6 +57,10 @@ fi
 : "${HERMES_LLM_BASE_URL:=}"
 : "${HERMES_LLM_MODEL:=}"
 : "${HERMES_LLM_CONTEXT_LENGTH:=65536}"
+# Desktop for computer_use. Injected as DISPLAY/XAUTHORITY into every remote call:
+# a non-interactive SSH session has neither, so cua-driver would find no display.
+: "${HERMES_REMOTE_DISPLAY:=}"
+: "${HERMES_REMOTE_XAUTHORITY:=}"
 : "${HERMES_SSH_KEY:=}"
 
 RESEARCH_INTEL_SCRIPT="$ROOT_DIR/scripts/hermes/research_intel.py"
@@ -75,7 +79,7 @@ scp_remote() {
 }
 
 remote_bash() {
-  ssh_remote "PATH='$HERMES_REMOTE_PATH' HERMES_REMOTE_HOST='$HERMES_REMOTE_HOST' HERMES_REMOTE_HOME='$HERMES_REMOTE_HOME' HERMES_REMOTE_OS='$HERMES_REMOTE_OS' HERMES_SERVICE_MANAGER='$HERMES_SERVICE_MANAGER' HERMES_COMPUTER_USE_BACKEND='$HERMES_COMPUTER_USE_BACKEND' HERMES_BIN='$HERMES_BIN' CUA_BIN='$CUA_BIN' HERMES_CONFIG='$HERMES_CONFIG' HERMES_REMOTE_WORKSPACE='$HERMES_REMOTE_WORKSPACE' ANTIGRAVITY_BIN='$ANTIGRAVITY_BIN' ANTIGRAVITY_ARTIFACT_ROOT='$ANTIGRAVITY_ARTIFACT_ROOT' TMUX_BIN='$TMUX_BIN' HERMES_NODE_BIN='$HERMES_NODE_BIN' HERMES_LLM_PROVIDER='$HERMES_LLM_PROVIDER' HERMES_LLM_BASE_URL='$HERMES_LLM_BASE_URL' HERMES_LLM_MODEL='$HERMES_LLM_MODEL' HERMES_LLM_CONTEXT_LENGTH='$HERMES_LLM_CONTEXT_LENGTH' bash -s"
+  ssh_remote "PATH='$HERMES_REMOTE_PATH' HERMES_REMOTE_HOST='$HERMES_REMOTE_HOST' HERMES_REMOTE_HOME='$HERMES_REMOTE_HOME' HERMES_REMOTE_OS='$HERMES_REMOTE_OS' HERMES_SERVICE_MANAGER='$HERMES_SERVICE_MANAGER' HERMES_COMPUTER_USE_BACKEND='$HERMES_COMPUTER_USE_BACKEND' HERMES_BIN='$HERMES_BIN' CUA_BIN='$CUA_BIN' HERMES_CONFIG='$HERMES_CONFIG' HERMES_REMOTE_WORKSPACE='$HERMES_REMOTE_WORKSPACE' ANTIGRAVITY_BIN='$ANTIGRAVITY_BIN' ANTIGRAVITY_ARTIFACT_ROOT='$ANTIGRAVITY_ARTIFACT_ROOT' TMUX_BIN='$TMUX_BIN' HERMES_NODE_BIN='$HERMES_NODE_BIN' HERMES_LLM_PROVIDER='$HERMES_LLM_PROVIDER' HERMES_LLM_BASE_URL='$HERMES_LLM_BASE_URL' HERMES_LLM_MODEL='$HERMES_LLM_MODEL' HERMES_LLM_CONTEXT_LENGTH='$HERMES_LLM_CONTEXT_LENGTH' DISPLAY='$HERMES_REMOTE_DISPLAY' XAUTHORITY='$HERMES_REMOTE_XAUTHORITY' bash -s"
 }
 
 require_arg() {
@@ -150,8 +154,25 @@ redact_url() {
   printf '%s' "$1" | sed -E 's#(https?://)[^/@]+@#\1***@#; s#\?.*##'
 }
 
+# cua-driver is cross-platform (macOS, Windows, Linux); the backend decides, not the OS.
+# Upstream's own valid values are cua / cua-driver / "" / noop - "none" is not one of them
+# and raises RuntimeError if it ever reaches the agent process.
 supports_computer_use() {
-  [[ "$HERMES_REMOTE_OS" == "macos" && "$HERMES_COMPUTER_USE_BACKEND" == "cua-driver" ]]
+  [[ "$HERMES_COMPUTER_USE_BACKEND" == "cua-driver" ]]
+}
+
+# TCC is macOS-only. Linux grants nothing and needs nothing granted.
+computer_use_needs_permission_grant() {
+  [[ "$HERMES_REMOTE_OS" == "macos" ]]
+}
+
+# ssh_remote() sends no environment, unlike remote_bash(). Desktop tools need the
+# display named explicitly or they attach to nothing.
+display_env_prefix() {
+  local prefix=""
+  [[ -n "$HERMES_REMOTE_DISPLAY" ]] && prefix+="DISPLAY=$(quote_value "$HERMES_REMOTE_DISPLAY") "
+  [[ -n "$HERMES_REMOTE_XAUTHORITY" ]] && prefix+="XAUTHORITY=$(quote_value "$HERMES_REMOTE_XAUTHORITY") "
+  printf '%s' "$prefix"
 }
 
 require_computer_use_target() {
@@ -163,7 +184,9 @@ computer_use is unsupported for this target.
   HERMES_REMOTE_OS=$HERMES_REMOTE_OS
   HERMES_COMPUTER_USE_BACKEND=$HERMES_COMPUTER_USE_BACKEND
 
-Use a macOS target with HERMES_COMPUTER_USE_BACKEND=cua-driver for CuaDriver desktop control.
+Set HERMES_COMPUTER_USE_BACKEND=cua-driver on a target whose host has cua-driver
+installed and a reachable desktop. Linux needs DISPLAY plus AT-SPI; "noop" is the
+off switch upstream understands.
 EOF
   exit 2
 }
@@ -241,7 +264,7 @@ hostname
 whoami
 date
 test -x "$HERMES_BIN" && "$HERMES_BIN" --version || true
-if test "$HERMES_REMOTE_OS" = "macos" && test "$HERMES_COMPUTER_USE_BACKEND" = "cua-driver"; then
+if test "$HERMES_COMPUTER_USE_BACKEND" = "cua-driver"; then
   test -x "$CUA_BIN" && "$CUA_BIN" --version || true
 fi
 REMOTE
@@ -262,12 +285,18 @@ echo
 echo '== gateway =='
 "$HERMES_BIN" gateway status
 echo
-if test "${HERMES_REMOTE_OS:-}" = "macos" && test "${HERMES_COMPUTER_USE_BACKEND:-}" = "cua-driver"; then
+if test "${HERMES_COMPUTER_USE_BACKEND:-}" = "cua-driver"; then
   echo '== computer_use =='
   "$HERMES_BIN" computer-use status
   echo
-  echo '== cua permissions =='
-  "$CUA_BIN" permissions status
+  if test "${HERMES_REMOTE_OS:-}" = "macos"; then
+    echo '== cua permissions =='
+    "$CUA_BIN" permissions status
+  else
+    echo '== display =='
+    echo "DISPLAY=${DISPLAY:-unset} XAUTHORITY=${XAUTHORITY:-unset}"
+    "$CUA_BIN" doctor 2>&1 | grep -Ei 'display server|X11 connection|AT-SPI' || true
+  fi
 else
   echo '== computer_use =='
   echo "unsupported for target: os=${HERMES_REMOTE_OS:-unknown} backend=${HERMES_COMPUTER_USE_BACKEND:-unknown}"
@@ -286,7 +315,7 @@ REMOTE
 
 setup_computer_use() {
   require_computer_use_target
-  ssh_remote "'$HERMES_BIN' computer-use install || true"
+  ssh_remote "$(display_env_prefix)'$HERMES_BIN' computer-use install || true"
 
   remote_bash <<'REMOTE'
 set -euo pipefail
@@ -327,7 +356,19 @@ def find_top_level(name):
             return i
     return -1
 
-if "  cua-driver:" not in text:
+def entry_span(header):
+    """Line range of a two-space-indented mcp_servers entry."""
+    try:
+        start = lines.index(header)
+    except ValueError:
+        return None
+    end = start + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end].startswith("    ")):
+        end += 1
+    return start, end
+
+span = entry_span("  cua-driver:")
+if span is None:
     block = [
         "mcp_servers:",
         "  cua-driver:",
@@ -344,6 +385,36 @@ if "  cua-driver:" not in text:
                 insert_at = i + 1
                 break
         lines[insert_at:insert_at] = block
+else:
+    # An entry already there may name another platform's path, or be switched off.
+    # Repair it rather than skipping, or `hermes mcp test` keeps chasing a stale binary.
+    start, end = span
+    saw_command = saw_enabled = False
+    for i in range(start + 1, end):
+        stripped = lines[i].strip()
+        if stripped.startswith("command:"):
+            lines[i] = f'    command: "{cua_bin}"'
+            saw_command = True
+        elif stripped.startswith("enabled:"):
+            lines[i] = "    enabled: true"
+            saw_enabled = True
+    if not saw_command:
+        lines[start + 1:start + 1] = [f'    command: "{cua_bin}"']
+        end += 1
+    if not saw_enabled:
+        lines[end:end] = ["    enabled: true"]
+
+# A toolset listed under agent.disabled_toolsets stays off no matter what
+# mcp_servers says, so clear it here too.
+for i, line in enumerate(lines):
+    if line.strip().startswith("disabled_toolsets:") and "computer_use" in line:
+        lines[i] = line.replace('"computer_use"', "").replace("'computer_use'", "")
+        lines[i] = lines[i].replace("computer_use", "").replace(", ,", ",").replace("[, ", "[").replace(", ]", "]")
+    elif line.strip() == "- computer_use" and any(
+        lines[j].strip().startswith("disabled_toolsets:") for j in range(max(0, i - 6), i)
+    ):
+        lines[i] = None
+lines = [l for l in lines if l is not None]
 
 tool_idx = find_top_level("toolsets")
 if tool_idx < 0:
@@ -370,17 +441,31 @@ REMOTE
 
 grant_computer_use() {
   require_computer_use_target
-  ssh_remote "'$CUA_BIN' permissions grant"
+  if ! computer_use_needs_permission_grant; then
+    echo "No permission grant needed on $HERMES_REMOTE_OS: TCC is macOS-only."
+    echo "Readiness is driver health instead - run verify-computer-use."
+    return 0
+  fi
+  ssh_remote "$(display_env_prefix)'$CUA_BIN' permissions grant"
 }
 
 verify_computer_use() {
   require_computer_use_target
+  local start_daemon permissions_probe
+  if computer_use_needs_permission_grant; then
+    # LaunchServices start, so the daemon carries the CuaDriver bundle identity
+    # that the TCC grants are attached to.
+    start_daemon="open -n -g -a CuaDriver --args serve"
+    permissions_probe="echo '== permissions =='; '$CUA_BIN' permissions status; echo"
+  else
+    start_daemon="nohup '$CUA_BIN' serve >/tmp/cua-driver-serve.log 2>&1 &"
+    permissions_probe="echo '== display =='; '$CUA_BIN' doctor 2>&1 | grep -Ei 'display server|X11 connection|AT-SPI'; echo"
+  fi
   ssh_remote "set +e
-open -n -g -a CuaDriver --args serve
-sleep 2
-echo '== permissions =='
-'$CUA_BIN' permissions status
-echo
+export $(display_env_prefix)
+$start_daemon
+sleep 3
+$permissions_probe
 echo '== check_permissions =='
 '$CUA_BIN' check_permissions
 echo
@@ -1501,12 +1586,16 @@ run_prompt() {
     echo "prompt required" >&2
     exit 2
   fi
+  # The agent spawns cua-driver itself, so the display has to reach the agent
+  # process - not just this ssh call.
+  local env_prefix
+  env_prefix="$(display_env_prefix)"
   if [[ -n "${HERMES_RUN_TOOLSETS:-}" ]]; then
-    ssh_remote "'$HERMES_BIN' -t $(printf '%q' "$HERMES_RUN_TOOLSETS") -z $(printf '%q' "$prompt")"
+    ssh_remote "$env_prefix'$HERMES_BIN' -t $(printf '%q' "$HERMES_RUN_TOOLSETS") -z $(printf '%q' "$prompt")"
   elif supports_computer_use; then
-    ssh_remote "'$HERMES_BIN' -t computer_use -z $(printf '%q' "$prompt")"
+    ssh_remote "$env_prefix'$HERMES_BIN' -t computer_use -z $(printf '%q' "$prompt")"
   else
-    ssh_remote "'$HERMES_BIN' -z $(printf '%q' "$prompt")"
+    ssh_remote "$env_prefix'$HERMES_BIN' -z $(printf '%q' "$prompt")"
   fi
 }
 
