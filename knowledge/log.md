@@ -2,6 +2,9 @@
 
 ## 2026-09-13
 
+- Installed and launched KakaoTalk 26.7.2 inside the DGX redroid container. It reaches a clean login screen on an uncertified, rooted Android, `KakaoTalk.db` and `KakaoTalk2.db` are present, and the window exposes a 124-line view hierarchy. Play Integrity did not block it. The run was stopped at the login screen so no device slot was consumed.
+- Sourced the app as Play splits pulled from the operator's own Galaxy S25 Ultra over ADB rather than from a third-party mirror, and recorded that `pm install-multiple` does not exist on the redroid image — a `pm install-create` session is required.
+
 - Built and verified a redroid Android 14 container on the DGX Spark: boots in 10 seconds, `arm64-v8a` native, with input injection, `screencap`, `dumpsys` view hierarchy, `sqlite3`, and loopback ADB. Recorded as [DGX Android Container](runbooks/dgx-android-container.md).
 - **Incident:** the first container hard-reset the DGX at 19:44:34. Android `init` reboots on early-boot failure, and `--privileged` grants `CAP_SYS_BOOT` with seccomp unconfined, so the reboot reached the host. No work was lost (ComfyUI queue was empty, zero failed units after boot). `--cap-drop=SYS_BOOT` does not work under `--privileged`; an explicit `--security-opt seccomp=` profile does, and is now mandatory for this container.
 - Found that `--device` cannot pass binderfs nodes into a container (mknod loses the binderfs inode, giving EACCES/ENXIO); a `-v` bind mount of the node works, and the nodes must be `chmod 0666` because Android services are not root.

@@ -131,6 +131,32 @@ via `app_process`, or as `cmd uiautomator` (`Can't find service: uiautomator`). 
 `dumpsys activity top` for the view hierarchy, or drive uiautomator over ADB from a client
 such as uiautomator2.
 
+## Installing A Play-Distributed App
+
+Play ships App Bundles, so an app is a set of splits rather than one APK. Pull them from a
+device that already has it, which also keeps provenance clean:
+
+```bash
+adb shell pm path com.kakao.talk        # base.apk + split_config.* + feature splits
+adb pull <each> ./apk/
+scp ./apk/*.apk dgx:~/redroid-poc/data64/apk/     # the /data bind mount, no docker cp needed
+```
+
+`pm install-multiple` **does not exist** on this image (`Unknown command`). Use a session:
+
+```bash
+docker exec redroid-poc sh -c '
+SID=$(pm install-create -r -t | sed "s/.*\[\([0-9]*\)\].*/\1/")
+for f in /data/apk/*.apk; do
+  pm install-write -S $(stat -c%s $f) $SID $(basename $f) $f
+done
+pm install-commit $SID'
+```
+
+Benign noise during first launch: `vold: Failed to set project id ...` (project quotas are not
+available on the bind-mounted `/data`) and `VerityUtils: Failed to measure fs-verity`. Neither
+blocks the app.
+
 ## Verified Control Surface
 
 | Check | Result |

@@ -106,3 +106,32 @@ systemd 종료 시퀀스 없이 크래시 루프 로그 도중에 끊긴다. 원
 
 컨테이너는 된다. 카카오톡은 여전히 **기기 슬롯**에서 막힌다. 별도 번호/계정이 없으면
 로그인하는 순간 폰이 밀려난다.
+
+## Addendum 2: 카카오톡 설치·실행 (사용자 승인 후)
+
+**로그인은 하지 않았다.** 기기 슬롯 미소모.
+
+조달: 서드파티 미러를 쓰지 않고 사용자 본인 Galaxy S25 Ultra(SM-S938N, Android 16)에서
+ADB로 split 8개를 받았다. 26.7.2, `minSdk=32`, `primaryCpuAbi=arm64-v8a`, 370MB.
+
+설치: `pm install-multiple`은 이미지에 없다(`Unknown command`).
+`pm install-create` → `install-write` ×8 → `install-commit` → `Success`.
+
+실행 결과:
+
+| 확인 | 결과 |
+| --- | --- |
+| 프로세스 | 생존 (pid 1979) |
+| 포커스 창 | `com.kakao.talk.activity.authenticator.auth.AuthenticatorActivity` |
+| 화면 | 정상 렌더링된 로그인 화면 (스크린샷 확보) |
+| 루팅/무결성 차단 | **없음.** `integrity` 매칭 로그 2건은 플랫폼 `FileIntegrity.setUpFsVerity`로 앱 어테스테이션과 무관 |
+| `/data/data/com.kakao.talk/databases` | `KakaoTalk.db`, `KakaoTalk2.db` 존재 — Iris가 읽는 그 파일 |
+| 뷰 계층 | 124줄 (`dumpsys activity top`) |
+
+무해한 노이즈: `vold: Failed to set project id`(바인드 마운트 `/data`에 project quota 없음),
+`VerityUtils: Failed to measure fs-verity`.
+
+### 결론 갱신
+
+기술적 경로는 **로그인 직전까지 전부 검증됐다.** 남은 차단 요인은 하나뿐이다 — 기기 슬롯.
+별도 번호/계정이 생기면 그다음은 Iris 이식 작업이고, 없으면 여기가 끝이다.

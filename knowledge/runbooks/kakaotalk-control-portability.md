@@ -79,10 +79,26 @@ DGX in 10 seconds, `arm64-v8a` native, with input injection, screenshots, view-h
 host on the first attempt. The recipe and the hazards are in
 [DGX Android Container](dgx-android-container.md).
 
-Two results from that PoC constrain a KakaoTalk port:
+**KakaoTalk itself was then installed and launched in that container on 2026-09-13.** Version
+26.7.2 (`minSdk=32`, eight splits, `primaryCpuAbi=arm64-v8a`), pulled from the operator's own
+Galaxy S25 Ultra over ADB and installed with a `pm install-create` session. It starts, survives,
+and reaches `AuthenticatorActivity` — a clean, fully rendered login screen.
 
-- `ro.product.cpu.abilist` is `arm64-v8a` **only** — GB10 has no AArch32, so the KakaoTalk APK must ship 64-bit native libraries.
-- upstream redroid does not support binderfs kernels, so this stack is unsupported configuration that a kernel update can break at any time.
+Everything a port would need is therefore confirmed present:
+
+| Check | Result |
+| --- | --- |
+| Launch under an uncertified, rooted Android | **Not blocked.** The only `integrity`-matching log lines are the platform's own `FileIntegrity.setUpFsVerity`, unrelated to app attestation |
+| `/data/data/com.kakao.talk/databases` | `KakaoTalk.db`, `KakaoTalk2.db` present — the exact files an Iris-style observer reads |
+| View hierarchy of the KakaoTalk window | 124 lines via `dumpsys activity top` |
+| ABI | `arm64-v8a` native, no translation layer |
+
+Two caveats remain on the container itself: `ro.product.cpu.abilist` is `arm64-v8a` alone, so an
+app with 32-bit-only native libraries would not run; and upstream redroid does not support
+binderfs kernels, so this stack is unsupported configuration that a kernel update can break.
+
+**The run was stopped at the login screen deliberately.** Signing in is the step that consumes a
+device slot, and nothing past that point was tested.
 
 [Iris](https://github.com/dolidolih/Iris) is the Android counterpart of the current Mac
 stack: it polls KakaoTalk's Android SQLite `chat_logs`, decrypts the encrypted fields,
