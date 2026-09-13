@@ -57,7 +57,7 @@ checkout의 `git rev-list`로만 드러났다. 버전 판단을 `hermes version`
 - 실제 diff는 `_config_version: 37` → `39` 한 줄뿐. 구조 변경 없음.
 - 검증: `hermes doctor` → `✓ Config version up to date (v39)`, 잔여 이슈 0건.
 - 경고 3건(`platform 'cli'/'discord' references unknown toolset 'antigravity-worker'`,
-  `'openhuman-kakaotalk-mac'`)은 `knowledge/runbooks/platform-toolsets-validation-warning.md`에
+  `'openhuman-kakaotalk'`)은 `knowledge/runbooks/platform-toolsets-validation-warning.md`에
   기록된 알려진 false positive. 조치 없음.
 - config 변경이 버전 필드뿐이라 gateway 재시작은 생략했다.
 

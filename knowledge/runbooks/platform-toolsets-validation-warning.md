@@ -15,11 +15,11 @@ timestamp: 2026-08-17T13:00:00+09:00
 
 ```text
 ⚠ platform 'cli' references unknown toolset 'antigravity-worker' — did you mean 'hermes-cli'?
-⚠ platform 'cli' references unknown toolset 'openhuman-kakaotalk-mac' — did you mean 'hermes-cli'?
+⚠ platform 'cli' references unknown toolset 'openhuman-kakaotalk' — did you mean 'hermes-cli'?
 ⚠ platform 'discord' references unknown toolset 'antigravity-worker' — did you mean 'hermes-discord'?
 ```
 
-First observed on the default remote Mac during the Hermes 0.19.1 → 0.20.2 upgrade (2026-08-17), when the config schema moved v33 → v37. The quoted output above is verbatim from that date; the server has since been renamed to `openhuman-kakaotalk`, so today the same warning names that instead.
+First observed on the default remote Mac during the Hermes 0.19.1 → 0.20.2 upgrade (2026-08-17), when the config schema moved v33 → v37. The server was named `openhuman-kakaotalk-mac` then; the quoted output above has been updated to the current name so it matches what you would actually see.
 
 ## Verdict
 

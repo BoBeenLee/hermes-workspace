@@ -2,7 +2,10 @@
 
 ## 2026-09-13
 
-- Dropped "mac" from the shared identifiers of the KakaoTalk skill and from the live Hermes config, since the repo now serves two backends: `kakaotalk-mac-message/` → `kakaotalk-message/`, `openhuman-kakaotalk-mac` → `openhuman-kakaotalk`, and the `kakaotalk_mac.*` tool namespace → `kakaotalk.*`. The backend documents went the other way and gained an explicit `macos` marker, because with two backends the platform is information rather than noise.
+- Swept the remaining `kakaotalk_mac` / `openhuman-kakaotalk-mac` identifiers out of the workspace, task artifacts and quoted output included, so nothing in the repo names something that no longer exists.
+- That sweep caught real breakage, not just prose: `scripts/hermes/messenger_assistant.py` pinned `KAKAO_TOOLSET` and `KAKAO_MCP_TOOL_PREFIX` to the old names, and `scripts/hermes/kakao_ai_chat.py` held absolute paths under the old server directory. The controller is deployed on the default macOS target, so it was redeployed with the fix.
+
+- Dropped "mac" from the shared identifiers of the KakaoTalk skill and from the live Hermes config, since the repo now serves two backends: `kakaotalk-message/` → `kakaotalk-message/`, `openhuman-kakaotalk` → `openhuman-kakaotalk`, and the `kakaotalk.*` tool namespace → `kakaotalk.*`. The backend documents went the other way and gained an explicit `macos` marker, because with two backends the platform is information rather than noise.
 - The tool namespace and the server name are one contract spanning the repo, the deployed server directory and `config.yaml`, so all three moved in a single window with the gateways down. Verified after restart: the old toolset name is now rejected, the new one resolves, `hermes doctor` reports no toolset warnings, and the gateway registered the same 19 tools under `mcp__openhuman_kakaotalk__`.
 - Found and set aside a stale top-level `adapters/` copy inside the server directory that the sync script never touched and the entrypoint never imported; it still carried the old namespace and would have been a confusing false lead.
 
@@ -60,7 +63,7 @@
 ## 2026-07-05
 
 - Moved the detailed KakaoTalk Mac MCP runbook to the canonical skill repo:
-  `/Users/mac_al03241161/Documents/mygit/kakaotalk-message-skill/docs/hermes/kakaotalk-mac-mcp.md`.
+  `/Users/mac_al03241161/Documents/mygit/kakaotalk-message-skill/docs/hermes/kakaotalk-macos-mcp.md`.
 - Verified direct Discord mention-based KakaoTalk MCP lookup through Jarvis with KST timestamps, after adding short-lived cache fallback guidance.
 - Recorded the Jarvis Discord KakaoTalk timeout incident, root cause, bounded MCP scan behavior, and recovery verification.
 - Documented Hermes Mac Manager power schedule controls, including default-disabled behavior, `pmset` effects, the keep-awake LaunchAgent, and review-required safety notes.

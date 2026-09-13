@@ -150,7 +150,7 @@ READ_MESSAGE_HISTORY` 넷뿐이라 `403 Missing Permissions (50013)` 이 난다 
 치는 첫 명령이 영영 무시된다.** 옛 명령이 되살아나지도 않는다. `my_user_id` 는 이렇게 확인한다.
 
 ```bash
-ssh bobeen '~/.hermes/mcp-servers/openhuman-kakaotalk-mac/bin/kakaocli-self-ssh \
+ssh bobeen '~/.hermes/mcp-servers/openhuman-kakaotalk/bin/kakaocli-self-ssh \
   query --user-id <KAKAOTALK_USER_ID> "SELECT userId FROM NTChatContext LIMIT 1"'
 ```
 
@@ -266,8 +266,8 @@ kakaocli 와 kmsg 가 함께 실제 사용자 세션을 상속한다.
 - **에이전트 권한.** `toolsets` 가 준 도구는 전부 실제로 실행된다 — `terminal` 이 들어 있으면
   카톡 한 줄이 파일·git 을 건드릴 수 있다. 승인 게이트는 없다. 방어선은 발신자 검사, 방
   allowlist, `DISABLED`, 레이트 상한 넷이다.
-- **에이전트는 `toolsets` 밖의 MCP 도구에도 닿는다.** `-t` 에서 `openhuman-kakaotalk-mac`
-  을 빼도 `tool_search` / `tool_call` 브리지로 `kakaotalk_mac.*` 에 도달할 수 있다 (2026-09-13
+- **에이전트는 `toolsets` 밖의 MCP 도구에도 닿는다.** `-t` 에서 `openhuman-kakaotalk`
+  을 빼도 `tool_search` / `tool_call` 브리지로 `kakaotalk.*` 에 도달할 수 있다 (2026-09-13
   실측: `-t "terminal,file,vision,video,web"` 로 띄운 세션이 `functions.kakaotalk.*` 를
   목록에 갖고 있었다). 그래서 "직접 카톡을 보내지 마라"를 **프롬프트 규칙으로** 못 박는다.
   `-t` 제외는 기본값을 줄일 뿐 하드 게이트가 아니다.

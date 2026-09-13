@@ -98,8 +98,8 @@ DEFAULT_CONFIG: dict = {
     # 17s here. Blank these two to inherit the profile default when depth beats speed.
     "provider": "custom:altalt",
     "model": "openai/gpt-5-nano",
-    "kakaocli_bin": str(HOME / ".hermes/mcp-servers/openhuman-kakaotalk-mac/bin/kakaocli-self-ssh"),
-    "kmsg_bin": str(HOME / ".hermes/mcp-servers/openhuman-kakaotalk-mac/vendor/kmsg/.build/release/kmsg"),
+    "kakaocli_bin": str(HOME / ".hermes/mcp-servers/openhuman-kakaotalk/bin/kakaocli-self-ssh"),
+    "kmsg_bin": str(HOME / ".hermes/mcp-servers/openhuman-kakaotalk/vendor/kmsg/.build/release/kmsg"),
     "kakaotalk_user_id": "",
     "mention": "@jarvis",
     "bot_prefix": "[jarvis]",

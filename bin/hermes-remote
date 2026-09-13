@@ -227,7 +227,7 @@ Config:
   Copy config/example.env to .env and edit host/paths, or run with:
     HERMES_TARGET=config/targets/<target>.env bin/hermes-remote <command>
   Override run toolsets with:
-    HERMES_RUN_TOOLSETS=openhuman-kakaotalk-mac bin/hermes-remote run <prompt>
+    HERMES_RUN_TOOLSETS=openhuman-kakaotalk bin/hermes-remote run <prompt>
 USAGE
 }
 

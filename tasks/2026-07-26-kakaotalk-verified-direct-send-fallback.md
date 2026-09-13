@@ -20,7 +20,7 @@ date: 2026-07-26
 - Hermes branch: `codex/kakao-send-fallback-20260726`
 - Hermes worktree: `/Users/mac_al03241161/Documents/mygit/bbl-ai-lab/hermes-workspace/.worktrees/kakao-send-fallback-20260726`
 - KakaoTalk MCP branch: `codex/verified-direct-send-fallback-20260726`
-- KakaoTalk MCP worktree: `/Users/mac_al03241161/Documents/mygit/kakaotalk-mac-message-skill/.worktrees/verified-direct-send-fallback-20260726`
+- KakaoTalk MCP worktree: `/Users/mac_al03241161/Documents/mygit/kakaotalk-message-skill/.worktrees/verified-direct-send-fallback-20260726`
 - Remote target: `bobeen`
 
 ## Changes
@@ -43,19 +43,19 @@ date: 2026-07-26
 ## Remote deployment
 
 - Loaded MCP file:
-  `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/adapters/kakaotalk/mcp_server.py`
+  `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/server/adapters/kakaotalk/mcp_server.py`
 - Installed controller:
   `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py`
 - Initial backups:
-  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/adapters/kakaotalk/mcp_server.py.bak-verified-direct-fallback-20260726-215642`
+  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/server/adapters/kakaotalk/mcp_server.py.bak-verified-direct-fallback-20260726-215642`
   - `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-verified-direct-fallback-20260726-215642`
 - Failure-stage backups:
-  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/adapters/kakaotalk/mcp_server.py.bak-send-stage-20260726-220516`
+  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/server/adapters/kakaotalk/mcp_server.py.bak-send-stage-20260726-220516`
   - `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-send-stage-20260726-220516`
 - Conversation-binding backups:
-  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/adapters/kakaotalk/mcp_server.py.bak-conversation-binding-20260726-231220`
+  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/server/adapters/kakaotalk/mcp_server.py.bak-conversation-binding-20260726-231220`
   - `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-conversation-binding-20260726-231220`
-  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/adapters/kakaotalk/mcp_server.py.bak-binding-schema-20260726-231336`
+  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/server/adapters/kakaotalk/mcp_server.py.bak-binding-schema-20260726-231336`
   - `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-binding-object-20260726-231437`
 - Automatic-binding follow-up backup:
   - `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-automatic-binding-20260726-232451`

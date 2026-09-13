@@ -1650,7 +1650,7 @@ class MessengerAssistantPolicyTests(unittest.TestCase):
             (profile / "config.yaml").write_text(
                 """
 mcp_servers:
-  openhuman-kakaotalk-mac:
+  openhuman-kakaotalk:
     command: /opt/homebrew/bin/uv
     args: [run, python, mcp_server.py]
     env:
@@ -1675,7 +1675,7 @@ mcp_servers:
                 "cwd": None,
                 "env": {"KMSG_BIN": "/opt/homebrew/bin/kmsg"},
             },
-            "kakaotalk_mac.auth_status",
+            "kakaotalk.auth_status",
             {"user_id": "", "kakaocli_bin": ""},
         )
 

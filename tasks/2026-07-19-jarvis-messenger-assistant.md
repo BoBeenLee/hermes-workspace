@@ -65,7 +65,7 @@
   reached.
 - `KakaoMcpAdapter` is now the single Kakao seam. It loads the existing Jarvis
   MCP server definition, uses MCP Python SDK 1.26.0 over SDK-managed stdio,
-  calls one exact `kakaotalk_mac.*` tool with controller-owned arguments, and
+  calls one exact `kakaotalk.*` tool with controller-owned arguments, and
   normalizes structured results. GPT remains only for intent routing, drafting,
   typed-memory extraction, and the existing allowlisted public-data workflow.
 - Incremental scans request and prioritize unread metadata. The first
@@ -226,9 +226,9 @@
 - Controller backup:
   `/Users/bobeenlee/.hermes/profiles/jarvis/scripts/messenger_assistant.py.bak-nonhuman-filter-20260726-164643`.
   Adapter backups:
-  `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/adapters/kakaotalk/observe.py.bak-nonhuman-filter-20260726-164643`
+  `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/server/adapters/kakaotalk/observe.py.bak-nonhuman-filter-20260726-164643`
   and
-  `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/adapters/kakaotalk/observe.py.bak-nonhuman-filter-20260726-164643`.
+  `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/adapters/kakaotalk/observe.py.bak-nonhuman-filter-20260726-164643`.
 - Installed SHA-256 values are
   `b14e334619e82684cde2dea0af7945e080d9424a12a6890f092b1c55cefd569d`
   for the controller and
@@ -553,7 +553,7 @@
   `finally` block. The same entity IDs remain eligible for the next two-minute
   cron run, and only a successful processing path removes the buffer.
 - The lost incident entity
-  `kakaotalk_mac:128426307555607:3888414853475194881` was restored under the
+  `kakaotalk:128426307555607:3888414853475194881` was restored under the
   controller lock. An intermediate malformed multi-call attempt failed closed
   and left the buffer intact, demonstrating the retry path.
 - The successful retry preview session `20260720_000612_d57418` called
@@ -673,7 +673,7 @@
 
 - The two-minute cron remains the only Kakao polling trigger. It wakes the
   deterministic controller, which now delegates every Kakao read/send to a
-  Jarvis one-shot restricted to `openhuman-kakaotalk-mac`.
+  Jarvis one-shot restricted to `openhuman-kakaotalk`.
 - `JarvisKakaoAgent` is the single Kakao seam. The controller no longer opens
   MCP stdio sessions itself and no longer contains a CuaDriver send fallback.
 - Each operation requires the primary Jarvis model/provider and verifies one
@@ -781,7 +781,7 @@
   pending Discord approval card with zero failures and no automatic send.
 - MCP-only KakaoTalk path — auth checks, direct-room lookup, recent-message
   polling, baseline reads, previews, send dry-runs, and sends now call the
-  Hermes-configured `openhuman-kakaotalk-mac` MCP tools. The controller no
+  Hermes-configured `openhuman-kakaotalk` MCP tools. The controller no
   longer imports the adapter or invokes `kakaocli`, `kmsg`, `pgrep`, or
   `open -a KakaoTalk` directly.
 - Send resolution fix — a target-name dry-run now resolves `send_chat_id`, a
