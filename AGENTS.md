@@ -54,6 +54,7 @@ See [knowledge/policies/safety-rules.md](knowledge/policies/safety-rules.md) and
 - Hermes bootstrap: [knowledge/runbooks/hermes-agent-bootstrap.md](knowledge/runbooks/hermes-agent-bootstrap.md)
 - Multi-host bootstrap: [knowledge/runbooks/hermes-agent-multi-host.md](knowledge/runbooks/hermes-agent-multi-host.md)
 - Local LLM providers: [knowledge/tools/local-llm-providers.md](knowledge/tools/local-llm-providers.md)
+- KakaoTalk AI chat: [knowledge/runbooks/kakao-ai-chat.md](knowledge/runbooks/kakao-ai-chat.md)
 
 ## Verification
 
