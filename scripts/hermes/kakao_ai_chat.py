@@ -18,6 +18,7 @@ short outgoing fingerprint used to confirm delivery.
 from __future__ import annotations
 
 import argparse
+import base64
 from collections import deque
 import contextlib
 import datetime as dt
@@ -47,6 +48,7 @@ STATE_PATH = BASE_DIR / "state.json"
 DISABLED_PATH = BASE_DIR / "DISABLED"
 LOCK_PATH = BASE_DIR / "daemon.lock"
 MEDIA_DIR = BASE_DIR / "media"
+OUTBOX_DIR = BASE_DIR / "outbox"
 RESULTS_DIR = BASE_DIR / "results"
 WRAPPER_PATH = BASE_DIR / "bin" / "kakao-ai-chat-via-local-ssh.sh"
 PLIST_LABEL = "ai.hermes.kakao-ai-chat"
@@ -127,6 +129,9 @@ DEFAULT_CONFIG: dict = {
     # Every room the account sees, not just `rooms`. Only the author gate stops a
     # stranger from driving the bot, so it stays on: see classify_trigger.
     "all_rooms": False,
+    # Base64 inflates by a third on the wire and KakaoTalk refuses the huge ones, so
+    # this sits well under media_max_bytes rather than reusing it.
+    "attach_max_bytes": 10 * 1024 * 1024,
     "reply_char_limit": 800,
     "global_reply_limit": 20,
     "global_reply_window_seconds": 600,
@@ -682,20 +687,29 @@ def reply_source_log_id(row: dict) -> int | None:
         return None
 
 
-def mention_body(text: str, mention: str) -> str | None:
-    """The text after a leading mention, or None when the line does not open with one.
+def mention_pattern(mention: str) -> re.Pattern:
+    """Where a mention may sit: anywhere, but only on its own.
 
-    Anchored at the start and followed by whitespace or end-of-line: matching the
-    mention anywhere would fire on ordinary text (`x@jarvis.example`, a pasted log
-    line), and a bare prefix match would fire on `@jarvistest`.
+    Left edge is start-of-text or whitespace, so `bob@jarvis.example` and `[@jarvis]`
+    in a pasted log are not mentions. Right edge is anything that cannot continue a
+    word, a host name or another handle, so `@jarvistest` and `@jarvis.example` are
+    not either, while a sentence ending `... 어때 @jarvis?` is.
+    """
+    return re.compile(rf"(?:(?<=\s)|^){re.escape(mention)}(?![\w.@-])", re.IGNORECASE)
+
+
+def mention_body(text: str, mention: str) -> str | None:
+    """What the message says once the mention is lifted out, or None if there is none.
+
+    The mention used to have to open the line. People tack it on the end instead, so
+    it may now sit anywhere; only the boundaries above still hold.
     """
     stripped = (text or "").strip()
-    if not stripped.casefold().startswith(mention.casefold()):
+    match = mention_pattern(mention).search(stripped)
+    if match is None:
         return None
-    rest = stripped[len(mention):]
-    if rest and not rest[:1].isspace():
-        return None
-    return rest.strip()
+    head, tail = stripped[:match.start()].rstrip(), stripped[match.end():].lstrip()
+    return f"{head} {tail}".strip() if head and tail else (head or tail).strip()
 
 
 def classify_trigger(row: dict, config: dict, parent_is_bot) -> str | None:
@@ -715,13 +729,20 @@ def classify_trigger(row: dict, config: dict, parent_is_bot) -> str | None:
     return None
 
 
-def select_triggers(rows: list[dict], config: dict, parent_is_bot) -> dict[int, dict]:
-    """Last trigger per room; earlier ones stay as context."""
-    chosen: dict[int, dict] = {}
-    for row in rows:
-        kind = classify_trigger(row, config, parent_is_bot)
-        if kind:
-            chosen[row["chat_id"]] = dict(row, trigger_kind=kind)
+def select_triggers(rows: list[dict], config: dict, parent_is_bot) -> list[dict]:
+    """Every trigger, oldest first.
+
+    This used to keep only the last one per room while the cursor ran past the rest,
+    so two mentions inside one 15 second tick cost you the first with no error and no
+    log line. A tick is a polling artefact; it has no business deciding which of a
+    person's questions gets answered. The global rate limit is what bounds a burst.
+    """
+    chosen = [
+        dict(row, trigger_kind=kind)
+        for row in rows
+        if (kind := classify_trigger(row, config, parent_is_bot))
+    ]
+    chosen.sort(key=lambda row: int(row.get("log_id") or 0))
     return chosen
 
 
@@ -896,6 +917,9 @@ PROMPT_TEMPLATE = """너는 카카오톡 방에서 나(운영자)를 돕는 어�
 - 카카오톡으로 직접 메시지를 보내지 마라. 네가 쓴 답은 호출자가 대신 보낸다.
   (도구 목록에 카카오톡 도구가 보여도 쓰지 마라 - 중복 발신이 된다.)
 - 답은 카카오톡 메시지 한 개로 간다. 짧고 실용적으로, 머리말 없이 본론부터.
+- 사진을 보내려면 `[[image: /절대/경로]]` 를 **한 줄로** 넣어라. 그 줄은 본문에서 빠지고 사진으로 나간다.
+  보낼 수 있는 곳은 `~/.hermes/kakao-ai-chat/outbox` 와 `media` 뿐이다. 그 밖의 경로는 무시된다.
+  새로 만든 그림은 outbox 에 저장한 뒤 그 경로를 적어라. 이미지가 아닌 파일 전송은 지원하지 않는다.
 
 ROOM_CONTEXT:
 {context}
@@ -906,6 +930,55 @@ QUOTED:
 MENTION:
 {mention}
 """
+
+
+# The line terminator is part of the match: dropping only the text would leave a
+# blank line in the middle of the message.
+ATTACH_LINE = re.compile(r"^[ \t]*\[\[image:[ \t]*(?P<path>[^\]]+?)[ \t]*\]\][ \t]*(?:\r?\n|$)",
+                         re.MULTILINE | re.IGNORECASE)
+SENDABLE_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+def resolve_attachment(raw: str, config: dict) -> Path | None:
+    """A path jarvis is allowed to send, or None with the refusal logged.
+
+    The allowlist is the point, not paperwork. Room text reaches the model as context
+    and in an open chat strangers write it, so an unfenced path in an answer would be
+    an exfiltration primitive. resolve() first, containment check second: that order
+    is what stops a symlink out of the outbox.
+    """
+    try:
+        path = Path(raw.strip()).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        log(f"첨부 거부: 경로를 열 수 없다 ({raw.strip()[:80]})")
+        return None
+    roots = (OUTBOX_DIR.expanduser().resolve(), MEDIA_DIR.expanduser().resolve())
+    if not any(path.is_relative_to(root) for root in roots):
+        log(f"첨부 거부: 허용 폴더 밖이다 ({path})")
+        return None
+    if not path.is_file():
+        log(f"첨부 거부: 파일이 아니다 ({path})")
+        return None
+    if path.suffix.lower() not in SENDABLE_IMAGE_SUFFIXES:
+        # Iris /reply takes text and images only. `file` and `link` are rejected by
+        # its own ReplyRequest model - probed against the running build, not guessed.
+        log(f"첨부 거부: 이미지가 아니다 ({path.name})")
+        return None
+    size = path.stat().st_size
+    if size > int(config["attach_max_bytes"]):
+        log(f"첨부 거부: {human_bytes(size)} 라 너무 크다 ({path.name})")
+        return None
+    return path
+
+
+def extract_attachments(answer: str, config: dict) -> tuple[str, list[Path]]:
+    """Pull the `[[image: ...]]` lines out; whatever is left is the caption."""
+    paths: list[Path] = []
+    for match in ATTACH_LINE.finditer(answer or ""):
+        path = resolve_attachment(match.group("path"), config)
+        if path is not None and path not in paths:
+            paths.append(path)
+    return ATTACH_LINE.sub("", answer or "").strip(), paths
 
 
 def build_prompt(context_lines: list[str], quoted: str, mention: str) -> str:
@@ -946,14 +1019,25 @@ def run_hermes(config: dict, prompt: str) -> str:
     return answer
 
 
-def send_message(config: dict, room: dict, text: str) -> None:
+def send_message(config: dict, room: dict, text: str, images: list[Path] | None = None) -> None:
+    images = list(images or [])
     if backend_name(config) == "iris":
         # chat_id is the same key on both sides, so the mac side's separate
         # kmsg_chat_id has no counterpart here and needs no resolving step.
         # A success reply only means Iris queued the intent - the poll loop's
         # next tick is what actually proves delivery.
-        iris_client(config).reply(room["chat_id"], text)
+        client = iris_client(config)
+        # Caption first: an image row carries no bot_prefix, so the text beside it is
+        # the only thing that later marks the pair as ours.
+        client.reply(room["chat_id"], text)
+        if images:
+            client.reply_images(
+                room["chat_id"],
+                [base64.b64encode(path.read_bytes()).decode("ascii") for path in images],
+            )
         return
+    if images:
+        log(f"chat {room.get('chat_id')}: kmsg 백엔드는 이미지 전송이 없어 본문만 보낸다")
     command = [str(config["kmsg_bin"]), "send", "--chat-id", str(room["kmsg_chat_id"]), text]
     result = subprocess.run(
         command,
@@ -1071,7 +1155,8 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
     triggers = select_triggers(rows, config, parent_is_bot)
     highest = max(row["log_id"] for row in rows)
 
-    for chat_id, trigger in triggers.items():
+    for trigger in triggers:
+        chat_id = trigger["chat_id"]
         room = room_for(config, chat_id)
         room_state = state.setdefault("rooms", {}).setdefault(str(chat_id), {})
         if room_state.get("paused"):
@@ -1086,7 +1171,11 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
         if not allowed:
             state["last_error"] = "전역 응답 한도를 넘어 이번 턴을 보류했다"
             log(state["last_error"])
-            continue
+            # Held, not dropped: hold the cursor behind this trigger so the next tick
+            # picks it up once the window frees. Advancing past it would make the
+            # limit a silent delete of whatever came after.
+            highest = min(highest, int(trigger["log_id"]) - 1)
+            break
 
         try:
             _, prompt = build_turn(config, trigger)
@@ -1099,6 +1188,9 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
             log(state["last_error"])
             continue
 
+        answer, images = extract_attachments(answer, config)
+        if images and not answer:
+            answer = ", ".join(path.name for path in images)
         short, full = split_reply(answer, int(config["reply_char_limit"]))
         if full:
             RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1109,7 +1201,7 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
         outgoing = f"{config['bot_prefix']} {short}"
 
         try:
-            send_message(config, room, outgoing)
+            send_message(config, room, outgoing, images)
         except Exception as exc:  # noqa: BLE001
             state["last_error"] = f"chat {chat_id}: {exc}"
             log(state["last_error"])
@@ -1118,7 +1210,8 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
         state["rate"] = recent + [time.time()]
         room_state["pending_send"] = {"fingerprint": outgoing[:SEND_FINGERPRINT_CHARS], "ticks": 0}
         state["last_error"] = ""
-        log(f"chat {chat_id}: 응답 전송 ({len(outgoing)}자)")
+        note = f" + 사진 {len(images)}장" if images else ""
+        log(f"chat {chat_id}: 응답 전송 ({len(outgoing)}자{note})")
 
     if not dry_run:
         state["cursor_log_id"] = max(int(state.get("cursor_log_id") or 0), highest)
@@ -1216,6 +1309,9 @@ def poll_loop(config_path: Path) -> int:
             if newest > int(state.get("cursor_log_id") or 0):
                 state["cursor_log_id"] = newest
                 save_json(STATE_PATH, state)
+
+    OUTBOX_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(OUTBOX_DIR, 0o700)
 
     deadline = time.monotonic()
     while True:
