@@ -295,6 +295,17 @@ class PromptTests(unittest.TestCase):
         self.assertIn("map.kakao.com/?q=", prompt)
         self.assertIn("그때 그 장소의 것", prompt)
 
+    def test_the_agent_is_told_what_it_cannot_do(self):
+        # a "draw me a diagram" turn once ran 9m33s hunting for an image generator that
+        # does not exist on this host, muting every room behind it
+        prompt = module.build_prompt([], [], "(없음)", "다이어그램 그림으로 표현해줘")
+        self.assertIn("네가 못 하는 일", prompt)
+        self.assertIn("이미 있는 파일을 보내는", prompt)
+
+    def test_a_turn_cannot_mute_the_bot_for_a_quarter_hour(self):
+        # the tick is single-threaded, so this ceiling is how long every other room waits
+        self.assertLessEqual(module.HERMES_TIMEOUT_SECONDS, 180)
+
     def test_facts_have_to_be_looked_up(self):
         self.assertIn("web_search", module.build_prompt([], [], "(없음)", "x"))
 
@@ -546,6 +557,27 @@ class AttachmentTests(unittest.TestCase):
         path = self.image()
         _, images = module.extract_attachments(f"[[image: {path}]]\n[[image: {path}]]", self.config)
         self.assertEqual(images, [path])
+
+
+class StartupClampTests(unittest.TestCase):
+    """A restart must forget a day of mentions but not the one sent a moment ago."""
+
+    def setUp(self):
+        self.config = dict(CONFIG, backend="iris", rooms=[{"chat_id": 7}])
+
+    def sql_for(self, before):
+        with mock.patch.object(module, "backend_query", return_value=[[99]]) as q:
+            module.newest_log_id(self.config, before)
+        return q.call_args.args[1]
+
+    def test_without_a_window_everything_counts_as_seen(self):
+        self.assertNotIn("created_at", self.sql_for(None))
+
+    def test_the_recent_tail_is_left_for_the_backfill(self):
+        self.assertIn("created_at < 1000", self.sql_for(1000.4))
+
+    def test_the_window_is_ten_minutes(self):
+        self.assertEqual(module.STARTUP_REPLAY_SECONDS, 600)
 
 
 class AllRoomsTests(unittest.TestCase):

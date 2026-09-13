@@ -62,11 +62,21 @@ SYSTEMD_UNIT_PATH = HOME / ".config" / "systemd" / "user" / SYSTEMD_UNIT_NAME
 
 STATE_VERSION = 1
 DETECT_LIMIT = 50
-HERMES_TIMEOUT_SECONDS = 900
+# A tick is single-threaded: while one turn runs, every room is silent. 900s meant a
+# single unanswerable question could mute the bot for a quarter of an hour - measured,
+# after a "draw me a diagram" turn sat at 9m33s with two mentions queued behind it.
+# The slowest ordinary answer on the current model was 83s, so this is generous.
+HERMES_TIMEOUT_SECONDS = 180
 KAKAOCLI_TIMEOUT_SECONDS = 60
 KMSG_TIMEOUT_SECONDS = 120
 MEDIA_DOWNLOAD_TIMEOUT_SECONDS = 30
 SEND_VERIFY_TICKS = 2
+# How far back a restart still answers. The startup clamp exists so a daemon that was
+# down for a day does not wake to a day of stale mentions; without a window it also
+# swallowed messages sent seconds before a restart, which is most of them during a
+# deploy. Measured: two mentions queued behind a slow turn were dropped by the restart
+# that cleared it.
+STARTUP_REPLAY_SECONDS = 600
 SEND_FINGERPRINT_CHARS = 48
 
 # KakaoTalk NTChatMessage.type. Verified against the live DB on 2026-09-13 by
@@ -481,11 +491,18 @@ def room_filter(config: dict) -> str:
     return f" WHERE chat_id IN ({id_list})"
 
 
-def newest_log_id(config: dict) -> int:
-    """Highest logId the watched rooms already hold, or 0 when they are empty."""
+def newest_log_id(config: dict, before: float | None = None) -> int:
+    """Highest logId the watched rooms already hold, or 0 when they are empty.
+
+    `before` excludes the recent tail, so a restart treats only settled history as
+    already seen and still answers what arrived while it was down.
+    """
     if not room_chat_ids(config) and not all_rooms(config):
         return 0
-    rows = backend_query(config, f"SELECT MAX(id) AS id FROM chat_logs{room_filter(config)}", ("id",))
+    where = room_filter(config)
+    if before is not None:
+        where += f"{' AND' if where else ' WHERE'} created_at < {int(before)}"
+    rows = backend_query(config, f"SELECT MAX(id) AS id FROM chat_logs{where}", ("id",))
     try:
         return int(rows[0][0] or 0)
     except (IndexError, TypeError, ValueError):
@@ -1015,7 +1032,11 @@ PROMPT_TEMPLATE = """너는 카카오톡 방에서 나(운영자)를 돕는 어�
 - 답은 카카오톡 메시지 한 개로 간다. 짧고 실용적으로, 머리말 없이 본론부터.
 - 사진을 보내려면 `[[image: /절대/경로]]` 를 **한 줄로** 넣어라. 그 줄은 본문에서 빠지고 사진으로 나간다.
   보낼 수 있는 곳은 `~/.hermes/kakao-ai-chat/outbox` 와 `media` 뿐이다. 그 밖의 경로는 무시된다.
-  새로 만든 그림은 outbox 에 저장한 뒤 그 경로를 적어라. 이미지가 아닌 파일 전송은 지원하지 않는다.
+  이건 **이미 있는 파일을 보내는** 수단이지 만드는 수단이 아니다.
+- 네가 못 하는 일: 그림·영상·음성을 **생성**하는 것, 이미지가 아닌 파일을 보내는 것. 도구가 없다.
+  시도하지 마라 - 없는 수단을 찾느라 몇 분을 태우는 동안 이 방의 다음 메시지도 같이 멈춘다.
+  한 줄로 못 한다고 말하고 대신 할 수 있는 걸 해라 (그림 요청이면 텍스트 다이어그램).
+- 한 번에 답해라. 답이 길어질 것 같으면 요약으로 끊고, 더 필요하냐고 물어라.
 
 MY_THREAD:
 {mine}
@@ -1415,12 +1436,13 @@ def poll_loop(config_path: Path) -> int:
             log("iris push feed attached")
         except Exception as exc:
             log(f"iris push feed unavailable: {exc}")
-        # Start at the tail. The cursor backfill in fetch_new_rows is there to close
-        # gaps the feed leaves mid-run; without this it would also replay every mention
-        # that piled up while the daemon was down, which the empty inbox used to rule out.
+        # Start just behind the tail. The cursor backfill in fetch_new_rows closes gaps
+        # the feed leaves mid-run; this keeps it from also replaying every mention that
+        # piled up while the daemon was down - but only past STARTUP_REPLAY_SECONDS, so
+        # a restart still answers what was said a moment before it.
         with contextlib.suppress(Exception):
             state = load_state()
-            newest = newest_log_id(load_config(config_path))
+            newest = newest_log_id(load_config(config_path), time.time() - STARTUP_REPLAY_SECONDS)
             if newest > int(state.get("cursor_log_id") or 0):
                 state["cursor_log_id"] = newest
                 save_json(STATE_PATH, state)
