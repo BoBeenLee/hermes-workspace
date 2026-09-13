@@ -1438,6 +1438,22 @@ def install(config_path: Path) -> int:
     return 0
 
 
+def set_enabled(value: bool) -> int:
+    """Flip the auto-reply flag from outside the daemon.
+
+    The loop reloads state at the top of every tick, so a write lands within one
+    poll interval. It writes state back at the end of a tick, so a flip made
+    mid-tick can be overwritten - re-run and re-read if it does not take.
+    """
+    state = load_state()
+    state["enabled"] = bool(value)
+    if value:
+        state["last_error"] = ""
+    save_json(STATE_PATH, state)
+    print(json.dumps({"enabled": state["enabled"]}, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="KakaoTalk AI chat daemon")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
@@ -1447,13 +1463,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-loop", action="store_true", help="Run the persistent polling loop")
     parser.add_argument("--resolve-rooms", action="store_true", help="Fill kmsg_chat_id from kmsg chats (opens KakaoTalk)")
     parser.add_argument("--create-channel", action="store_true", help="Create the private Discord control channel")
-    parser.add_argument("--install", action="store_true", help="Write the self-ssh wrapper and launchd plist")
+    parser.add_argument("--install", action="store_true", help="Write the service definition for this platform")
+    parser.add_argument("--enable", action="store_true", help="Turn auto-replies on")
+    parser.add_argument("--disable", action="store_true", help="Turn auto-replies off")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config_path = Path(args.config).expanduser()
+    if args.enable and args.disable:
+        print("--enable and --disable are mutually exclusive", file=sys.stderr)
+        return 2
+    if args.enable or args.disable:
+        return set_enabled(args.enable)
     if args.check:
         return check(config_path)
     if args.resolve_rooms:
