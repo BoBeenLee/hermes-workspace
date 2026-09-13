@@ -46,6 +46,22 @@ rewrite target, not a recompile target.
 
 ## The Rule That Decides It: Device Slots
 
+**Measured 2026-09-13, not inferred.** KakaoTalk permits one mobile device plus one
+companion. A tablet sub-device and the PC client compete for the **same** companion slot:
+after the DGX container signed in as a tablet, the phone stayed logged in and the Mac's
+KakaoTalk.app dropped to a login window (`osascript ... get name of every window` returned
+`Log in`).
+
+| Path | Phone | Mac KakaoTalk.app |
+| --- | --- | --- |
+| Ordinary Android login | **evicted** | kept |
+| Tablet sub-device login | kept | **evicted** |
+
+So a second host never adds a slot. For **migrating** the assistant off the Mac this is the
+desired outcome rather than a blocker — the Mac client exists only to serve `kmsg`. For
+**running both at once** it is fatal. Decide which of the two you are doing before starting.
+
+
 KakaoTalk permits **one mobile device plus one companion (PC or tablet)** signed in
 at a time.
 
@@ -53,9 +69,8 @@ at a time.
 - A Windows KakaoTalk under Wine on the DGX takes **the same companion slot**, so it evicts the Mac.
 - An Android KakaoTalk in a container on the DGX takes **the mobile slot**, so it evicts the phone.
 
-A second host cannot add a slot. It can only take one away from something that already
-works. **Any DGX KakaoTalk work therefore presupposes a separate phone number or
-account.** Confirm that before spending effort on any path below.
+A separate phone number or account is required only if the Mac client must keep working in
+parallel. A straight migration needs no second account.
 
 ## Path Evaluation
 

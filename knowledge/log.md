@@ -2,6 +2,11 @@
 
 ## 2026-09-13
 
+- **Signed the DGX container in as a KakaoTalk companion device and it worked.** The tablet ("다른 기기와 함께 사용") login path reaches `MainActivity` with the real account and friend list. The phone kept its session; the Mac's KakaoTalk.app was evicted to a login window, which settles the open question: a tablet sub-device and the PC client share one companion slot.
+- Reframed the device-slot finding: it blocks running the Mac client and the DGX in parallel, but it does not block migrating the assistant off the Mac, which needs no second account.
+- Found the tablet gate to be device identity, not form factor: `sw800dp` plus `ro.build.characteristics=tablet` plus a `ko-KR` locale was not enough; the checkbox appeared only after `ro.product.model`/`brand`/`manufacturer` were also set to a tablet.
+- Noted the QR and security code are each valid ~60s, so a chat round-trip for both will expire; and that the Android `KakaoTalk*.db` files are plain `SQLite format 3` at the file level (per-field encryption only), which is the shape Iris decrypts.
+
 - Installed and launched KakaoTalk 26.7.2 inside the DGX redroid container. It reaches a clean login screen on an uncertified, rooted Android, `KakaoTalk.db` and `KakaoTalk2.db` are present, and the window exposes a 124-line view hierarchy. Play Integrity did not block it. The run was stopped at the login screen so no device slot was consumed.
 - Sourced the app as Play splits pulled from the operator's own Galaxy S25 Ultra over ADB rather than from a third-party mirror, and recorded that `pm install-multiple` does not exist on the redroid image — a `pm install-create` session is required.
 

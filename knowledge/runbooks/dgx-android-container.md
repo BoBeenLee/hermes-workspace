@@ -157,6 +157,35 @@ Benign noise during first launch: `vold: Failed to set project id ...` (project 
 available on the bind-mounted `/data`) and `VerityUtils: Failed to measure fs-verity`. Neither
 blocks the app.
 
+## Presenting The Container As A Tablet
+
+KakaoTalk only offers the companion ("다른 기기와 함께 사용") login on a device it classifies
+as a tablet. Screen size and `ro.build.characteristics` alone are **not** enough — with
+`sw800dp`, `xlrg`, `ro.build.characteristics=tablet` and a `ko-KR` locale the checkbox still
+did not appear. It appeared only after the device identity was also changed:
+
+```bash
+androidboot.redroid_width=1600 androidboot.redroid_height=2560 androidboot.redroid_dpi=320
+ro.build.characteristics=tablet
+ro.product.model=SM-X926N ro.product.brand=samsung ro.product.manufacturer=samsung
+ro.product.name=gts10ultraks ro.product.device=gts10ultra
+```
+
+Model, brand and manufacturer were changed together, so which one is the actual gate was not
+isolated. `android.hardware.telephony` is already absent from redroid and is not the gate.
+
+With that in place the login screen gains a pre-checked "다른 기기와 함께 사용" box and a
+"QR코드 로그인" button, which routes to `SubDeviceQRLoginActivity`. The QR is valid for 60
+seconds and the security code that follows for another 60, so relaying both through a chat
+round-trip will time out — capture and hand over the QR first, then poll for the code.
+
+Locale and timezone persist in the bind-mounted `/data`:
+
+```bash
+setprop persist.sys.locale ko-KR
+setprop persist.sys.timezone Asia/Seoul
+```
+
 ## Verified Control Surface
 
 | Check | Result |
