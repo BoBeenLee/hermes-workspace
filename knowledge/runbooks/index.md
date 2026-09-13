@@ -1,11 +1,14 @@
 # Runbooks
 
+- [DGX Android Container](dgx-android-container.md)
 - [DGX Spark Remote Access](dgx-spark-remote-access.md)
 - [Hallmark Product Profile Skill](hallmark-product-skill.md)
 - [Hermes Agent Bootstrap](hermes-agent-bootstrap.md)
 - [Hermes Agent Multi-Host Bootstrap](hermes-agent-multi-host.md)
 - [Hermes Workflow Optimization](hermes-workflow-optimization.md)
+- [Iris On DGX](iris-on-dgx.md)
 - [Jarvis Messenger Assistant](jarvis-messenger-assistant.md)
+- [KakaoTalk Control Portability](kakaotalk-control-portability.md)
 - [Linux Target Profile](linux-target-profile.md)
 - [macOS Target Profile](macos-target-profile.md)
 - [Platform Toolsets Validation Warning](platform-toolsets-validation-warning.md)
