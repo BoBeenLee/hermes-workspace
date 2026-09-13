@@ -250,7 +250,7 @@ class PromptTests(unittest.TestCase):
         # `stt` is listed by `hermes tools list` but rejected by `-t`.
         self.assertNotIn("stt", names)
         # the kakao MCP server must stay out, or the agent can double-send
-        self.assertNotIn("openhuman-kakaotalk-mac", names)
+        self.assertNotIn("openhuman-kakaotalk", names)
         self.assertLessEqual({"vision", "video", "file", "terminal"}, names)
 
 

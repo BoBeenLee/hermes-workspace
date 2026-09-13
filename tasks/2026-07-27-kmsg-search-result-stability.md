@@ -12,10 +12,10 @@ date: 2026-07-27
 - Task type: `ops-change`
 - HIL status: skipped; the request was made directly in Codex
 - Completion mode: `review-required`
-- Source repository: `/Users/mac_al03241161/Documents/mygit/kakaotalk-mac-message-skill`
+- Source repository: `/Users/mac_al03241161/Documents/mygit/kakaotalk-message-skill`
 - Implementation branch/worktree:
   - `codex/verified-direct-send-fallback-20260726`
-  - `/Users/mac_al03241161/Documents/mygit/kakaotalk-mac-message-skill/.worktrees/verified-direct-send-fallback-20260726`
+  - `/Users/mac_al03241161/Documents/mygit/kakaotalk-message-skill/.worktrees/verified-direct-send-fallback-20260726`
 - Main commits:
   - `e10bb80` (`fix(kmsg): stabilize KakaoTalk search activation`)
   - `e4e0fc1` (`fix(mcp): normalize omitted preview arguments`)
@@ -76,7 +76,7 @@ date: 2026-07-27
 - Installed main-build smoke: passed in 15 seconds and auto-closed only the
   transient target chat.
 - Hermes Agent end-to-end preview:
-  - called only `kakaotalk_mac.preview_messages`;
+  - called only `kakaotalk.preview_messages`;
   - model supplied `chat_id=0` and a nonexistent `/usr/local/bin/kakaocli`;
   - server normalized both and returned `ok=true`, `event_count=1`,
     `resolved_by=visible_chats`;
@@ -87,25 +87,25 @@ date: 2026-07-27
 ## Remote deployment
 
 - Installed paths:
-  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/vendor/kmsg/.build/release/kmsg`
-  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/vendor/kmsg/.build/release/kmsg`
+  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/server/vendor/kmsg/.build/release/kmsg`
+  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/vendor/kmsg/.build/release/kmsg`
 - Final SHA-256:
   `4d8220715b2ba2015035661307461716a8cb2cfb1012ad63bdccc4955c6f5223`
 - Original-binary backups:
-  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/vendor/kmsg/.build/release/kmsg.bak-search-stability-20260727-011835`
-  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/vendor/kmsg/.build/release/kmsg.bak-search-stability-20260727-011835`
+  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/server/vendor/kmsg/.build/release/kmsg.bak-search-stability-20260727-011835`
+  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/vendor/kmsg/.build/release/kmsg.bak-search-stability-20260727-011835`
 - Pre-main-build backups:
-  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/vendor/kmsg/.build/release/kmsg.bak-pre-main-build-20260727-012059`
-  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/vendor/kmsg/.build/release/kmsg.bak-pre-main-build-20260727-012059`
+  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/server/vendor/kmsg/.build/release/kmsg.bak-pre-main-build-20260727-012059`
+  - `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/vendor/kmsg/.build/release/kmsg.bak-pre-main-build-20260727-012059`
 - Hermes MCP adapter:
   - installed path:
-    `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/adapters/kakaotalk/mcp_server.py`
+    `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/server/adapters/kakaotalk/mcp_server.py`
   - SHA-256:
     `1cb3e6d1db6dd6aefb02c5cdd70c1cf4d4707d17218822bb12c63900d304ef4b`
   - backup:
-    `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/adapters/kakaotalk/mcp_server.py.bak-sentinel-normalization-20260727-013258`
+    `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/server/adapters/kakaotalk/mcp_server.py.bak-sentinel-normalization-20260727-013258`
   - pre-sync backup:
-    `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/server/adapters/kakaotalk/mcp_server.py.bak-source-sync-20260727-014749`
+    `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/server/adapters/kakaotalk/mcp_server.py.bak-source-sync-20260727-014749`
   - source and remote installed files have identical SHA-256 values.
   - default and `jarvis` gateways restarted successfully after deployment.
 - Recurrence-prevention verification:
@@ -133,7 +133,7 @@ diagnostics.
 - Implementation branch:
   `codex/kmsg-search-miss-retry-20260727`
 - Implementation worktree:
-  `/Users/mac_al03241161/Documents/mygit/kakaotalk-mac-message-skill/.worktrees/kmsg-search-miss-retry-20260727`
+  `/Users/mac_al03241161/Documents/mygit/kakaotalk-message-skill/.worktrees/kmsg-search-miss-retry-20260727`
 - Source commit:
   `3c31cfd` (`fix(kmsg): retry pre-open search misses once`)
 - Changed files:
@@ -168,7 +168,7 @@ diagnostics.
 - Configured remote runtime binary SHA-256:
   `0e079ba55652e9b7fc3262ccdf1ad7638a3fe4b32528261b19a4c6dc08cea446`.
 - Remote backup:
-  `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk-mac/vendor/kmsg/.build/release/kmsg.bak-search-miss-retry-20260727-1556`.
+  `/Users/bobeenlee/.hermes/mcp-servers/openhuman-kakaotalk/vendor/kmsg/.build/release/kmsg.bak-search-miss-retry-20260727-1556`.
 - `scripts/verify-remote-kmsg-deploy.sh bobeen` passed with 15 MCP tools.
 - Remote `kmsg status --verbose` confirmed Accessibility granted,
   authentication ready, and KakaoTalk running.

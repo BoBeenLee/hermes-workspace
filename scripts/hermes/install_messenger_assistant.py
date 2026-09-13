@@ -203,7 +203,7 @@ def update_soul(path: Path) -> None:
   other party received within five minutes, except for explicitly configured
   session-policy lookback/read-state rules and read-state-exempt chat IDs, and
   calls the configured
-  `openhuman-kakaotalk-mac` stdio MCP server through its deterministic adapter.
+  `openhuman-kakaotalk` stdio MCP server through its deterministic adapter.
   Operator messages remain attributed context and never become reply triggers.
   Jarvis models classify and draft replies but never select KakaoTalk tools or
   rewrite their arguments. Do not add direct `kmsg`, `kakaocli`, or CuaDriver

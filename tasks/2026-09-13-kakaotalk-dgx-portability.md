@@ -39,7 +39,7 @@ Mac (`bobeen`): Hermes Agent v0.20.6, install method `git`, `/Applications/Kakao
 
 ## Evidence Chain
 
-`openhuman-kakaotalk-mac` MCP 서버의 `mcp_server.py`(4508줄)에는 `osascript`,
+`openhuman-kakaotalk` MCP 서버의 `mcp_server.py`(4508줄)에는 `osascript`,
 `AXUIElement`, `CGEvent`, `NSWorkspace` 호출이 **0회**다. 실제 macOS 의존은 vendored
 Swift 바이너리 둘에 있다.
 
