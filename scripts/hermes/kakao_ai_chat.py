@@ -27,6 +27,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -999,32 +1000,61 @@ def next_deadline(previous: float, now: float, interval: float) -> float:
     return previous + (missed + 1) * interval
 
 
-def acquire_single_instance_lock():
-    """Hold an exclusive lock for the lifetime of the loop.
-
-    Two loops on one state file double-answer and race the cursor. The self-ssh
-    wrapper makes that reachable: launchd kills the ssh client but the process on
-    the far side is reparented to init and keeps polling. `-tt` in the wrapper is
-    the primary fix; this is the backstop that makes a leak harmless.
-    """
-    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(LOCK_PATH, "w", encoding="utf-8")  # noqa: SIM115 - held for process lifetime
+def _try_lock(handle) -> bool:
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        handle.close()
-        return None
+        return False
+    handle.seek(0)
+    handle.truncate()
     handle.write(str(os.getpid()))
     handle.flush()
-    return handle
+    return True
+
+
+def acquire_single_instance_lock(takeover_timeout: float = 15.0):
+    """Hold an exclusive lock for the lifetime of the loop; newest instance wins.
+
+    Two loops on one state file double-answer and race the cursor, and the
+    self-ssh wrapper makes that reachable: launchd kills the ssh client but the
+    python on the far side is reparented to init and keeps polling. `ssh -tt`
+    would fix that at the source, except the loopback sshd refuses the PTY.
+
+    So the new instance asks the stale holder to exit and takes over. Both are
+    this same daemon under the same user, so SIGTERM is a handoff, not a kill.
+    Returns None when the holder will not yield.
+    """
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # r+ (not w) so a losing instance cannot truncate the holder's pid record
+    handle = open(LOCK_PATH, "r+", encoding="utf-8") if LOCK_PATH.exists() else open(LOCK_PATH, "w+", encoding="utf-8")
+    if _try_lock(handle):
+        return handle
+
+    handle.seek(0)
+    try:
+        stale_pid = int((handle.read() or "0").strip() or 0)
+    except ValueError:
+        stale_pid = 0
+    if stale_pid and stale_pid != os.getpid():
+        log(f"another instance (pid {stale_pid}) holds the lock; asking it to exit")
+        with contextlib.suppress(OSError):
+            os.kill(stale_pid, signal.SIGTERM)
+
+    deadline = time.monotonic() + takeover_timeout
+    while time.monotonic() < deadline:
+        if _try_lock(handle):
+            return handle
+        time.sleep(0.5)
+    handle.close()
+    return None
 
 
 def poll_loop(config_path: Path) -> int:
     lock = acquire_single_instance_lock()
     if lock is None:
         # Sleep before exiting so launchd's 5s ThrottleInterval cannot turn a
-        # lingering instance into a restart storm.
-        log("another kakao-ai-chat instance holds the lock; exiting")
+        # stuck holder into a restart storm.
+        log("could not take over the lock; exiting")
         time.sleep(60)
         return 0
 
@@ -1118,6 +1148,29 @@ def resolve_rooms(config_path: Path) -> int:
     save_json(config_path, config)
     print(json.dumps({"listed": sorted(listed), "updated": changed}, ensure_ascii=False, indent=2))
     return 0
+
+
+def wrapper_script(key: Path, python: Path, installed: Path, config_path: Path) -> str:
+    """launchd has no TCC/Keychain context, so the daemon runs itself back through
+    sshd on loopback; kakaocli and kmsg then inherit a real user session.
+
+    No `-tt`: the loopback sshd refuses the PTY ("PTY allocation request failed on
+    channel 0") and ssh exits 255, so the service never starts. Killing this client
+    also does not kill the python on the far side, so daemon.lock handover in the
+    poll loop is what actually prevents duplicate pollers.
+    """
+    return (
+        "#!/bin/zsh\n"
+        "set -euo pipefail\n"
+        "exec /usr/bin/ssh \\\n"
+        f"  -i {key} \\\n"
+        "  -o BatchMode=yes \\\n"
+        "  -o StrictHostKeyChecking=accept-new \\\n"
+        "  -o ServerAliveInterval=30 \\\n"
+        "  -o ServerAliveCountMax=3 \\\n"
+        "  127.0.0.1 \\\n"
+        f'  "exec {python} {installed} --config {config_path} --poll-loop"\n'
+    )
 
 
 CONTROL_CHANNEL_NAME = "ai-대화-제어"
@@ -1224,21 +1277,7 @@ def install(config_path: Path) -> int:
     WRAPPER_PATH.parent.mkdir(parents=True, exist_ok=True)
     # launchd has no TCC/Keychain context, so the daemon runs itself back through
     # sshd on loopback; kakaocli and kmsg then inherit a real user session.
-    WRAPPER_PATH.write_text(
-        "#!/bin/zsh\nset -euo pipefail\n"
-        "# -tt forces a TTY: without it launchd kills this ssh client but the python\n"
-        "# on the far side is reparented to init and keeps polling, so every restart\n"
-        "# leaks a second daemon onto the same state file.\n"
-        "exec /usr/bin/ssh -tt \\\n"
-        f"  -i {key} \\\n"
-        "  -o BatchMode=yes \\\n"
-        "  -o StrictHostKeyChecking=accept-new \\\n"
-        "  -o ServerAliveInterval=30 \\\n"
-        "  -o ServerAliveCountMax=3 \\\n"
-        "  127.0.0.1 \\\n"
-        f'  "exec {python} {installed} --config {config_path} --poll-loop"\n',
-        encoding="utf-8",
-    )
+    WRAPPER_PATH.write_text(wrapper_script(key, python, installed, config_path), encoding="utf-8")
     os.chmod(WRAPPER_PATH, 0o700)
 
     PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)

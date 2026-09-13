@@ -185,11 +185,18 @@ ssh bobeen 'launchctl print gui/$(id -u)/ai.hermes.kakao-ai-chat | head -20'
 
 ### 왜 self-ssh 래퍼인가
 
-**`-tt` 를 빼면 재시작마다 데몬이 샌다.** launchd 가 ssh 클라이언트를 죽여도 원격 쪽 python 은
-SIGHUP 을 못 받고 init 으로 재부모화되어 계속 폴링한다. 2026-09-13 에 실제로 관측했다 —
+**재시작마다 데몬이 샌다.** launchd 가 ssh 클라이언트를 죽여도 원격 쪽 python 은 SIGHUP 을 못
+받고 init 으로 재부모화되어 계속 폴링한다. 2026-09-13 에 실제로 관측했다 —
 `launchctl kickstart -k` 뒤에 13분 된 고아 poll-loop 와 새 인스턴스가 같은 `state.json` 을
-동시에 돌고 있었다. 둘이 돌면 같은 멘션에 두 번 답하고 커서가 경합한다. `-tt` 가 1차 방어고,
-`daemon.lock` (`flock`) 이 2차 방어다 — 락을 못 잡은 인스턴스는 60초 자고 종료해서
+동시에 돌고 있었다. 둘이 돌면 같은 멘션에 두 번 답하고 커서가 경합한다.
+
+**`ssh -tt` 로는 못 고친다.** 루프백 sshd 가 PTY 를 거부해서
+(`PTY allocation request failed on channel 0`) ssh 가 255 로 죽고 **서비스가 아예 안 뜬다.**
+같은 날 시도했다가 되돌렸으니 다시 넣지 말 것.
+
+그래서 방어선은 `daemon.lock` 하나다. **새 인스턴스가 이긴다** — 락을 못 잡으면 파일에 적힌
+pid 를 읽어 `SIGTERM` 을 보내고 최대 15초 기다렸다 넘겨받는다. 둘 다 같은 사용자의 같은
+데몬이라 이건 죽이기가 아니라 인계다. 그래도 못 넘겨받으면 60초 자고 종료해
 `ThrottleInterval 5` 가 재시작 폭풍이 되지 않게 한다.
 
 확인:
