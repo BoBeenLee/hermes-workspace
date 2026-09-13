@@ -2,6 +2,12 @@
 
 ## 2026-09-13
 
+- Built and verified a redroid Android 14 container on the DGX Spark: boots in 10 seconds, `arm64-v8a` native, with input injection, `screencap`, `dumpsys` view hierarchy, `sqlite3`, and loopback ADB. Recorded as [DGX Android Container](runbooks/dgx-android-container.md).
+- **Incident:** the first container hard-reset the DGX at 19:44:34. Android `init` reboots on early-boot failure, and `--privileged` grants `CAP_SYS_BOOT` with seccomp unconfined, so the reboot reached the host. No work was lost (ComfyUI queue was empty, zero failed units after boot). `--cap-drop=SYS_BOOT` does not work under `--privileged`; an explicit `--security-opt seccomp=` profile does, and is now mandatory for this container.
+- Found that `--device` cannot pass binderfs nodes into a container (mknod loses the binderfs inode, giving EACCES/ENXIO); a `-v` bind mount of the node works, and the nodes must be `chmod 0666` because Android services are not root.
+- Established that GB10 has no AArch32, so only redroid `_64only` images boot and `ro.product.cpu.abilist` is `arm64-v8a` alone.
+- Noted that `docker` group membership on the DGX is already root-equivalent, so host setup runs through `nsenter` in a privileged container without the sudo password.
+
 - Recorded why KakaoTalk control cannot move to the DGX Spark while the Hermes agent itself can: the MCP server is a thin wrapper and the macOS dependency lives in the vendored `kakaocli` (SQLCipher container DB plus Keychain) and `kmsg` (Accessibility `AXPress`) binaries.
 - Established the deciding constraint as the KakaoTalk device-slot rule, not software portability: a Wine companion client evicts the Mac and an Android container evicts the phone, so a DGX path presupposes a separate number or account.
 - Evaluated and rejected Wine plus KakaoTalk PC on aarch64: unverified under Hangover, no AT-SPI bridge in Wine, `uiautomationcore` at 36 of 98 exports, and a capability regression because the messenger assistant's fail-closed rules need database evidence a scrape cannot supply.

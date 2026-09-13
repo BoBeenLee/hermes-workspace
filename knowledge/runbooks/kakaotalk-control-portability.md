@@ -73,18 +73,16 @@ Three independent problems, and clearing all three still loses capability.
 headless. Because the DGX is aarch64, the KakaoTalk ARM APK runs **natively**, with no
 `libhoudini` or `libndk` translation layer, which an x86 host would need.
 
-DGX kernel prerequisites, measured 2026-09-13 on `6.17.0-1031-nvidia`:
+The container half of this was **built and verified on 2026-09-13**: Android 14 boots on the
+DGX in 10 seconds, `arm64-v8a` native, with input injection, screenshots, view-hierarchy dumps,
+`sqlite3`, and loopback ADB all working. It took four workarounds, one of which hard-reset the
+host on the first attempt. The recipe and the hazards are in
+[DGX Android Container](dgx-android-container.md).
 
-| redroid requirement | DGX |
-| --- | --- |
-| binderfs | `CONFIG_ANDROID_BINDERFS=m`, `binder_linux.ko` present, not loaded |
-| ashmem / memfd | ashmem removed in this kernel; `CONFIG_MEMFD_CREATE=y` satisfies it |
-| IPv6 | `CONFIG_IPV6=y` |
-| DMA-BUF Heaps | `CONFIG_DMABUF_HEAPS=y`; `/dev/dma_heap/{system,reserved,cma}` present |
-| 4KB pages | `getconf PAGESIZE` = 4096, `CONFIG_ARM64_4K_PAGES=y` |
-| GPU (optional) | `/dev/dri/renderD128` present |
+Two results from that PoC constrain a KakaoTalk port:
 
-All prerequisites are met.
+- `ro.product.cpu.abilist` is `arm64-v8a` **only** — GB10 has no AArch32, so the KakaoTalk APK must ship 64-bit native libraries.
+- upstream redroid does not support binderfs kernels, so this stack is unsupported configuration that a kernel update can break at any time.
 
 [Iris](https://github.com/dolidolih/Iris) is the Android counterpart of the current Mac
 stack: it polls KakaoTalk's Android SQLite `chat_logs`, decrypts the encrypted fields,

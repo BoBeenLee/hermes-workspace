@@ -68,3 +68,41 @@ git diff -- .
 
 별도 번호/계정이 확보되면 redroid + Iris PoC. 그 전까지 카카오톡은 default macOS target에 둔다.
 DGX는 headless Hermes host 겸 로컬 LLM 백엔드로 붙이는 분리 구성이 남은 선택지다.
+
+## Addendum: Android Container PoC (2026-09-13, 사용자 승인 후 실행)
+
+- Task type가 `analysis-report`에서 `ops-change`로 올라갔다. Completion mode: `review-required`
+- 사용자 요청으로 B안(Android 컨테이너)을 실제로 띄웠다. **카카오톡 로그인은 하지 않았다** — 기기 슬롯 미소모
+
+### 결과
+
+`redroid/redroid:14.0.0_64only-latest` 부팅 성공. 10초, 서비스 49개, 583MB RSS, CPU 0.11%.
+`arm64-v8a` 네이티브, SDK 34, 패키지 113개. `input`/`screencap`/`dumpsys activity top`/
+`sqlite3`/loopback adbd 전부 동작. 레시피와 함정은
+[DGX Android Container](../knowledge/runbooks/dgx-android-container.md)로 옮겼다.
+
+### 사고: DGX 하드 리셋
+
+첫 컨테이너가 19:44:34에 호스트를 재부팅시켰다. `journalctl --list-boots`의 직전 부팅이
+systemd 종료 시퀀스 없이 크래시 루프 로그 도중에 끊긴다. 원인은 `--privileged`가 주는
+`CAP_SYS_BOOT` + seccomp unconfined 조합이고, Android init이 조기 부팅 실패 시 리부트를
+호출한 것이 호스트까지 갔다.
+
+피해 없음: 실패 유닛 0개, ComfyUI user 유닛 정상 복귀, 큐 비어 있었음, Tailscale 정상.
+
+재발 방지: `reboot`/`kexec_*`를 `SCMP_ACT_ERRNO`로 막는 seccomp 프로필을 필수화했다.
+`--cap-drop=SYS_BOOT`은 `--privileged` 하에서 무효임을 실측으로 확인했다(`CapEff` 동일).
+
+### 남긴 호스트 상태
+
+| 항목 | 상태 | 되돌리기 |
+| --- | --- | --- |
+| `binder_linux` 로드 + `/dev/binderfs` 마운트 | 재부팅하면 사라짐 | `rmmod binder_linux` |
+| `/dev/binderfs/*` 퍼미션 `0666` | 재부팅하면 사라짐 | 재부팅 |
+| `bobeenlee` docker 그룹 | **영구** (root 등가) | `sudo gpasswd -d bobeenlee docker` |
+| 컨테이너 `redroid-poc` 실행 중 | 수동 | `docker rm -f redroid-poc` |
+
+### 결론 변화 없음
+
+컨테이너는 된다. 카카오톡은 여전히 **기기 슬롯**에서 막힌다. 별도 번호/계정이 없으면
+로그인하는 순간 폰이 밀려난다.
