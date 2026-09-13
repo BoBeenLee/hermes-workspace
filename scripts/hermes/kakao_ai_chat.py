@@ -50,6 +50,8 @@ RESULTS_DIR = BASE_DIR / "results"
 WRAPPER_PATH = BASE_DIR / "bin" / "kakao-ai-chat-via-local-ssh.sh"
 PLIST_LABEL = "ai.hermes.kakao-ai-chat"
 PLIST_PATH = HOME / "Library" / "LaunchAgents" / f"{PLIST_LABEL}.plist"
+SYSTEMD_UNIT_NAME = "kakao-ai-chat.service"
+SYSTEMD_UNIT_PATH = HOME / ".config" / "systemd" / "user" / SYSTEMD_UNIT_NAME
 
 STATE_VERSION = 1
 DETECT_LIMIT = 50
@@ -1187,7 +1189,10 @@ def check(config_path: Path) -> int:
             report["discord_reachable"] = False
             report["discord_error"] = str(exc)[:200]
     try:
-        rows = kakaocli_query(config, "SELECT COUNT(*) FROM NTChatMessage")
+        if backend_name(config) == "iris":
+            rows = backend_query(config, "SELECT COUNT(*) AS n FROM chat_logs", ("n",))
+        else:
+            rows = kakaocli_query(config, "SELECT COUNT(*) FROM NTChatMessage")
         report["db_read"] = True
         report["message_count"] = rows[0][0] if rows else 0
     except Exception as exc:  # noqa: BLE001
@@ -1199,7 +1204,7 @@ def check(config_path: Path) -> int:
             report["my_user_id"],
             report["rooms"] > 0,
             report["hermes_bin"],
-            report["kmsg_bin"],
+            report["iris_reachable"] if backend_name(config) == "iris" else report["kmsg_bin"],
             report.get("db_read"),
             report.get("discord_reachable"),
         ]
@@ -1349,6 +1354,31 @@ def create_channel(config_path: Path) -> int:
     return 0
 
 
+def systemd_unit(python: Path, installed: Path, config_path: Path) -> str:
+    """A user unit, matching hermes-gateway.service on the same host.
+
+    No self-ssh wrapper here: that trick exists only because launchd has no TCC
+    or Keychain context, and Linux has neither to work around.
+    """
+    return (
+        "[Unit]\n"
+        "Description=KakaoTalk AI chat daemon (Iris backend)\n"
+        "After=network-online.target\n"
+        "Wants=network-online.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"WorkingDirectory={BASE_DIR}\n"
+        f"ExecStart={python} {installed} --config {config_path} --poll-loop\n"
+        "Restart=on-failure\n"
+        "RestartSec=5\n"
+        "UMask=0077\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
 def install(config_path: Path) -> int:
     BASE_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(BASE_DIR, 0o700)
@@ -1361,9 +1391,25 @@ def install(config_path: Path) -> int:
     if Path(__file__).resolve() != installed.resolve():
         installed.write_text(Path(__file__).read_text(encoding="utf-8"), encoding="utf-8")
         os.chmod(installed, 0o700)
+        # The iris backend imports this as a sibling module, so it has to travel
+        # with the deployed copy or the daemon dies on the first iris tick.
+        source_client = Path(__file__).resolve().parent / "iris_client.py"
+        if source_client.is_file():
+            (BASE_DIR / "iris_client.py").write_text(
+                source_client.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            os.chmod(BASE_DIR / "iris_client.py", 0o600)
+
+    python = HOME / ".hermes" / "hermes-agent" / "venv" / "bin" / "python"
+
+    if sys.platform != "darwin":
+        SYSTEMD_UNIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SYSTEMD_UNIT_PATH.write_text(systemd_unit(python, installed, config_path), encoding="utf-8")
+        print(json.dumps({"unit": str(SYSTEMD_UNIT_PATH), "installed": str(installed)}, indent=2))
+        print(f"enable with: systemctl --user daemon-reload && systemctl --user enable --now {SYSTEMD_UNIT_NAME}")
+        return 0
 
     key = HOME / ".ssh" / "hermes_local_jarvis"
-    python = HOME / ".hermes" / "hermes-agent" / "venv" / "bin" / "python"
     WRAPPER_PATH.parent.mkdir(parents=True, exist_ok=True)
     # launchd has no TCC/Keychain context, so the daemon runs itself back through
     # sshd on loopback; kakaocli and kmsg then inherit a real user session.
@@ -1392,6 +1438,22 @@ def install(config_path: Path) -> int:
     return 0
 
 
+def set_enabled(value: bool) -> int:
+    """Flip the auto-reply flag from outside the daemon.
+
+    The loop reloads state at the top of every tick, so a write lands within one
+    poll interval. It writes state back at the end of a tick, so a flip made
+    mid-tick can be overwritten - re-run and re-read if it does not take.
+    """
+    state = load_state()
+    state["enabled"] = bool(value)
+    if value:
+        state["last_error"] = ""
+    save_json(STATE_PATH, state)
+    print(json.dumps({"enabled": state["enabled"]}, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="KakaoTalk AI chat daemon")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
@@ -1401,13 +1463,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-loop", action="store_true", help="Run the persistent polling loop")
     parser.add_argument("--resolve-rooms", action="store_true", help="Fill kmsg_chat_id from kmsg chats (opens KakaoTalk)")
     parser.add_argument("--create-channel", action="store_true", help="Create the private Discord control channel")
-    parser.add_argument("--install", action="store_true", help="Write the self-ssh wrapper and launchd plist")
+    parser.add_argument("--install", action="store_true", help="Write the service definition for this platform")
+    parser.add_argument("--enable", action="store_true", help="Turn auto-replies on")
+    parser.add_argument("--disable", action="store_true", help="Turn auto-replies off")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config_path = Path(args.config).expanduser()
+    if args.enable and args.disable:
+        print("--enable and --disable are mutually exclusive", file=sys.stderr)
+        return 2
+    if args.enable or args.disable:
+        return set_enabled(args.enable)
     if args.check:
         return check(config_path)
     if args.resolve_rooms:

@@ -9,6 +9,41 @@ timestamp: 2026-09-13T21:00:00+09:00
 
 # KakaoTalk AI Chat Daemon
 
+
+## Linux / Iris Backend
+
+On a Linux host the daemon runs the same loop against the Android container
+instead of `kakaocli` and `kmsg`. Set two keys in `config.json`:
+
+```json
+{ "backend": "iris", "iris_base_url": "http://172.17.0.2:3000" }
+```
+
+`--install` then writes a **systemd user unit** rather than a LaunchAgent:
+
+```bash
+python kakao_ai_chat.py --config <config> --install
+systemctl --user daemon-reload && systemctl --user enable --now kakao-ai-chat.service
+```
+
+Three differences worth knowing before debugging this backend.
+
+**No self-ssh wrapper.** It exists on macOS only because launchd has no TCC or
+Keychain context. Linux has neither, so the unit runs the poll loop directly -
+which also removes the flapping-ssh failure mode.
+
+**No `kmsg_chat_id`.** `chat_id` is the same key on both sides of Iris, so the
+resolve step and `--resolve-rooms` do not apply and are gated off.
+
+**Sender names are best-effort.** The `friends` table lives in a database Iris
+does not attach, so names arrive on the `/ws` push feed into an in-memory cache.
+A miss falls back to the unknown-speaker label. A restart starts that cache cold.
+
+`--check` reports `backend` and, on iris, `iris_reachable` in place of the
+`kakaocli_bin` / `kmsg_bin` file probes. `iris_client.py` is copied next to the
+installed daemon by `--install`; it has to be there or the first iris tick dies
+on the import.
+
 ## Purpose
 
 운영자가 카카오톡 방에서 `@jarvis <질문>`을 치면, 그 방의 최근 대화를 문맥으로 읽고
