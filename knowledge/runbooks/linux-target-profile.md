@@ -52,13 +52,59 @@ Supported operations:
 - Discord thread triage from Hermes logs.
 - One-shot Hermes prompts without `computer_use`.
 
-Unsupported until a Linux desktop-control backend is added:
+Desktop control (`computer_use`) works on Linux. It was never the platform that
+blocked it - see [Computer Use On A Linux Target](#computer-use-on-a-linux-target)
+below. The commands exit 2 only when `HERMES_COMPUTER_USE_BACKEND` is not
+`cua-driver`; `noop` is the value that switches the tool off.
 
-- `setup-computer-use`
-- `grant-computer-use`
-- `verify-computer-use`
+## Computer Use On A Linux Target
 
-Those commands should exit with a clear unsupported target/backend message when `HERMES_COMPUTER_USE_BACKEND=none`.
+`cua-driver` is cross-platform Rust, not a macOS bundle, and the upstream Hermes
+installer already places a `linux-arm64` build in `~/.local/bin`. On Linux it
+drives AT-SPI for the accessibility tree and XTest for input, so what it needs is
+a reachable display with AT-SPI running - nothing to port.
+
+```env
+HERMES_COMPUTER_USE_BACKEND=cua-driver
+CUA_BIN=<home>/.local/bin/cua-driver
+HERMES_REMOTE_DISPLAY=:10
+HERMES_REMOTE_XAUTHORITY=<home>/.Xauthority
+```
+
+Four things cost time on the DGX, and none of them are the driver.
+
+**`none` is not an upstream value.** `tools/computer_use/tool.py` accepts `cua`,
+`cua-driver`, `""` or `noop` and raises `RuntimeError` on anything else. The
+earlier profiles said `none`, which only stayed harmless because `run_prompt`
+bypasses the env-injecting code path.
+
+**`hermes doctor` showing `✓ computer_use` proves almost nothing.**
+`check_computer_use_requirements()` tests that the OS is Linux and that a file
+named `cua-driver` is on the PATH. It does not look at `DISPLAY`, AT-SPI, or
+whether the driver can start.
+
+**A non-interactive SSH has no `DISPLAY`.** It has to be named in the profile and
+injected - not only into `remote_bash`, but into the direct `ssh_remote` calls
+and `run_prompt`, because the agent spawns `cua-driver` itself and the display
+has to reach the agent rather than the ssh wrapper.
+
+**An empty desktop looks exactly like a broken one.** `list_windows` returning
+`{"windows": []}` on a healthy X11 display usually means no application is open;
+GNOME's own service windows do not count as top-level. Launch something
+(`cua-driver call launch_app`) before concluding anything. A locked session
+produces the same empty list, so check both: `dbus-send ... org.gnome.ScreenSaver.GetActive`
+and `loginctl show-session <id> -p LockedHint`.
+
+On this host the desktop is the persistent GNOME X11 session xrdp keeps alive
+(`sesman.ini`: `KillDisconnected=false`, `DisconnectedTimeLimit=0`). `gdm` is
+stopped and seat0 holds no session, so `:10` is the only desktop and it survives
+disconnects. No Xvfb, no autologin. For unattended use the screen lock has to be
+off (`org.gnome.desktop.screensaver lock-enabled false`, `session idle-delay 0`)
+- weigh that against who can reach the RDP port first.
+
+Upstream labels Linux support alpha. Measured working: `list_windows`,
+`get_screen_size`, `check_permissions` (`atspi`/`x11`/`xsend_event` all true),
+`launch_app`, and an agent answering from `bin/hermes-remote run`.
 
 Adding a Linux desktop-control backend would still not bring KakaoTalk with it. See
 [KakaoTalk Control Portability](kakaotalk-control-portability.md) for what the macOS

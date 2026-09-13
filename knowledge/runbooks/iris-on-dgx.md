@@ -137,6 +137,43 @@ against `chat_logs` or the observer loop-back, never against the response body.
 - **Long-run stability**, reconnect behaviour, and whether an injected or stale referer survives KakaoTalk rewriting `shared_prefs`. Since the referer is issued per notification handling, expect it to rotate and plan an Iris restart around that.
 - Whether upstream redroid breaking on a kernel update takes this stack with it.
 
+## The Decryption Rule `/query` Does Not Advertise
+
+`/query` returns `message` and `attachment` **decrypted only when the SELECT also
+asks for `user_id` and `v`.** Iris hands those to
+`KakaoDecrypt.decrypt(enc, b64_ciphertext, user_id)` - `v` carries the `enc` type,
+`user_id` seeds the key salt. Leave either column out and the value comes back as
+base64 with HTTP 200, no error and no warning:
+
+```
+select id, chat_id, user_id, type, message, attachment, created_at
+  -> 'WbZJz+ZPtR5iRhriGWj9kA=='
+select id, chat_id, user_id, type, message, attachment, created_at, v
+  -> '미사역팀은 내일 7시에 10번출구쪽 대로변으로 와주시면 됩니다.'
+     attachment {"thumbnailUrl":"https://talk.kakaocdn.net/..."}
+```
+
+A `WHERE user_id = ...` does not count - the column has to be selected. This is
+the single sharpest edge in the whole backend, because the failure mode is data
+that looks corrupt rather than locked. `scripts/hermes/iris_client.py` refuses
+such a SELECT instead of returning it.
+
+`POST /decrypt` exists (`{b64_ciphertext, user_id, enc}`) but is not needed for
+this. It is also easy to misread: handing it an already-decrypted string answers
+`Illegal base64 character 3f`, which looks like a key problem and is not.
+
+## Where Sender Names Come From
+
+They are not in reach of `/query`. `chat_rooms.members` holds numeric ids only,
+`private_meta` holds the *room* name, and the `friends` table that maps a user id
+to a display name lives in KakaoTalk2.db, which Iris does not attach.
+`open_chat_member.nickname` covers open chats alone.
+
+Names arrive on the `/ws` push feed, which Iris resolves itself and which also
+backs the `webServerEndpoint` webhook - `sharedFlow.collect { send(msg) }`, the
+same stream. A consumer that polls `/query` therefore needs the feed as a
+side-channel purely for names, and should tolerate a miss.
+
 ## Next: Porting The Policy Engine
 
 Read and write both work, so the remaining gap between this and the Mac stack is
