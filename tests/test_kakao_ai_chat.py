@@ -298,6 +298,17 @@ class PromptTests(unittest.TestCase):
     def test_facts_have_to_be_looked_up(self):
         self.assertIn("web_search", module.build_prompt([], [], "(없음)", "x"))
 
+    def test_the_turn_inherits_the_profile_model(self):
+        # a pin here silently bypasses the profile default AND its fallback chain
+        self.assertEqual(module.DEFAULT_CONFIG["provider"], "")
+        self.assertEqual(module.DEFAULT_CONFIG["model"], "")
+        with mock.patch.object(module.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
+            module.run_hermes(dict(CONFIG, hermes_bin="/bin/true", provider="", model=""), "안녕")
+        command = run.call_args.args[0]
+        self.assertNotIn("--provider", command)
+        self.assertNotIn("-m", command)
+
     def test_toolsets_name_only_things_that_resolve(self):
         names = module.DEFAULT_CONFIG["toolsets"].split(",")
         # cua-driver is the MCP server behind computer_use, not a toolset: it adds nothing

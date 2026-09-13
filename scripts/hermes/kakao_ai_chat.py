@@ -117,11 +117,15 @@ DEFAULT_CONFIG: dict = {
     # `kanban` is out: 14 of the 31 tools for a board a chat room never touches.
     "toolsets": ("terminal,file,vision,video,web,skills,"
                  "cronjob,memory,session_search,computer_use"),
-    # The jarvis default (local MLX Qwen3.8-27B) needs minutes per turn, which is
-    # unusable for chat: an image question timed out past 7 minutes on it and took
-    # 17s here. Blank these two to inherit the profile default when depth beats speed.
-    "provider": "custom:altalt",
-    "model": "openai/gpt-5-nano",
+    # Blank = inherit the profile default, and its fallback chain with it. These used to
+    # pin custom:altalt/gpt-5-nano because the profile default was a local MLX model that
+    # needed minutes per turn. That stopped being true when the default became
+    # zai/glm-4.7-flash, and the pin then cost accuracy for nothing: nano answered a
+    # "map link for this restaurant" by repeating a coordinate for somewhere else, while
+    # the default gets it right. Measured on the same toolsets: nano ~11s and wrong,
+    # glm-4.7-flash 67-83s and right, and nano is still reachable as fallback tier 2.
+    "provider": "",
+    "model": "",
     "kakaocli_bin": str(HOME / ".hermes/mcp-servers/openhuman-kakaotalk/bin/kakaocli-self-ssh"),
     "kmsg_bin": str(HOME / ".hermes/mcp-servers/openhuman-kakaotalk/vendor/kmsg/.build/release/kmsg"),
     "kakaotalk_user_id": "",
