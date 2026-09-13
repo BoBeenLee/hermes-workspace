@@ -6,6 +6,7 @@
 - [Hermes Agent Multi-Host Bootstrap](hermes-agent-multi-host.md)
 - [Hermes Workflow Optimization](hermes-workflow-optimization.md)
 - [Jarvis Messenger Assistant](jarvis-messenger-assistant.md)
+- [KakaoTalk Control Portability](kakaotalk-control-portability.md)
 - [Linux Target Profile](linux-target-profile.md)
 - [macOS Target Profile](macos-target-profile.md)
 - [Platform Toolsets Validation Warning](platform-toolsets-validation-warning.md)

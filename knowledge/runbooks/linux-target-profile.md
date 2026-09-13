@@ -56,6 +56,10 @@ Unsupported until a Linux desktop-control backend is added:
 
 Those commands should exit with a clear unsupported target/backend message when `HERMES_COMPUTER_USE_BACKEND=none`.
 
+Adding a Linux desktop-control backend would still not bring KakaoTalk with it. See
+[KakaoTalk Control Portability](kakaotalk-control-portability.md) for what the macOS
+stack actually depends on and why the account device slot decides the question.
+
 Linux notes:
 
 - Keep the example profile non-runnable until a real SSH host is known.

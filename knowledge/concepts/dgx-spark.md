@@ -14,3 +14,5 @@ The user's NVIDIA DGX Spark / GIGABYTE AI TOP ATOM Linux workstation reachable o
 _Avoid_: assuming DGX operations use the default Hermes target tooling, treating the onboarding web UI as a permanent service
 
 Access path, doc map, and the account boundary: [DGX Spark Remote Access](../runbooks/dgx-spark-remote-access.md).
+
+KakaoTalk 제어를 DGX로 옮길 수 있는지에 대한 판정: [KakaoTalk Control Portability](../runbooks/kakaotalk-control-portability.md).

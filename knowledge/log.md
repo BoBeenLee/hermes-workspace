@@ -1,5 +1,13 @@
 # Knowledge Log
 
+## 2026-09-13
+
+- Recorded why KakaoTalk control cannot move to the DGX Spark while the Hermes agent itself can: the MCP server is a thin wrapper and the macOS dependency lives in the vendored `kakaocli` (SQLCipher container DB plus Keychain) and `kmsg` (Accessibility `AXPress`) binaries.
+- Established the deciding constraint as the KakaoTalk device-slot rule, not software portability: a Wine companion client evicts the Mac and an Android container evicts the phone, so a DGX path presupposes a separate number or account.
+- Evaluated and rejected Wine plus KakaoTalk PC on aarch64: unverified under Hangover, no AT-SPI bridge in Wine, `uiautomationcore` at 36 of 98 exports, and a capability regression because the messenger assistant's fail-closed rules need database evidence a scrape cannot supply.
+- Measured the DGX against redroid prerequisites and found all of them met (binderfs, memfd, IPv6, DMA-BUF heaps, 4KB pages), making redroid plus Iris the only structurally matching path.
+- Noted that `kmsg status` launches KakaoTalk.app and is not a read-only probe, and that DGX `sudo` is password-only except `shutdown`/`poweroff`.
+
 ## 2026-08-20
 
 - Made the DGX Spark runbook the single entry point for DGX work: added a `DGX Doc Map` that assigns ComfyUI service internals to the `remote-comfyui` repo, and an `Accounts And Control Paths` section covering the `bobeenlee` vs `comfyops` boundary, the three `comfyui.service` control paths that all resolve to the owner's user unit, and the tunnel and MCP-host equivalence.
