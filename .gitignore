@@ -6,3 +6,7 @@ tmp/
 .hermes/
 .worktrees/
 artifacts/macos/
+
+# Build noise. These were tracked, so every test run showed up as a binary diff.
+__pycache__/
+*.py[cod]
