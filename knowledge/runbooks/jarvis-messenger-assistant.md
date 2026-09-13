@@ -50,7 +50,7 @@ gateway restart, and future policy changes remain `review-required`.
 - Every KakaoTalk operation goes through the `KakaoMcpAdapter` interface. Its
   implementation loads the existing profile MCP server definition, starts the
   stdio server with the MCP Python SDK, initializes one client session, calls
-  exactly one `kakaotalk_mac.*` tool with controller-owned arguments, normalizes
+  exactly one `kakaotalk.*` tool with controller-owned arguments, normalizes
   structured output, and closes the subprocess. The controller never invokes
   `kakaocli`, `kmsg`, or CuaDriver directly.
 - After drafting and policy evaluation, but before choosing automatic send or

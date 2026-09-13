@@ -2,8 +2,12 @@
 
 ## 2026-09-13
 
+- Dropped "mac" from the shared identifiers of the KakaoTalk skill and from the live Hermes config, since the repo now serves two backends: `kakaotalk-mac-message/` → `kakaotalk-message/`, `openhuman-kakaotalk-mac` → `openhuman-kakaotalk`, and the `kakaotalk_mac.*` tool namespace → `kakaotalk.*`. The backend documents went the other way and gained an explicit `macos` marker, because with two backends the platform is information rather than noise.
+- The tool namespace and the server name are one contract spanning the repo, the deployed server directory and `config.yaml`, so all three moved in a single window with the gateways down. Verified after restart: the old toolset name is now rejected, the new one resolves, `hermes doctor` reports no toolset warnings, and the gateway registered the same 19 tools under `mcp__openhuman_kakaotalk__`.
+- Found and set aside a stale top-level `adapters/` copy inside the server directory that the sync script never touched and the entrypoint never imported; it still carried the old namespace and would have been a confusing false lead.
+
 - Renamed the KakaoTalk skill repo to `kakaotalk-message-skill` (GitHub and local) now that it covers both platforms, and pointed the canonical-doc reference in this log at the new path. Nothing on the default macOS target had to change: it holds no clone of that repo and no `~/.openhuman/skills/`, and the deployed MCP servers under `~/.hermes/mcp-servers/` keep their names.
-- Added a Linux backend to that skill, covering the redroid plus Iris path built here, with a backend-selection section at the top of `SKILL.md` because most of the macOS guidance does not apply. The skill directory and the `openhuman-kakaotalk-mac` server name were deliberately left alone, since both are deployed identifiers and renaming them belongs with the Hermes config change.
+- Added a Linux backend to that skill, covering the redroid plus Iris path built here, with a backend-selection section at the top of `SKILL.md` because most of the macOS guidance does not apply. The skill directory and the MCP server name were renamed in a follow-up, together with the Hermes config change they are a contract with.
 
 - Made the Android container a first-class service in the DGX AI Control app (`~/src/dgx-ai-control`, commit `07217a8`): Start / Stop / Restart / Logs plus `--android start|stop|restart|status`, with the binder prep, container start, boot wait and Iris launch behind one action. Measured ~9s to start, ~10s to stop.
 - Restyled that app, which had no styling at all, and recorded the reasoning in its own `PRODUCT.md` and `DESIGN.md`. It is light rather than dark because it is seen over RDP inside a macOS window, where compression bands dark tonal steps.

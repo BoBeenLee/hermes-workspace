@@ -19,7 +19,7 @@ timestamp: 2026-08-17T13:00:00+09:00
 ⚠ platform 'discord' references unknown toolset 'antigravity-worker' — did you mean 'hermes-discord'?
 ```
 
-First observed on the default remote Mac during the Hermes 0.19.1 → 0.20.2 upgrade (2026-08-17), when the config schema moved v33 → v37.
+First observed on the default remote Mac during the Hermes 0.19.1 → 0.20.2 upgrade (2026-08-17), when the config schema moved v33 → v37. The quoted output above is verbatim from that date; the server has since been renamed to `openhuman-kakaotalk`, so today the same warning names that instead.
 
 ## Verdict
 
@@ -45,7 +45,7 @@ The validator itself exists for a real bug (upstream #38798, where a migration r
 |---|---|
 | `hermes -t zzz-not-a-real-toolset -z ...` | Rejected: `ignoring unknown --toolsets entries` + `did not contain any valid toolsets` |
 | `hermes -t antigravity-worker -z ...` | No rejection; exposes `mcp__antigravity_worker__antigravity_{start_task,check,status,collect,stop}` |
-| `hermes -t openhuman-kakaotalk-mac -z ...` | No rejection; runs normally |
+| `hermes -t openhuman-kakaotalk -z ...` | No rejection; runs normally |
 | `hermes doctor` | Zero toolset warnings |
 | Gateway logs (default + content/jarvis/preflight/product) | Zero `unknown toolset` / `zero valid toolsets` entries |
 
@@ -54,7 +54,7 @@ The bogus-name case is the control: a genuinely invalid toolset is loud and dist
 ## How to re-check
 
 ```bash
-ssh bobeen 'PATH="$HOME/.local/bin:$HOME/.hermes/node/bin:$PATH"; hermes -t antigravity-worker -z "say OK"'
+ssh bobeen 'PATH="$HOME/.local/bin:$HOME/.hermes/node/bin:$PATH"; hermes -t openhuman-kakaotalk -z "say OK"'
 ssh bobeen 'PATH="$HOME/.local/bin:$HOME/.hermes/node/bin:$PATH"; hermes doctor 2>&1 | grep -i toolset'
 ```
 
