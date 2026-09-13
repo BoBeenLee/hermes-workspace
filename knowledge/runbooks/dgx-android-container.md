@@ -1,7 +1,7 @@
 ---
 type: Runbook
 title: DGX Android Container
-description: Verified recipe for running a redroid Android container on the DGX Spark, and the four kernel and container gotchas that must each be worked around, including one that hard-resets the host.
+description: Verified recipe for running a redroid Android container on the DGX Spark, and the five kernel and container gotchas that must each be worked around, including one that hard-resets the host.
 resource: repo://hermes-workspace/knowledge/runbooks/dgx-android-container.md
 tags: [dgx-spark, redroid, android, docker, binderfs, arm64]
 timestamp: 2026-09-13T20:15:00+09:00
@@ -77,10 +77,11 @@ docker run -itd --name redroid-poc --privileged \
   -v /dev/binderfs/hwbinder:/dev/hwbinder \
   -v /dev/binderfs/vndbinder:/dev/vndbinder \
   -v ~/redroid-poc/data64:/data -p 127.0.0.1:5555:5555 \
+  -v /dev/null:/dev/kmsg \
   redroid/redroid:14.0.0_64only-latest androidboot.redroid_gpu_mode=guest
 ```
 
-## The Four Gotchas
+## The Five Gotchas
 
 ### 1. Bind-mount the binder nodes; `--device` does not work
 
@@ -130,6 +131,40 @@ It exits 0, writes nothing, and logs nothing, whether invoked as `uiautomator du
 via `app_process`, or as `cmd uiautomator` (`Can't find service: uiautomator`). Use
 `dumpsys activity top` for the view hierarchy, or drive uiautomator over ADB from a client
 such as uiautomator2.
+
+### 5. The container writes Android's logs into the host kernel ring buffer
+
+Under `--privileged` the container gets the host `/dev/kmsg`, so Android's `init`, `libselinux`
+and anything that logs before `logd` is up land in the **host** journal as `_TRANSPORT=kernel`.
+Measured 2026-09-13: 63,656 of the host boot's 108,827 journal lines (58%) came from the
+container. During the early-boot loop it is `ServiceManagerCppClient: Waited for
+servicemanager.ready` at 1 Hz; once booted it settles to `SELinux: Loaded service context from:`
+about every 3 s.
+
+That is not only noise. It is what buried the host's own shutdown sequence when the tail of the
+previous boot was read during the shutdown investigation in
+[DGX Spark Remote Access](dgx-spark-remote-access.md).
+
+Give the container its own sink — this is in the `Run` block above:
+
+```bash
+-v /dev/null:/dev/kmsg
+```
+
+Container-scoped and it survives host reboots, but it is a `docker run` argument, so applying it
+to an already-created container means `docker rm` + `docker run`; `dgx-ai-control` only ever
+calls `docker start` / `docker stop`. The host-wide alternative needs no restart but also
+silences `systemd-shutdown`, which logs to kmsg after journald has stopped:
+
+```bash
+sysctl -w kernel.printk_devkmsg=off
+```
+
+Do not reach for `journalctl --vacuum-size` to clean up afterwards. The spam is the *newest*
+data, so vacuum-by-size deletes the oldest archives first — here that is the boot ledger back to
+August that the shutdown diagnosis rests on. journald already self-caps (4 GB default) and 591 MB
+on a 3.7 TB disk is not a problem worth trading evidence for.
+
 
 ## Installing A Play-Distributed App
 

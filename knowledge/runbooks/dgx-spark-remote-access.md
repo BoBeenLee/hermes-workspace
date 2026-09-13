@@ -277,7 +277,59 @@ systemctl poweroff        ->  Call to PowerOff failed: Interactive authenticatio
 
 polkit refuses the power-off request from a remote SSH session, so `systemctl poweroff` needs either the local desktop session on `tty1` (GNOME power menu) or the same interactive password. `/etc/sudoers.d/comfyops-comfyui` covers only ComfyUI service operations for the `comfyui-ops` group and does not grant power-off. To make remote shutdown unattended, the user has to add a sudoers drop-in such as `bobeenlee ALL=(root) NOPASSWD: /sbin/shutdown, /sbin/poweroff`; treat that as `review-required`.
 
+**Superseded 2026-09-11:** that drop-in now exists as `/etc/sudoers.d/bobeenlee-poweroff`. `sudo -l` reports `(root) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown, /sbin/poweroff, /usr/sbin/poweroff`, so `sudo -n shutdown -h now` works without a TTY. Nothing else gained NOPASSWD — `ethtool`, `rtcwake`, `dmidecode` and `journalctl --vacuum-*` still prompt.
+
 After the next boot, verified state on 2026-08-19: `Linger=yes` for `bobeenlee`, so `comfyui.service` is `enabled` and starts on its own, while `llama-local.service` stays `disabled` and `inactive`. Re-select a model with `dgx-ai-control select-model <name>` when the local LLM is needed, and re-open any SSH tunnels; nothing is served off loopback.
+
+### The First Poweroff Does Not Stick
+
+The OS side is not the problem. Every `sudo shutdown -h now` completes cleanly — no hung stop
+job, no timeout:
+
+```text
+systemd[1]: Reached target poweroff.target - System Power Off.
+systemd[1]: Shutting down.
+systemd-journald[739]: Journal stopped
+```
+
+Then the box powers **itself** back on. `journalctl --list-boots` shows the next boot starting
+35-40 s after the previous boot's last line, and `systemd-analyze` accounts for 10.8 s firmware
++ 4.9 s loader, so the machine is actually off for only about 15 s. Measured 2026-09-13: nine
+consecutive attempts on 09-11 (19:21, 19:32, 19:56, 20:08, 21:39, 22:32, 22:37, 22:44, 22:45),
+five on 09-07, and the same on 08-26, 08-27, 08-31, 09-01 and 09-02.
+
+No OS-visible wake source explains it, all checked and negative: both NICs are
+`power/wakeup=disabled` and the wired RTL8127 has `carrier=0`, there are no USB devices, no PCI
+device has PME enabled, `rtc0/wakealarm` is empty, no timer sets `WakeSystem=yes`, and there is
+no `/dev/ipmi*`. `nvidia-disable-aqc-nic.service` is a **no-op on this box** — it removes an
+Aquantia AQC113, and the GIGABYTE unit ships a Realtek 8127 instead.
+
+The cause is the AMI BIOS setting **`Restore on AC Power Loss` = `Power On`**. On GB10 the BIOS
+cannot tell a clean OS poweroff from an AC cut, so the EC re-powers the board after every
+shutdown; NVIDIA-branded DGX Spark units ship with it on, ASUS GX10 ships with it off. The
+corroborating read on this unit is byte 4 = `0x01` (the value byte, 0 = Power Off / 1 = Power On)
+in the AMI Setup variable:
+
+```bash
+hexdump -C /sys/firmware/efi/efivars/Setup-ec87d643-eba4-4bb5-a1e5-3f3e36b20da9 | head -1
+# 07 00 00 00 | 01 00 01 1d 01 01 01 01 ...
+#  (attrs)                ^byte4
+```
+
+Treat that as corroboration, not proof: BIOS `5.36_0ACUM08` (2026-07-02) does not match the
+published reference dumps exactly (byte 7 is `0x01` here, `0x02` in both references), so the
+offsets are not guaranteed on this revision. Confirm in the BIOS menu before acting.
+
+Fix it in BIOS setup: attach HDMI and a keyboard, hold `Esc` or `Del` right after power-on, find
+`Restore on AC Power Loss` (may read `AC BACK` or `State After G3`) and set it to `Power Off`.
+There is no OS-level path — this firmware exposes neither `/sys/class/firmware-attributes/` nor
+`fwupdmgr get-bios-setting`. Writing the EFI variable from Linux is possible but the schema does
+not match, so it risks the boot path; do not.
+
+Until then, the box stays off only if power is cut within ~15 s of the poweroff — which is what
+the four shutdowns that did stick have in common: each followed a boot that had lived 23 s to
+2 min.
+
 
 ## DGX Dashboard
 
