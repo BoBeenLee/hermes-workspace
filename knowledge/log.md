@@ -2,6 +2,9 @@
 
 ## 2026-09-13
 
+- Completing the MCP server rename took four more places than the config edit suggested, and each one failed quietly: the `jarvis` profile keeps its own `mcp_servers` block, `bin/kakaocli-self-ssh` hard-codes the vendored binary path, and `messenger_assistant.py` and `kakao_ai_chat.py` pin the name as module constants while running from deployed copies outside this repo. Wrote it up as [Renaming An MCP Server](runbooks/renaming-an-mcp-server.md).
+- The lesson worth keeping: `hermes -t <name> -z` answering OK proves the toolset resolves and nothing else. Both dependent services were broken while that check was green.
+
 - Swept the remaining `kakaotalk_mac` / `openhuman-kakaotalk-mac` identifiers out of the workspace, task artifacts and quoted output included, so nothing in the repo names something that no longer exists.
 - That sweep caught real breakage, not just prose: `scripts/hermes/messenger_assistant.py` pinned `KAKAO_TOOLSET` and `KAKAO_MCP_TOOL_PREFIX` to the old names, and `scripts/hermes/kakao_ai_chat.py` held absolute paths under the old server directory. The controller is deployed on the default macOS target, so it was redeployed with the fix.
 

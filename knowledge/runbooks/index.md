@@ -13,3 +13,4 @@
 - [Linux Target Profile](linux-target-profile.md)
 - [macOS Target Profile](macos-target-profile.md)
 - [Platform Toolsets Validation Warning](platform-toolsets-validation-warning.md)
+- [Renaming An MCP Server](renaming-an-mcp-server.md)
