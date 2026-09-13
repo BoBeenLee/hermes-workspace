@@ -306,6 +306,8 @@ class PromptTests(unittest.TestCase):
         self.assertNotIn("antigravity-worker", names)
         # `video` belongs here: the prompt tells the agent to open videos with it
         self.assertLessEqual({"cronjob", "memory", "computer_use", "video"}, set(names))
+        # 14 tools for a board no chat room touches
+        self.assertNotIn("kanban", names)
 
     def test_a_scheduled_job_is_told_how_to_reach_this_room(self):
         # the no-send rule above must not also silence a cron job, which has no other

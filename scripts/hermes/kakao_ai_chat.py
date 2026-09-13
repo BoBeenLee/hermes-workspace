@@ -114,8 +114,9 @@ DEFAULT_CONFIG: dict = {
     # fresh session. `cua-driver` is deliberately absent: it is the MCP server behind
     # `computer_use`, not a toolset, and naming it adds nothing. `antigravity-worker`
     # likewise - it sits in agent.disabled_toolsets and is subtracted after enabling.
+    # `kanban` is out: 14 of the 31 tools for a board a chat room never touches.
     "toolsets": ("terminal,file,vision,video,web,skills,"
-                 "cronjob,memory,session_search,computer_use,kanban"),
+                 "cronjob,memory,session_search,computer_use"),
     # The jarvis default (local MLX Qwen3.8-27B) needs minutes per turn, which is
     # unusable for chat: an image question timed out past 7 minutes on it and took
     # 17s here. Blank these two to inherit the profile default when depth beats speed.
