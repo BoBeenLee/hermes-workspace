@@ -1,5 +1,6 @@
 import datetime as dt
 import importlib.util
+import os
 import json
 from pathlib import Path
 import tempfile
@@ -396,7 +397,8 @@ class SingleInstanceTests(unittest.TestCase):
                 first = module.acquire_single_instance_lock()
                 self.assertIsNotNone(first)
                 try:
-                    self.assertIsNone(module.acquire_single_instance_lock())
+                    with mock.patch.object(module.os, "kill"):
+                        self.assertIsNone(module.acquire_single_instance_lock(takeover_timeout=0.2))
                 finally:
                     first.close()
                 # released once the holder exits
@@ -404,11 +406,39 @@ class SingleInstanceTests(unittest.TestCase):
                 self.assertIsNotNone(again)
                 again.close()
 
-    def test_wrapper_forces_a_tty_so_the_far_side_dies_with_the_client(self):
-        source = (Path(module.__file__).parent / "kakao_ai_chat.py").read_text(encoding="utf-8")
-        # without -tt, launchd kills the ssh client and the remote python is
-        # reparented to init, leaking a second poller onto the same state file
-        self.assertIn("ssh -tt", source)
+    def test_wrapper_does_not_request_a_pty(self):
+        script = module.wrapper_script(
+            Path("/k/key"), Path("/p/python"), Path("/d/kakao_ai_chat.py"), Path("/c/config.json")
+        )
+        # the loopback sshd refuses it ("PTY allocation request failed on channel 0")
+        # and ssh then exits 255, so the service never starts at all
+        self.assertNotIn("-tt", script)
+        self.assertIn("exec /usr/bin/ssh \\\n", script)
+        self.assertIn("--poll-loop", script)
+
+    def test_new_instance_takes_the_lock_over_from_a_dead_holder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "daemon.lock"
+            lock.write_text("999999999")  # a pid that is not running
+            with mock.patch.object(module, "LOCK_PATH", lock):
+                handle = module.acquire_single_instance_lock(takeover_timeout=1.0)
+                self.assertIsNotNone(handle)
+                self.assertEqual(lock.read_text().strip(), str(os.getpid()))
+                handle.close()
+
+    def test_losing_instance_does_not_erase_the_holders_pid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "daemon.lock"
+            with mock.patch.object(module, "LOCK_PATH", lock):
+                holder = module.acquire_single_instance_lock()
+                self.assertIsNotNone(holder)
+                recorded = lock.read_text().strip()
+                self.assertEqual(recorded, str(os.getpid()))
+                # a second attempt that cannot take over must leave the record intact
+                with mock.patch.object(module.os, "kill"):
+                    self.assertIsNone(module.acquire_single_instance_lock(takeover_timeout=0.1))
+                self.assertEqual(lock.read_text().strip(), recorded)
+                holder.close()
 
 
 if __name__ == "__main__":
