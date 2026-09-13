@@ -3,6 +3,7 @@ import importlib.util
 import os
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import time
 import unittest
@@ -728,6 +729,59 @@ class DiscordControlTests(unittest.TestCase):
         state = {"rooms": {str(CHAT): {"pending_send": {"fingerprint": "[jarvis] 답", "ticks": 1}}}}
         module.verify_pending_sends(state, [], CONFIG, self.discord)
         self.assertTrue(any("방 재개" in message for message in self.discord.sent))
+
+
+class TurnFailureTests(unittest.TestCase):
+    """A failed turn has to say so. The cursor advances either way, so silence is final."""
+
+    def setUp(self):
+        module._IRIS_INBOX.clear()
+        self.config = dict(CONFIG, backend="iris")
+        self.state = module.default_state()
+
+    def run_tick(self, outcome):
+        sent = []
+        trigger = row(log_id=5, message="@jarvis 뭐야")
+        with mock.patch.multiple(
+            module,
+            process_discord_commands=mock.DEFAULT,
+            fetch_new_rows=mock.Mock(return_value=[trigger]),
+            build_turn=mock.Mock(return_value=([], "prompt")),
+            run_hermes=mock.Mock(**outcome),
+            send_message=mock.Mock(side_effect=lambda c, r, text, *a: sent.append(text)),
+        ):
+            module.tick(self.config, self.state, discord=FakeDiscord())
+        return sent
+
+    def test_a_timeout_is_announced_in_the_room(self):
+        sent = self.run_tick({"side_effect": subprocess.TimeoutExpired("hermes", 180)})
+        self.assertEqual(len(sent), 1)
+        self.assertIn(module.TURN_TIMEOUT_NOTE, sent[0])
+        self.assertTrue(sent[0].startswith(self.config["bot_prefix"]))
+
+    def test_any_other_failure_is_announced_too(self):
+        sent = self.run_tick({"side_effect": RuntimeError("hermes failed (1): boom")})
+        self.assertEqual(len(sent), 1)
+        self.assertIn(module.TURN_FAILED_NOTE, sent[0])
+
+    def test_the_room_text_does_not_leak_into_the_log(self):
+        # TimeoutExpired stringifies the command, and the command holds the prompt
+        self.run_tick({"side_effect": subprocess.TimeoutExpired("hermes " + "비밀 " * 200, 180)})
+        self.assertLessEqual(len(self.state["last_error"]), 340)
+
+    def test_the_notice_counts_against_the_rate_limit(self):
+        self.run_tick({"side_effect": RuntimeError("boom")})
+        self.assertEqual(len(self.state["rate"]), 1)
+
+    def test_the_cursor_still_moves_so_it_is_not_retried_forever(self):
+        self.run_tick({"side_effect": RuntimeError("boom")})
+        self.assertEqual(self.state["cursor_log_id"], 5)
+
+    def test_a_good_turn_sends_the_answer_and_no_notice(self):
+        sent = self.run_tick({"return_value": "답이다"})
+        self.assertEqual(len(sent), 1)
+        self.assertNotIn(module.TURN_FAILED_NOTE, sent[0])
+        self.assertIn("답이다", sent[0])
 
 
 class SingleInstanceTests(unittest.TestCase):

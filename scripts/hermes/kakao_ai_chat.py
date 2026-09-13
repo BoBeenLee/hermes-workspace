@@ -77,6 +77,11 @@ SEND_VERIFY_TICKS = 2
 # deploy. Measured: two mentions queued behind a slow turn were dropped by the restart
 # that cleared it.
 STARTUP_REPLAY_SECONDS = 600
+
+# Said in the room when a turn produces nothing, so a failure reads as a failure
+# rather than as the bot ignoring you.
+TURN_TIMEOUT_NOTE = "답이 너무 오래 걸려서 중단했어요. 범위를 좁혀서 다시 불러 주세요."
+TURN_FAILED_NOTE = "지금은 답을 만들지 못했어요. 잠시 뒤에 다시 불러 주세요."
 SEND_FINGERPRINT_CHARS = 48
 
 # KakaoTalk NTChatMessage.type. Verified against the live DB on 2026-09-13 by
@@ -1320,8 +1325,19 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
                 continue
             answer = run_hermes(config, prompt)
         except Exception as exc:  # noqa: BLE001 - the cursor must still advance
-            state["last_error"] = f"chat {chat_id}: {exc}"
+            # Truncated: TimeoutExpired stringifies the whole command, and the command
+            # carries the prompt, so an untrimmed timeout spills the room's messages
+            # into the journal.
+            state["last_error"] = f"chat {chat_id}: {str(exc)[:300]}"
             log(state["last_error"])
+            # Silence is the one answer a chat bot must never give. The cursor moves on
+            # regardless, so without a word here the room waits for a reply that is
+            # never coming - which is what a timeout looked like from the inside.
+            note = (TURN_TIMEOUT_NOTE if isinstance(exc, subprocess.TimeoutExpired)
+                    else TURN_FAILED_NOTE)
+            with contextlib.suppress(Exception):
+                send_message(config, room, f"{config['bot_prefix']} {note}")
+                state["rate"] = recent + [time.time()]
             continue
 
         answer, images = extract_attachments(answer, config)
