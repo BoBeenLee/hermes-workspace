@@ -18,6 +18,7 @@ short outgoing fingerprint used to confirm delivery.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import contextlib
 import datetime as dt
 import fcntl
@@ -169,10 +170,11 @@ def load_config(path: Path) -> dict:
 
 
 def default_state() -> dict:
-    # Starts stopped. Only `AI대화 시작` in the control channel turns it on.
+    # Running the unit is the only switch. A second in-band flag used to gate the
+    # tick before it read anything, which made it a duplicate of stopping the
+    # service rather than a reply policy.
     return {
         "version": STATE_VERSION,
-        "enabled": False,
         "cursor_log_id": 0,
         "last_discord_message_id": "",
         "rooms": {},
@@ -280,9 +282,10 @@ def build_discord(config: dict) -> DiscordClient:
 def status_text(config: dict, state: dict) -> str:
     paused = [chat_id for chat_id, room in (state.get("rooms") or {}).items() if room.get("paused")]
     lines = [
-        f"{'🟢 실행 중' if state.get('enabled') else '⛔ 중지'}",
+        "🟢 실행 중",
         f"- 방 {len(config.get('rooms') or [])}개, 일시정지 {len(paused)}개",
-        f"- 폴링 {config.get('poll_interval_seconds')}초, 커서 logId {state.get('cursor_log_id')}",
+        f"- 감지 {'/ws push' if backend_name(config) == 'iris' else str(config.get('poll_interval_seconds')) + '초 폴링'}"
+        f", 커서 logId {state.get('cursor_log_id')}",
         f"- 마지막 tick {state.get('last_tick_at') or '없음'}",
     ]
     if DISABLED_PATH.exists():
@@ -299,13 +302,11 @@ def handle_discord_command(content: str, message_id: str, config: dict, state: d
         return False
     argument = text[len(COMMAND_PREFIX):].strip()
 
-    if argument == "시작":
-        state["enabled"] = True
-        state["last_error"] = ""
-        discord.send("🟢 카카오톡 AI 대화를 시작했다.\n" + status_text(config, state), reply_to=message_id)
-    elif argument == "종료":
-        state["enabled"] = False
-        discord.send("⛔ 카카오톡 AI 대화를 중지했다.", reply_to=message_id)
+    if argument in {"시작", "종료"}:
+        discord.send(
+            "이제 서비스 자체가 유일한 스위치다. DGX Control 의 KakaoTalk 행에서 Start / Stop 을 쓴다.",
+            reply_to=message_id,
+        )
     elif argument == "상태":
         discord.send(status_text(config, state), reply_to=message_id)
     elif argument in {"방 재개", "방재개"}:
@@ -441,17 +442,9 @@ def fetch_new_rows(config: dict, cursor: int) -> list[dict]:
     chat_ids = room_chat_ids(config)
     if not chat_ids:
         return []
-    id_list = ",".join(str(value) for value in chat_ids)
     if backend_name(config) == "iris":
-        # user_id and v are not decoration: Iris decrypts message/attachment only
-        # when both are in the SELECT, and returns base64 silently otherwise.
-        sql = (
-            "SELECT id, chat_id, user_id, type, message, attachment, created_at, v "
-            "FROM chat_logs "
-            f"WHERE chat_id IN ({id_list}) AND id > {int(cursor)} "
-            f"ORDER BY id ASC LIMIT {DETECT_LIMIT}"
-        )
-        return [as_row(values, IRIS_ROW_COLUMNS) for values in backend_query(config, sql, IRIS_SQL_COLUMNS)]
+        return drain_iris_inbox(config, int(cursor))[:DETECT_LIMIT]
+    id_list = ",".join(str(value) for value in chat_ids)
     sql = (
         "SELECT logId, chatId, authorId, type, message, attachment, sentAt "
         "FROM NTChatMessage "
@@ -688,6 +681,31 @@ def select_triggers(rows: list[dict], config: dict, parent_is_bot) -> dict[int, 
 
 
 IRIS_NAME_CACHE: dict = {}
+
+# Live rows arrive on the push feed, which hands over a whole decrypted row, so the
+# tick drains this instead of polling. It starts empty, which means a daemon that
+# was down for a day comes back to silence rather than to a day of stale mentions.
+_IRIS_INBOX: deque = deque(maxlen=500)
+
+
+def iris_inbox_put(row: dict) -> None:
+    _IRIS_INBOX.append(row)
+
+
+def drain_iris_inbox(config: dict, cursor: int) -> list[dict]:
+    watched = set(room_chat_ids(config))
+    rows, seen = [], set()
+    while _IRIS_INBOX:
+        row = _IRIS_INBOX.popleft()
+        log_id = int(row.get("log_id") or 0)
+        if row.get("chat_id") not in watched or log_id <= cursor or log_id in seen:
+            continue
+        seen.add(log_id)
+        if row.get("sender_name"):
+            IRIS_NAME_CACHE[str(row.get("author_id") or "")] = row["sender_name"]
+        rows.append(row)
+    rows.sort(key=lambda r: int(r.get("log_id") or 0))
+    return rows
 
 
 def speaker_for(row: dict, config: dict) -> str:
@@ -980,8 +998,6 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
         log("DISABLED 파일이 있어 건너뛴다")
         return
     state["last_tick_at"] = dt.datetime.now(UTC).isoformat()
-    if not state.get("enabled") and not dry_run:
-        return
 
     prune_media(config)
     rows = fetch_new_rows(config, int(state.get("cursor_log_id") or 0))
@@ -1135,12 +1151,14 @@ def poll_loop(config_path: Path) -> int:
         return 0
 
     if backend_name(load_config(config_path)) == "iris":
-        # Best-effort: sender names come only from the push feed, and a miss
-        # degrades a context line rather than breaking a tick.
+        # The feed is the read path now, not a garnish. It reconnects on its own;
+        # anything that arrives while it is down is missed, which is the trade every
+        # push consumer makes and is why the cursor still exists for history.
         try:
-            iris_client(load_config(config_path)).watch_names(IRIS_NAME_CACHE)
+            iris_client(load_config(config_path)).watch(iris_inbox_put, IRIS_NAME_CACHE)
+            log("iris push feed attached")
         except Exception as exc:
-            log(f"iris name feed unavailable: {exc}")
+            log(f"iris push feed unavailable: {exc}")
 
     deadline = time.monotonic()
     while True:
@@ -1171,7 +1189,7 @@ def check(config_path: Path) -> int:
         "backend": backend_name(config),
         "hermes_bin": Path(str(config["hermes_bin"])).is_file(),
         "disabled": DISABLED_PATH.exists(),
-        "enabled": bool(load_state().get("enabled")),
+        "backlog": len(_IRIS_INBOX),
     }
     if backend_name(config) == "iris":
         report["iris_reachable"] = iris_client(config).health()
@@ -1438,22 +1456,6 @@ def install(config_path: Path) -> int:
     return 0
 
 
-def set_enabled(value: bool) -> int:
-    """Flip the auto-reply flag from outside the daemon.
-
-    The loop reloads state at the top of every tick, so a write lands within one
-    poll interval. It writes state back at the end of a tick, so a flip made
-    mid-tick can be overwritten - re-run and re-read if it does not take.
-    """
-    state = load_state()
-    state["enabled"] = bool(value)
-    if value:
-        state["last_error"] = ""
-    save_json(STATE_PATH, state)
-    print(json.dumps({"enabled": state["enabled"]}, indent=2))
-    return 0
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="KakaoTalk AI chat daemon")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
@@ -1464,19 +1466,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resolve-rooms", action="store_true", help="Fill kmsg_chat_id from kmsg chats (opens KakaoTalk)")
     parser.add_argument("--create-channel", action="store_true", help="Create the private Discord control channel")
     parser.add_argument("--install", action="store_true", help="Write the service definition for this platform")
-    parser.add_argument("--enable", action="store_true", help="Turn auto-replies on")
-    parser.add_argument("--disable", action="store_true", help="Turn auto-replies off")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config_path = Path(args.config).expanduser()
-    if args.enable and args.disable:
-        print("--enable and --disable are mutually exclusive", file=sys.stderr)
-        return 2
-    if args.enable or args.disable:
-        return set_enabled(args.enable)
     if args.check:
         return check(config_path)
     if args.resolve_rooms:
