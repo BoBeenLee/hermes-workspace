@@ -305,6 +305,40 @@ class FakeDiscord:
         self.sent.append(text)
 
 
+class IrisInboxTests(unittest.TestCase):
+    """The push feed is the read path, so what the tick sees is what this drains."""
+
+    def setUp(self):
+        module._IRIS_INBOX.clear()
+        module.IRIS_NAME_CACHE.clear()
+        self.config = dict(CONFIG, backend="iris", rooms=[{"chat_id": 7}])
+
+    def row(self, log_id, chat_id=7, sender="조창희"):
+        return {"log_id": log_id, "chat_id": chat_id, "author_id": 11, "type": 1,
+                "message": "m", "attachment": "{}", "sent_at": 1, "sender_name": sender}
+
+    def test_drains_only_watched_rooms_past_the_cursor(self):
+        for row in (self.row(5), self.row(9), self.row(11, chat_id=8)):
+            module.iris_inbox_put(row)
+        got = module.drain_iris_inbox(self.config, cursor=5)
+        self.assertEqual([r["log_id"] for r in got], [9])
+
+    def test_drain_is_ordered_and_deduplicated(self):
+        for log_id in (12, 10, 12, 11):
+            module.iris_inbox_put(self.row(log_id))
+        got = module.drain_iris_inbox(self.config, cursor=0)
+        self.assertEqual([r["log_id"] for r in got], [10, 11, 12])
+
+    def test_drain_caches_sender_names(self):
+        module.iris_inbox_put(self.row(3))
+        module.drain_iris_inbox(self.config, cursor=0)
+        self.assertEqual(module.IRIS_NAME_CACHE["11"], "조창희")
+
+    def test_a_cold_inbox_replays_nothing(self):
+        # a daemon that was down for a day must not answer a day of stale mentions
+        self.assertEqual(module.drain_iris_inbox(self.config, cursor=0), [])
+
+
 class DiscordControlTests(unittest.TestCase):
     def setUp(self):
         self.state = module.default_state()
@@ -313,14 +347,17 @@ class DiscordControlTests(unittest.TestCase):
     def dispatch(self, content):
         return module.handle_discord_command(content, "m1", CONFIG, self.state, self.discord)
 
-    def test_default_state_is_stopped(self):
-        self.assertFalse(module.default_state()["enabled"])
+    def test_default_state_carries_no_in_band_switch(self):
+        # Running the unit is the only switch; a second flag here used to gate the
+        # tick before it read anything, which just duplicated stopping the service.
+        self.assertNotIn("enabled", module.default_state())
 
-    def test_start_and_stop(self):
-        self.assertTrue(self.dispatch("AI대화 시작"))
-        self.assertTrue(self.state["enabled"])
-        self.assertTrue(self.dispatch("AI대화 종료"))
-        self.assertFalse(self.state["enabled"])
+    def test_start_and_stop_point_at_the_service_instead_of_flipping_a_flag(self):
+        for content in ("AI대화 시작", "AI대화 종료"):
+            self.discord.sent.clear()
+            self.assertTrue(self.dispatch(content), content)
+            self.assertIn("Start / Stop", self.discord.sent[0])
+            self.assertNotIn("enabled", self.state)
 
     def test_foreign_commands_are_not_ours(self):
         # the messenger assistant owns these; we must not answer, not even "unknown"
@@ -338,9 +375,7 @@ class DiscordControlTests(unittest.TestCase):
         self.assertFalse(self.state["rooms"]["1"]["paused"])
         self.assertIn("1개", self.discord.sent[0])
 
-    def test_status_reports_stopped_and_warns_about_the_disabled_file(self):
-        text = module.status_text(CONFIG, self.state)
-        self.assertIn("중지", text)
+    def test_status_warns_about_the_disabled_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             flag = Path(tmp) / "DISABLED"
             flag.touch()
@@ -351,7 +386,6 @@ class DiscordControlTests(unittest.TestCase):
         discord = FakeDiscord([{"id": "99", "author": {"id": "u1"}, "content": "AI대화 시작"}])
         state = module.default_state()
         module.process_discord_commands(dict(CONFIG, discord_user_id="u1"), state, discord)
-        self.assertFalse(state["enabled"])
         self.assertEqual(discord.sent, [])
         # anchored at a real snowflake, not left empty: an empty cursor on a brand-new
         # channel would swallow the first command forever
@@ -362,7 +396,7 @@ class DiscordControlTests(unittest.TestCase):
         discord = FakeDiscord([{"id": "100", "author": {"id": "u1"}, "content": "AI대화 시작"}])
         state = dict(module.default_state(), last_discord_message_id="99")
         module.process_discord_commands(dict(CONFIG, discord_user_id="u1"), state, discord)
-        self.assertTrue(state["enabled"])
+        self.assertTrue(discord.sent)  # it was dispatched, not skipped
         self.assertEqual(state["last_discord_message_id"], "100")
 
     def test_other_users_and_bots_are_ignored(self):
@@ -374,7 +408,7 @@ class DiscordControlTests(unittest.TestCase):
         )
         state = dict(module.default_state(), last_discord_message_id="1")
         module.process_discord_commands(dict(CONFIG, discord_user_id="u1"), state, discord)
-        self.assertFalse(state["enabled"])
+        self.assertEqual(discord.sent, [])
 
     def test_discord_outage_does_not_raise(self):
         class Broken(FakeDiscord):

@@ -10,10 +10,24 @@ timestamp: 2026-09-13T21:00:00+09:00
 # KakaoTalk AI Chat Daemon
 
 
+
+## One Switch, Not Two
+
+The daemon used to carry an `enabled` flag that `AI대화 시작` / `종료` toggled. It
+was not a reply policy: the gate sat *above* the read, so a disabled daemon read
+nothing and advanced no cursor. That made it a duplicate of stopping the service,
+with one difference - the Discord command loop kept running, so it could be turned
+back on from a phone.
+
+Once the DGX control panel grew a Start / Stop for the whole stack, that difference
+stopped paying for a second switch that looked like a reply policy and was not.
+The flag is gone. `AI대화 시작` / `종료` now answer with a pointer at the service
+rather than silently doing nothing.
+
 ## Linux / Iris Backend
 
-On a Linux host the daemon runs the same loop against the Android container
-instead of `kakaocli` and `kmsg`. Set two keys in `config.json`:
+On a Linux host the daemon runs against the Android container instead of
+`kakaocli` and `kmsg`. Set two keys in `config.json`:
 
 ```json
 { "backend": "iris", "iris_base_url": "http://172.17.0.2:3000" }
@@ -38,6 +52,20 @@ resolve step and `--resolve-rooms` do not apply and are gated off.
 **Sender names are best-effort.** The `friends` table lives in a database Iris
 does not attach, so names arrive on the `/ws` push feed into an in-memory cache.
 A miss falls back to the unknown-speaker label. A restart starts that cache cold.
+
+**Detection is the push feed, not a poll.** Each `/ws` frame carries a whole
+decrypted `chat_logs` row plus the sender's name, so the tick drains an in-memory
+inbox instead of running a cursor query. Three consequences worth knowing:
+
+- Replies are immediate rather than up to one poll interval late.
+- Sender names come for free. The cache the mac backend has no need for is filled
+  from the same frames, so `/query` history rows can be attributed too.
+- **The inbox starts empty.** A daemon that was down for a day comes back to
+  silence, not to a day of stale mentions. The cursor still exists, for history
+  lookups and to reject anything the feed re-delivers.
+
+Anything that arrives while the socket is down is missed. That is the trade every
+push consumer makes; the feed reconnects with a five second backoff.
 
 `--check` reports `backend` and, on iris, `iris_reachable` in place of the
 `kakaocli_bin` / `kmsg_bin` file probes. `iris_client.py` is copied next to the

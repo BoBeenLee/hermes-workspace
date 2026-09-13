@@ -25,7 +25,12 @@ below turns that into a refusal.
 `open_chat_member` are there; the `friends` table that maps a user id to a
 display name lives in KakaoTalk2.db, which Iris does not attach. Sender names
 therefore cannot be joined in SQL - they arrive on the `/ws` push feed, which
-Iris resolves itself. That is what `watch_names` is for.
+Iris resolves itself.
+
+**The push feed carries a whole decrypted row, not a notification.** Each frame is
+`{msg, room, sender, json: {...chat_logs row...}}` with `message` and `attachment`
+already in the clear. That makes `/ws` the natural read path for live messages and
+leaves `/query` for history lookups by id.
 """
 
 from __future__ import annotations
@@ -99,19 +104,19 @@ class IrisClient:
             raise IrisError(f"Iris reply refused: {str(payload)[:300]}")
         return payload
 
-    def watch_names(self, cache: dict, stop: threading.Event | None = None) -> threading.Thread:
-        """Fill `cache` with user_id -> sender name from the push feed, in a daemon thread.
+    def watch(self, sink, cache: dict, stop: threading.Event | None = None) -> threading.Thread:
+        """Feed live rows to `sink` and names to `cache`, in a daemon thread.
 
-        Names exist nowhere else reachable (see the module docstring), and a miss
-        is not fatal: callers already fall back to an unknown-speaker label.
+        `sink` takes one row dict per pushed message. Only live messages arrive
+        here: a consumer that also needs history keeps using `query` for that.
         """
         thread = threading.Thread(
-            target=self._watch_names_loop, args=(cache, stop), name="iris-names", daemon=True
+            target=self._watch_loop, args=(sink, cache, stop), name="iris-watch", daemon=True
         )
         thread.start()
         return thread
 
-    def _watch_names_loop(self, cache: dict, stop: threading.Event | None) -> None:
+    def _watch_loop(self, sink, cache: dict, stop: threading.Event | None) -> None:
         url = self.base_url.replace("http://", "ws://", 1).replace("https://", "wss://", 1) + "/ws"
         while stop is None or not stop.is_set():
             try:
@@ -119,10 +124,14 @@ class IrisClient:
 
                 with ws_client.connect(url, open_timeout=10) as socket:
                     while stop is None or not stop.is_set():
-                        record_names(cache, socket.recv(timeout=30))
+                        frame = socket.recv(timeout=30)
+                        record_names(cache, frame)
+                        row = row_from_frame(frame)
+                        if row is not None and sink is not None:
+                            sink(row)
             except Exception:
-                # The feed is best-effort garnish on top of the polled messages.
-                # Never let it take the daemon down; just back off and retry.
+                # A dropped feed must never take the daemon down. Reconnecting loses
+                # only what arrived while it was down, which `query` can recover by id.
                 time.sleep(5)
 
 
@@ -150,6 +159,47 @@ def require_decryptable(sql: str) -> None:
             f"select asks for {', '.join(wanted)} but omits {', '.join(missing)}; "
             "Iris would return ciphertext. Add both user_id and v to the column list."
         )
+
+
+PUSH_ROW_KEYS = {
+    "id": "log_id",
+    "chat_id": "chat_id",
+    "user_id": "author_id",
+    "type": "type",
+    "message": "message",
+    "attachment": "attachment",
+    "created_at": "sent_at",
+    "v": "v",
+}
+
+
+def row_from_frame(raw):
+    """One push frame to one row dict, or None when the frame is not a message.
+
+    The nested `json` object is the chat_logs row Iris already decrypted, so this
+    is a rename rather than a parse. `sender` rides along because it exists nowhere
+    else reachable.
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", "replace")
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    source = payload.get("json")
+    if not isinstance(source, dict) or source.get("id") in (None, ""):
+        return None
+    row = {internal: source.get(key) for key, internal in PUSH_ROW_KEYS.items()}
+    for key in ("log_id", "chat_id", "author_id", "type", "sent_at"):
+        try:
+            row[key] = int(row.get(key) or 0)
+        except (TypeError, ValueError):
+            row[key] = 0
+    sender = payload.get("sender")
+    row["sender_name"] = sender.strip() if isinstance(sender, str) and sender.strip() else None
+    return row
 
 
 def record_names(cache: dict, raw) -> None:
@@ -188,6 +238,28 @@ def demo() -> None:
     assert "7" not in cache and cache.get("8") == "X", cache
 
     assert IrisClient("http://example.invalid:3000/").base_url == "http://example.invalid:3000"
+
+    # a push frame becomes a row, ints coerced, sender carried
+    frame = json.dumps({
+        "msg": "안녕", "room": "Iris", "sender": "조창희",
+        "json": {"id": "3929034871365916673", "chat_id": "128426307555607",
+                 "user_id": "135397747", "type": "1", "message": "안녕",
+                 "attachment": "{}", "created_at": "1789308000", "v": "{}"},
+    })
+    row = row_from_frame(frame)
+    assert row["log_id"] == 3929034871365916673, row
+    assert row["chat_id"] == 128426307555607 and row["author_id"] == 135397747
+    assert row["type"] == 1 and row["sent_at"] == 1789308000
+    assert row["message"] == "안녕" and row["sender_name"] == "조창희"
+
+    # frames that are not messages yield nothing rather than a half-row
+    for junk in ("not json", json.dumps([1]), json.dumps({"sender": "x"}),
+                 json.dumps({"json": {"chat_id": 1}}), json.dumps({"json": "no"})):
+        assert row_from_frame(junk) is None, junk
+
+    # a missing sender is not an error; the caller has a fallback label
+    bare = row_from_frame(json.dumps({"json": {"id": 5, "message": "m"}}))
+    assert bare["sender_name"] is None and bare["log_id"] == 5, bare
 
     # query_rows must project in the caller's column order, missing keys as None
     class FakeClient(IrisClient):
