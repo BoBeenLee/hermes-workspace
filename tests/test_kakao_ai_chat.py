@@ -339,6 +339,71 @@ class IrisInboxTests(unittest.TestCase):
         self.assertEqual(module.drain_iris_inbox(self.config, cursor=0), [])
 
 
+class AllRoomsTests(unittest.TestCase):
+    """Wildcard opens every room the account sees; only the author gate holds the line."""
+
+    def setUp(self):
+        module._IRIS_INBOX.clear()
+        module.IRIS_NAME_CACHE.clear()
+        self.config = dict(CONFIG, backend="iris", all_rooms=True,
+                           rooms=[{"chat_id": 7}], my_user_id=ME)
+
+    def push(self, chat_id, author_id=ME, message="@jarvis 뭐야"):
+        module.iris_inbox_put({"log_id": 20, "chat_id": chat_id, "author_id": author_id,
+                               "type": 1, "message": message, "attachment": "{}",
+                               "sent_at": 1, "sender_name": None})
+
+    def test_an_unlisted_room_is_drained(self):
+        self.push(18466737231639011)
+        got = module.drain_iris_inbox(self.config, cursor=0)
+        self.assertEqual([r["chat_id"] for r in got], [18466737231639011])
+
+    def test_an_unlisted_room_is_dropped_without_the_flag(self):
+        self.push(18466737231639011)
+        listed_only = dict(self.config, all_rooms=False)
+        self.assertEqual(module.drain_iris_inbox(listed_only, cursor=0), [])
+
+    def test_an_unlisted_room_gets_a_sendable_entry(self):
+        self.assertEqual(module.room_for(self.config, 99)["chat_id"], 99)
+        self.assertIsNone(module.room_for(dict(self.config, all_rooms=False), 99))
+
+    def test_a_stranger_still_cannot_trigger_in_an_open_room(self):
+        row = module.as_row([20, 18466737231639011, OTHER, 1, "@jarvis 뭐야", "{}", 1],
+                            module.DETECT_COLUMNS)
+        self.assertIsNone(module.classify_trigger(row, self.config, no_bot_parents))
+
+    def test_the_mac_backend_ignores_the_flag(self):
+        # kmsg needs a resolved chat id per room, so a wildcard there would only fail late
+        self.assertFalse(module.all_rooms(dict(self.config, backend="mac")))
+
+
+class FetchNewRowsTests(unittest.TestCase):
+    """The feed loses frames while it reconnects; the cursor query is what gets them back."""
+
+    def setUp(self):
+        module._IRIS_INBOX.clear()
+        module.IRIS_NAME_CACHE.clear()
+        self.config = dict(CONFIG, backend="iris", rooms=[{"chat_id": 7}])
+
+    def db_row(self, log_id):
+        return [str(log_id), "7", "11", "1", "m", "{}", "1", "{}"]
+
+    def test_cursor_query_recovers_what_the_feed_dropped(self):
+        module.iris_inbox_put({"log_id": 10, "chat_id": 7, "author_id": 11, "type": 1,
+                               "message": "m", "attachment": "{}", "sent_at": 1,
+                               "sender_name": "조창희"})
+        with mock.patch.object(module, "backend_query",
+                               return_value=[self.db_row(9), self.db_row(10)]):
+            got = module.fetch_new_rows(self.config, cursor=8)
+        self.assertEqual([r["log_id"] for r in got], [9, 10])
+        # the pushed copy wins the merge: only it carries a sender name
+        self.assertEqual(got[1]["sender_name"], "조창희")
+
+    def test_rows_at_or_below_the_cursor_stay_out(self):
+        with mock.patch.object(module, "backend_query", return_value=[]):
+            self.assertEqual(module.fetch_new_rows(self.config, cursor=8), [])
+
+
 class DiscordControlTests(unittest.TestCase):
     def setUp(self):
         self.state = module.default_state()
