@@ -287,6 +287,26 @@ class PromptTests(unittest.TestCase):
         self.assertIn("지금 이 턴의 답은 직접 보내지 마라",
                       module.build_prompt([], [], "(없음)", "x"))
 
+    def test_a_stale_link_in_my_thread_is_called_out(self):
+        # the bug: a map URL jarvis sent for another place two days earlier was reused
+        # verbatim, and MY_THREAD reading as one conversation makes that more tempting
+        prompt = module.build_prompt([], [], "(없음)", "지도 링크도 공유해줘")
+        self.assertIn("좌표를 지어내지 마라", prompt)
+        self.assertIn("map.kakao.com/?q=", prompt)
+        self.assertIn("그때 그 장소의 것", prompt)
+
+    def test_facts_have_to_be_looked_up(self):
+        self.assertIn("web_search", module.build_prompt([], [], "(없음)", "x"))
+
+    def test_toolsets_name_only_things_that_resolve(self):
+        names = module.DEFAULT_CONFIG["toolsets"].split(",")
+        # cua-driver is the MCP server behind computer_use, not a toolset: it adds nothing
+        self.assertNotIn("cua-driver", names)
+        # subtracted by agent.disabled_toolsets no matter what -t says
+        self.assertNotIn("antigravity-worker", names)
+        # `video` belongs here: the prompt tells the agent to open videos with it
+        self.assertLessEqual({"cronjob", "memory", "computer_use", "video"}, set(names))
+
     def test_a_scheduled_job_is_told_how_to_reach_this_room(self):
         # the no-send rule above must not also silence a cron job, which has no other
         # way back: hermes deliver has no KakaoTalk target
@@ -300,7 +320,7 @@ class PromptTests(unittest.TestCase):
         self.assertNotIn("stt", names)
         # the kakao MCP server must stay out, or the agent can double-send
         self.assertNotIn("openhuman-kakaotalk", names)
-        self.assertLessEqual({"vision", "video", "file", "terminal"}, names)
+        self.assertLessEqual({"vision", "file", "terminal", "web"}, names)
 
 
 class PlumbingTests(unittest.TestCase):
