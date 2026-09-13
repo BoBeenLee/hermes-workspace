@@ -1,0 +1,115 @@
+---
+type: Runbook
+title: Iris On DGX
+description: Running the Iris KakaoTalk DB observer inside the DGX redroid container — the two things that block startup, the read-path verification, and why the send path stays inert.
+resource: repo://hermes-workspace/knowledge/runbooks/iris-on-dgx.md
+tags: [kakaotalk, iris, dgx-spark, redroid, android]
+timestamp: 2026-09-13T21:05:00+09:00
+---
+
+# Iris On DGX
+
+[Iris](https://github.com/dolidolih/Iris) v0.32 is the Android counterpart of the Mac's
+`kakaocli` (read) and `kmsg` (send). Verified on 2026-09-13 inside the container from
+[DGX Android Container](dgx-android-container.md): **the read path works end to end; the send
+path is deliberately left inert.**
+
+Container prerequisites are in that runbook. This one covers Iris only.
+
+## Install
+
+Take the release from the project's own GitHub release and verify it. v0.32 `Iris.apk` is
+`6ca57924bbc44d1dc603a7f533df9a8c` (the published `.MD5` is uppercase — compare case-insensitively).
+
+```bash
+scp Iris.apk dgx:~/redroid-poc/data64/apk/      # /data is the bind mount
+docker exec redroid-poc sh -c 'cp /data/apk/Iris.apk /data/local/tmp/Iris.apk'
+```
+
+`iris_control` from the release requires `adb`, which the DGX does not have. Its actual work is
+just `CLASSPATH=<apk> app_process / party.qwer.iris.Main` as root, which `docker exec` can do —
+with one catch below.
+
+## Blocker 1: `docker exec` Has No Android Environment
+
+`docker exec` gives a bare environment (`PATH=/usr/local/sbin:…:/bin`, `HOME=/`) with no
+`ANDROID_ROOT`, `ANDROID_DATA`, or `BOOTCLASSPATH`. `app_process` then starts the runtime,
+prints nothing, and exits — no exception, no logcat entry. `adb shell` works because it supplies
+that environment.
+
+Replicate it from a running Android process:
+
+```sh
+#!/system/bin/sh
+SP=$(pidof system_server)
+tr "\0" "\n" < /proc/$SP/environ > /data/local/tmp/aenv.txt
+while IFS= read -r line; do
+  case "$line" in
+    ANDROID_SOCKET_*) continue ;;   # inherited fds, must not be re-exported
+    *=*) export "$line" ;;
+  esac
+done < /data/local/tmp/aenv.txt
+export CLASSPATH=/data/local/tmp/Iris.apk
+exec app_process / party.qwer.iris.Main
+```
+
+Android's `sh` has no process substitution, so `< <(...)` fails silently. Use the temp file.
+
+Run it detached: `docker exec -d redroid-poc sh -c 'sh /data/apk/iris_start.sh > /data/local/tmp/iris.log 2>&1'`.
+
+## Blocker 2: `NotificationReferer` Is Missing
+
+With the environment fixed, Iris fails with:
+
+```text
+Iris Error
+java.lang.Exception: failed to extract referer from data
+	at party.qwer.iris.Main$Companion.readNotificationReferer(Main.kt:58)
+```
+
+`readNotificationReferer()` pulls `<string name="NotificationReferer">` out of
+`shared_prefs/KakaoTalk.hw.perferences.xml`. On a freshly signed-in companion device that key
+does not exist — KakaoTalk writes it only after handling a notification, and **a message you
+send yourself does not raise one**. Confirmed absent from the whole app data directory.
+
+`Main.kt:18` calls this **first**, so the exception kills the DB observer too, even though
+`notificationReferer` is used only by `Replier.sendMessage`/`sendPhoto` in `IrisServer.kt:177`.
+The read path never needs it.
+
+Inject a placeholder rather than rebuilding the APK:
+
+```sh
+F=/data/data/com.kakao.talk/shared_prefs/KakaoTalk.hw.perferences.xml
+cp $F $F.bak-iris-poc
+sed -i 's#</map>#    <string name="NotificationReferer">iris-poc-placeholder</string>\n</map>#' $F
+```
+
+**Keep the value bogus on purpose.** The send path then cannot work, so no message can leave the
+container by accident. Swap in a real referer only when sending is actually intended.
+
+`PathUtils.getAppPath()` logging `/data_mirror/data_ce/null/0/com.kakao.talk/` is **not** a bug —
+`null` is the internal-storage volume UUID and the path resolves to the same inode as
+`/data/data/com.kakao.talk/`.
+
+## Verified Read Path
+
+Iris writes `/data/local/tmp/config.json`, which is reachable from the host at
+`~/redroid-poc/data64/local/tmp/config.json` because `/data` is the bind mount. Point
+`webServerEndpoint` at a listener on the docker bridge gateway (`172.17.0.1`) and keep it off
+any external interface.
+
+| Check | Result |
+| --- | --- |
+| Startup | `Bot user_id is detected: 135397747`, `DBObserver started`, `Initial lastLogId: 251` |
+| `GET /dashboard` (via `172.17.0.2:3000`) | 200 |
+| `POST /query` `select count(*) from chat_logs` | 251, then 252 after one new message |
+| Live forward | `Detected 1 new log(s)` → POST to the listener → `HTTP Response Code: 200` |
+| **Decryption** | payload carried `"message":"123"` in cleartext for a row whose `v` field reports `"enc":31` |
+
+That is structural parity with `kakaocli`: encrypted DB in, structured decrypted events out.
+
+## Not Verified
+
+- **Sending.** Blocked by the placeholder referer, by design. Getting a real one needs an actual incoming notification from another party.
+- **Long-run stability**, reconnect behaviour, and what happens when KakaoTalk rewrites `shared_prefs` and drops the injected key.
+- Iris v0.32 predates KakaoTalk 26.7.2, so the referer key may have moved or been removed upstream rather than merely being unwritten. A real incoming notification would settle it.

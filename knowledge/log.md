@@ -2,6 +2,10 @@
 
 ## 2026-09-13
 
+- **Ported the read half of the KakaoTalk assistant to the DGX.** Iris v0.32 runs in the redroid container and forwards live decrypted messages: a phone-sent `123` went KakaoTalk → encrypted DB → DBObserver → decrypted → HTTP, with `chat_logs` going 251 → 252. Recorded as [Iris On DGX](runbooks/iris-on-dgx.md).
+- Two non-obvious blockers: `docker exec` has no Android environment so `app_process` exits silently (replicate it from `/proc/$(pidof system_server)/environ`, skipping `ANDROID_SOCKET_*`), and `Main.kt:18` reads `NotificationReferer` before anything else and kills the whole process when it is absent — even though only the send path uses it.
+- The send path is left inert on purpose by injecting a bogus `NotificationReferer`, so nothing can leave the container by accident. A real referer needs an incoming notification from another party, which a self-sent message never produces.
+
 - **Signed the DGX container in as a KakaoTalk companion device and it worked.** The tablet ("다른 기기와 함께 사용") login path reaches `MainActivity` with the real account and friend list. The phone kept its session; the Mac's KakaoTalk.app was evicted to a login window, which settles the open question: a tablet sub-device and the PC client share one companion slot.
 - Reframed the device-slot finding: it blocks running the Mac client and the DGX in parallel, but it does not block migrating the assistant off the Mac, which needs no second account.
 - Found the tablet gate to be device identity, not form factor: `sw800dp` plus `ro.build.characteristics=tablet` plus a `ko-KR` locale was not enough; the checkbox appeared only after `ro.product.model`/`brand`/`manufacturer` were also set to a tablet.

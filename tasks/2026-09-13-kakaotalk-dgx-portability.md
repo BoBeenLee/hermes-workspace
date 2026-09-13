@@ -185,3 +185,38 @@ Mac 쪽 메신저 비서는 이미 비활성이었다 — `poller.log`는 7월 2
 
 컨테이너가 보조기기로 로그인된 채 떠 있다. Mac을 다시 로그인시키면 컨테이너가 밀려난다.
 둘 중 하나만 슬롯을 가질 수 있다.
+
+## Addendum 4: Iris 이식 — 읽기 경로 검증 완료
+
+사용자 승인 후 Iris v0.32를 컨테이너에 올렸다. 전문은
+[Iris On DGX](../knowledge/runbooks/iris-on-dgx.md).
+
+### 막혔던 두 지점
+
+1. `docker exec` 환경에 `ANDROID_ROOT`/`ANDROID_DATA`/`BOOTCLASSPATH`가 없어
+   `app_process`가 예외도 로그도 없이 조용히 종료. `/proc/$(pidof system_server)/environ`
+   복제로 해결(`ANDROID_SOCKET_*` 제외). 안드로이드 `sh`는 프로세스 치환 미지원.
+2. `Main.kt:18`의 `readNotificationReferer()`가 가장 먼저 호출되고 키가 없으면 전체를 죽인다.
+   이 값은 `IrisServer.kt:177`의 전송 경로에서만 쓰이는데도 그렇다. 신규 로그인 보조기기에는
+   그 키가 없고, **본인이 보낸 메시지는 알림을 만들지 않아** 생성되지 않는다.
+
+APK 재빌드 대신 prefs에 플레이스홀더를 주입했다. 값이 가짜라 **전송 경로가 동작하지 않는
+것이 안전 장치로 작동한다** — 실수로 메시지가 나갈 수 없다.
+
+### 검증 결과
+
+| 확인 | 결과 |
+| --- | --- |
+| 기동 | `Bot user_id is detected: 135397747`, `DBObserver started`, `lastLogId: 251` |
+| `GET /dashboard` | 200 |
+| `POST /query` `count(*) from chat_logs` | 251 → 252 |
+| 실시간 전달 | `Detected 1 new log(s)` → 리스너 POST → `HTTP 200` |
+| **복호화** | `"enc":31` 행의 본문이 `"message":"123"` 평문으로 |
+
+`kakaocli`와 구조적 동등성 확보. 암호화 DB 입력 → 구조화된 복호화 이벤트 출력.
+
+### 미검증
+
+- **전송** (의도적 차단)
+- 장시간 안정성, 재접속, KakaoTalk이 `shared_prefs`를 다시 쓸 때 주입 키 소실 여부
+- Iris v0.32가 KakaoTalk 26.7.2보다 오래돼 referer 키가 상류에서 바뀌었을 가능성
