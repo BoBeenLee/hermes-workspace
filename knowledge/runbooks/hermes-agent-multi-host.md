@@ -114,8 +114,154 @@ HERMES_TARGET=config/targets/<target>.env bin/hermes-remote run "Reply with exac
 로컬/self-hosted LLM provider를 붙일 때는 모델 서버를 loopback에 묶고 SSH tunnel을 우선 사용한다.
 
 ```bash
-HERMES_TARGET=config/targets/<target>.env bin/hermes-remote check-llm-endpoint http://127.0.0.1:8000/v1
+HERMES_TARGET=config/targets/<target>.env bin/hermes-remote check-llm-endpoint http://127.0.0.1:8080/v1
 ```
+
+## DGX Spark: Verified Bootstrap (2026-09-13)
+
+`config/targets/dgx-spark.env` is the live profile. The DGX now runs Hermes Agent
+v0.21.2 as a headless Linux host beside the Mac. Six things cost time; none of them
+are in the generic order above.
+
+**The target host value must carry the user.** `bin/hermes-remote` calls
+`ssh "$HERMES_REMOTE_HOST"` and never prepends `HERMES_REMOTE_USER`, while
+`install.sh` / `doctor.sh` build `"${USER}@${HOST}"` only when the host has no `@`
+already. A bare IP therefore installs fine and then fails every `hermes-remote`
+subcommand with `Permission denied`. There is no `~/.ssh/config` alias for this box
+(`bobeen` is the Mac), so the profile carries `bobeenlee@100.103.30.62` — the
+Tailscale address, since the mDNS name is the least reliable of the three routes.
+
+**`~/.local/bin` is on the login PATH only.** A non-interactive
+`ssh host 'command -v uv'` reports not-found. `install.sh` and `doctor.sh` export a
+correct PATH inside their own heredocs, but `bin/hermes-remote` injects
+`HERMES_REMOTE_PATH` into all 40 subcommands and its default was missing
+`~/.hermes/node/bin`, where the managed Node lives. That default now includes it.
+
+**Interactive commands eat the heredoc.** `hermes model` refuses a non-TTY outright
+(`requires an interactive terminal`). Worse, `hermes config migrate` prompts and will
+silently swallow the *rest of an `ssh 'bash -s' <<EOF` script* as its answer. Redirect
+stdin (`</dev/null`) on every remote `hermes` call that might prompt.
+
+**`hermes config set` takes JSON, and bare `model` is redirected.**
+`hermes config set model '<json>'` is rewritten to `model.default` and stores the JSON
+as a literal string. Set `model.provider`, `model.default`, `model.base_url`,
+`model.api_mode`, `model.context_length` one at a time. Nested keys such as
+`providers`, `fallback_providers`, `custom_providers`, `mcp_servers` do accept a JSON
+argument and land as proper YAML. Prefer this over editing `config.yaml` by hand: the
+v0.21.2 default config is 2138 heavily-commented lines and a YAML round-trip strips
+every comment.
+
+**`config migrate` moves `custom_providers` into `providers`, and it looks like data
+loss.** After migrating to `_config_version` 44, `hermes config get custom_providers`
+answers `Config key not set` — the entries are still there, converted into the v44
+`providers.<name>` shape (`api`, `name`, `models`, `default_model`, `transport`,
+`extra_headers`). Re-adding a legacy `custom_providers:` block after a migrate just
+creates a stale duplicate. Check `hermes config get providers` before concluding
+anything was dropped.
+
+**Do not clone the Mac's `config.yaml`.** The Mac is on v0.20.6 (`_config_version` 39,
+699 lines); the DGX shipped v0.21.2 with sections the older file has never heard of
+(`database`, `runtime`, `prompt_caching`, `telemetry`, …). Port the identity-bearing
+sections with `hermes config set` and let `hermes config migrate` bring the version
+forward (0 → 44 here).
+
+**The gateway is a systemd *user* unit.** `hermes gateway install` writes
+`~/.config/systemd/user/hermes-gateway.service` (a named profile would get
+`hermes-gateway-<profile>.service`), enables it via `default.target.wants`, and reports
+lingering itself. No sudo anywhere — which matters, because `sudo` on this box requires
+a password and there is no TTY over a plain SSH command. `doctor.sh` now prints
+`systemd_gateway_active`, `systemd_gateway_enabled`, and `systemd_linger` under the same
+guard style as the launchd plist check.
+
+**Local LLM.** `llama-local.service` (systemd --user) serves llama.cpp on
+`127.0.0.1:8080/v1`; the model is chosen by `~/.local/bin/dgx-ai-control`. The older
+`dgx-spark-example.env` pointed at vLLM on 8000 — nothing has ever listened there.
+The served model id is the **full GGUF path**, not a short name. It is a reasoning
+model: a bare `/v1/chat/completions` probe with a small `max_tokens` returns an empty
+`content` because the budget is spent inside `reasoning_content`. Give it room before
+concluding the server is broken.
+
+## Profile Asymmetry: dgx-jarvis And mac-jarvis
+
+The two hosts hold the same Discord identity in differently-shaped profiles, on
+purpose.
+
+| | Host | Profile location | Gateway | Alias |
+| --- | --- | --- | --- | --- |
+| dgx-jarvis | DGX | `~/.hermes/` (**default profile**) | `hermes-gateway.service` | `~/.local/bin/dgx-jarvis` |
+| mac-jarvis | Mac | `~/.hermes/profiles/mac-jarvis/` | not installed | `mac-jarvis` |
+| jarvis | Mac | `~/.hermes/profiles/jarvis/` | stopped | `jarvis` |
+
+The DGX uses the **default** profile rather than a named one because
+`bin/hermes-remote` only passes `--profile` for the Hallmark commands; `status`, `run`,
+`gateway-restart`, and `setup-kanban` all address the default profile, and
+`HERMES_CONFIG` defaults to `~/.hermes/config.yaml`. A named profile on the DGX would
+leave those 40 subcommands talking to an empty default. The alias wrapper supplies the
+name instead.
+
+### Secret Policy: Migration Is The Carve-Out
+
+The rule above ("never copy `~/.hermes/.env`") holds for standing up an *independent*
+host. It does not fit an identity **migration**, which is what dgx-jarvis is: the DGX
+is taking over a Discord identity the Mac already owns, so the two must present the
+same bot token and the same provider keys. For that case the Mac's
+`~/.hermes/profiles/jarvis/.env` was streamed straight into the DGX's
+`~/.hermes/.env` (`ssh src 'cat' | ssh dst 'umask 077; cat > …'`, never landing on the
+operator's laptop), then adjusted on arrival:
+
+- `AGENT_BROWSER_EXECUTABLE_PATH`, `CAMOFOX_PROFILE_DIR`, `SSL_CERT_FILE` all held
+  macOS paths that do not exist on Linux — blanked.
+- `providers.altalt.extra_headers.X-Machine-ID` lives in `config.yaml`, not `.env`, so
+  it is missed by an `.env` copy. Move it separately, and keep it off `argv` (a piped
+  `python3` reading stdin, not `hermes config set` with the value inline).
+
+Verify each rung of the chain afterwards rather than trusting the key list:
+`hermes --provider openrouter|groq|custom:altalt --model <m> -z "Reply with exactly: OK"`.
+Known difference: `groq` answers on the Mac (v0.20.6) and returns
+`Request payload too large (413). Cannot compress further.` on the DGX (v0.21.2), even
+though the DGX has *fewer* skills enabled (0 vs 24). It is a version difference in the
+built-in tool schema, not a porting mistake, and it only costs the third fallback rung.
+
+`mac-jarvis` is the restored `product` profile (deleted 2026-08-29, recovered from
+`~/.hermes/backups/pre-update-2026-08-29-163521.zip`). Two things to know about it: its
+Discord channel variables are deliberately **empty** so its bot can never answer
+alongside the DGX on the same channel, and the backup zip excluded every `.git`
+directory, so `skill-sources/hallmark` has files but no git metadata —
+`check-hallmark-update` reports that until `setup-hallmark` re-creates the checkout.
+
+`bin/hermes-remote`'s Hallmark commands used to hardcode the `product` profile and had
+been broken since that profile was deleted. They now read `HERMES_HALLMARK_PROFILE`,
+defaulting to `mac-jarvis`.
+
+### Moving A Discord Identity Between Hosts
+
+Only one websocket may consume a channel, so the order is stop-then-start, never the
+reverse. Two things that are not obvious:
+
+**`launchctl bootout gui/<uid>/<label>` fails with `Boot-out failed: 3: No such process`**
+even while `launchctl list` shows the label. Do not go hunting for the right launchd
+domain — use `hermes --profile <name> gateway stop`, which knows its own service target.
+
+**Count every profile on the channel, not just the two you are moving.** Before the
+dgx-jarvis cutover, channel …3051 was configured in *three* places: the jarvis profile
+(the identity being moved), the Mac's default profile, and — deliberately blanked
+beforehand — the restored mac-jarvis. The default profile turned out to be inert
+(`DISCORD_HOME_CHANNEL_NAME=default-disabled-migrated-to-jarvis`, and its log says
+`No messaging platforms enabled`), but that was luck rather than analysis. Grep every
+profile's `.env` for the channel id before flipping.
+
+Confirm the handover from the receiving host's log, not from the service state:
+
+```
+[Discord] Connected as <Bot>#<disc>
+✓ discord connected
+Gateway running with 1 platform(s)
+```
+
+The Mac's KakaoTalk messenger assistant then trips its own guard — `state.json` goes to
+`enabled=False`, `gateway_identity=missing` — and posts a shutdown notice. That is
+`messenger_assistant.py:1840` working as designed. Re-enable it from its own channel;
+it will not trip again, because the identity is now stably absent rather than changing.
 
 ## Completion Mode
 

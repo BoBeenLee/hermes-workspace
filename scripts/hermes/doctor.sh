@@ -201,6 +201,20 @@ if command -v launchctl >/dev/null 2>&1; then
     printf 'missing: %s\n' "$path"
   fi
 fi
+if command -v systemctl >/dev/null 2>&1; then
+  # The default profile's gateway is hermes-gateway.service; a named profile
+  # gets hermes-gateway-<profile>.service. User scope, so lingering decides
+  # whether it survives logout.
+  path="$HOME/.config/systemd/user/hermes-gateway.service"
+  if [ -e "$path" ]; then
+    printf 'present: %s\n' "$path"
+  else
+    printf 'missing: %s\n' "$path"
+  fi
+  printf 'systemd_gateway_active=%s\n' "$(systemctl --user is-active hermes-gateway.service 2>/dev/null || printf unknown)"
+  printf 'systemd_gateway_enabled=%s\n' "$(systemctl --user is-enabled hermes-gateway.service 2>/dev/null || printf unknown)"
+  printf 'systemd_linger=%s\n' "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || printf unknown)"
+fi
 
 printf '\n-- managed runtime paths --\n'
 for path in "$HOME/.hermes/bin/uv" "$HOME/.hermes/node/bin/node" "$HOME/.hermes/node/bin/npm"; do
