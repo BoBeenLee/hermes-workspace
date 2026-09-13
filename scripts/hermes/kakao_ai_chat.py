@@ -124,6 +124,9 @@ DEFAULT_CONFIG: dict = {
     "discord_channel_id": "",
     "discord_user_id": "",
     "discord_token_env": str(HOME / ".hermes" / "profiles" / "mac-jarvis" / ".env"),
+    # Every room the account sees, not just `rooms`. Only the author gate stops a
+    # stranger from driving the bot, so it stays on: see classify_trigger.
+    "all_rooms": False,
     "reply_char_limit": 800,
     "global_reply_limit": 20,
     "global_reply_window_seconds": 600,
@@ -409,6 +412,15 @@ def room_chat_ids(config: dict) -> list[int]:
     return ids
 
 
+def all_rooms(config: dict) -> bool:
+    """Answer in every room the account can see, not just the listed ones.
+
+    Only iris can honour this: the mac backend needs a kmsg_chat_id per room, which
+    exists only where someone resolved it.
+    """
+    return bool(config.get("all_rooms")) and backend_name(config) == "iris"
+
+
 def room_for(config: dict, chat_id: int) -> dict | None:
     for room in config.get("rooms") or []:
         try:
@@ -416,7 +428,7 @@ def room_for(config: dict, chat_id: int) -> dict | None:
                 return room
         except (TypeError, ValueError):
             continue
-    return None
+    return {"chat_id": chat_id} if all_rooms(config) else None
 
 
 DETECT_COLUMNS = ("log_id", "chat_id", "author_id", "type", "message", "attachment", "sent_at")
@@ -438,13 +450,46 @@ def as_row(values: list, columns: tuple[str, ...]) -> dict:
     return row
 
 
+def room_filter(config: dict) -> str:
+    """The WHERE clause that keeps a read inside the watched rooms, empty when all are."""
+    if all_rooms(config):
+        return ""
+    id_list = ",".join(str(value) for value in room_chat_ids(config))
+    return f" WHERE chat_id IN ({id_list})"
+
+
+def newest_log_id(config: dict) -> int:
+    """Highest logId the watched rooms already hold, or 0 when they are empty."""
+    if not room_chat_ids(config) and not all_rooms(config):
+        return 0
+    rows = backend_query(config, f"SELECT MAX(id) AS id FROM chat_logs{room_filter(config)}", ("id",))
+    try:
+        return int(rows[0][0] or 0)
+    except (IndexError, TypeError, ValueError):
+        return 0
+
+
 def fetch_new_rows(config: dict, cursor: int) -> list[dict]:
     chat_ids = room_chat_ids(config)
-    if not chat_ids:
+    if not chat_ids and not all_rooms(config):
         return []
-    if backend_name(config) == "iris":
-        return drain_iris_inbox(config, int(cursor))[:DETECT_LIMIT]
     id_list = ",".join(str(value) for value in chat_ids)
+    if backend_name(config) == "iris":
+        # The feed is the fast path, not the only one. A frame that lands while the
+        # socket is between connections is gone for good - Iris has no replay - so the
+        # cursor query runs too and closes the gap on the next tick. Push rows win the
+        # merge because they alone carry sender_name.
+        merged = {int(row["log_id"]): row for row in drain_iris_inbox(config, int(cursor))}
+        sql = (
+            "SELECT id, chat_id, user_id, type, message, attachment, created_at, v "
+            f"FROM chat_logs WHERE id > {int(cursor)}"
+            + ("" if all_rooms(config) else f" AND chat_id IN ({id_list})")
+            + f" ORDER BY id ASC LIMIT {DETECT_LIMIT}"
+        )
+        for values in backend_query(config, sql, IRIS_SQL_COLUMNS):
+            row = as_row(values, IRIS_ROW_COLUMNS)
+            merged.setdefault(int(row["log_id"] or 0), row)
+        return [merged[key] for key in sorted(merged)][:DETECT_LIMIT]
     sql = (
         "SELECT logId, chatId, authorId, type, message, attachment, sentAt "
         "FROM NTChatMessage "
@@ -694,11 +739,14 @@ def iris_inbox_put(row: dict) -> None:
 
 def drain_iris_inbox(config: dict, cursor: int) -> list[dict]:
     watched = set(room_chat_ids(config))
+    everywhere = all_rooms(config)
     rows, seen = [], set()
     while _IRIS_INBOX:
         row = _IRIS_INBOX.popleft()
         log_id = int(row.get("log_id") or 0)
-        if row.get("chat_id") not in watched or log_id <= cursor or log_id in seen:
+        if not everywhere and row.get("chat_id") not in watched:
+            continue
+        if log_id <= cursor or log_id in seen:
             continue
         seen.add(log_id)
         if row.get("sender_name"):
@@ -1159,6 +1207,15 @@ def poll_loop(config_path: Path) -> int:
             log("iris push feed attached")
         except Exception as exc:
             log(f"iris push feed unavailable: {exc}")
+        # Start at the tail. The cursor backfill in fetch_new_rows is there to close
+        # gaps the feed leaves mid-run; without this it would also replay every mention
+        # that piled up while the daemon was down, which the empty inbox used to rule out.
+        with contextlib.suppress(Exception):
+            state = load_state()
+            newest = newest_log_id(load_config(config_path))
+            if newest > int(state.get("cursor_log_id") or 0):
+                state["cursor_log_id"] = newest
+                save_json(STATE_PATH, state)
 
     deadline = time.monotonic()
     while True:

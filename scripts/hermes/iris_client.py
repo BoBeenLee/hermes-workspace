@@ -124,7 +124,15 @@ class IrisClient:
 
                 with ws_client.connect(url, open_timeout=10) as socket:
                     while stop is None or not stop.is_set():
-                        frame = socket.recv(timeout=30)
+                        try:
+                            frame = socket.recv(timeout=30)
+                        except TimeoutError:
+                            # A quiet room is not a dead feed. Letting this reach the
+                            # reconnect below tore the socket down every 40s and lost
+                            # whatever arrived during the 5s sleep - measured, not
+                            # theoretical. A real death arrives as ConnectionClosed,
+                            # because the library runs its own keepalive ping.
+                            continue
                         record_names(cache, frame)
                         row = row_from_frame(frame)
                         if row is not None and sink is not None:
