@@ -389,5 +389,27 @@ class DiscordControlTests(unittest.TestCase):
         self.assertTrue(any("방 재개" in message for message in self.discord.sent))
 
 
+class SingleInstanceTests(unittest.TestCase):
+    def test_second_instance_cannot_take_the_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(module, "LOCK_PATH", Path(tmp) / "daemon.lock"):
+                first = module.acquire_single_instance_lock()
+                self.assertIsNotNone(first)
+                try:
+                    self.assertIsNone(module.acquire_single_instance_lock())
+                finally:
+                    first.close()
+                # released once the holder exits
+                again = module.acquire_single_instance_lock()
+                self.assertIsNotNone(again)
+                again.close()
+
+    def test_wrapper_forces_a_tty_so_the_far_side_dies_with_the_client(self):
+        source = (Path(module.__file__).parent / "kakao_ai_chat.py").read_text(encoding="utf-8")
+        # without -tt, launchd kills the ssh client and the remote python is
+        # reparented to init, leaking a second poller onto the same state file
+        self.assertIn("ssh -tt", source)
+
+
 if __name__ == "__main__":
     unittest.main()

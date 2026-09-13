@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as dt
+import fcntl
 import json
 import mimetypes
 import os
@@ -42,6 +43,7 @@ BASE_DIR = HOME / ".hermes" / "kakao-ai-chat"
 DEFAULT_CONFIG_PATH = BASE_DIR / "config.json"
 STATE_PATH = BASE_DIR / "state.json"
 DISABLED_PATH = BASE_DIR / "DISABLED"
+LOCK_PATH = BASE_DIR / "daemon.lock"
 MEDIA_DIR = BASE_DIR / "media"
 RESULTS_DIR = BASE_DIR / "results"
 WRAPPER_PATH = BASE_DIR / "bin" / "kakao-ai-chat-via-local-ssh.sh"
@@ -997,7 +999,35 @@ def next_deadline(previous: float, now: float, interval: float) -> float:
     return previous + (missed + 1) * interval
 
 
+def acquire_single_instance_lock():
+    """Hold an exclusive lock for the lifetime of the loop.
+
+    Two loops on one state file double-answer and race the cursor. The self-ssh
+    wrapper makes that reachable: launchd kills the ssh client but the process on
+    the far side is reparented to init and keeps polling. `-tt` in the wrapper is
+    the primary fix; this is the backstop that makes a leak harmless.
+    """
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(LOCK_PATH, "w", encoding="utf-8")  # noqa: SIM115 - held for process lifetime
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    handle.write(str(os.getpid()))
+    handle.flush()
+    return handle
+
+
 def poll_loop(config_path: Path) -> int:
+    lock = acquire_single_instance_lock()
+    if lock is None:
+        # Sleep before exiting so launchd's 5s ThrottleInterval cannot turn a
+        # lingering instance into a restart storm.
+        log("another kakao-ai-chat instance holds the lock; exiting")
+        time.sleep(60)
+        return 0
+
     deadline = time.monotonic()
     while True:
         config = load_config(config_path)
@@ -1195,7 +1225,11 @@ def install(config_path: Path) -> int:
     # launchd has no TCC/Keychain context, so the daemon runs itself back through
     # sshd on loopback; kakaocli and kmsg then inherit a real user session.
     WRAPPER_PATH.write_text(
-        "#!/bin/zsh\nset -euo pipefail\nexec /usr/bin/ssh \\\n"
+        "#!/bin/zsh\nset -euo pipefail\n"
+        "# -tt forces a TTY: without it launchd kills this ssh client but the python\n"
+        "# on the far side is reparented to init and keeps polling, so every restart\n"
+        "# leaks a second daemon onto the same state file.\n"
+        "exec /usr/bin/ssh -tt \\\n"
         f"  -i {key} \\\n"
         "  -o BatchMode=yes \\\n"
         "  -o StrictHostKeyChecking=accept-new \\\n"

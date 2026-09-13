@@ -185,6 +185,21 @@ ssh bobeen 'launchctl print gui/$(id -u)/ai.hermes.kakao-ai-chat | head -20'
 
 ### 왜 self-ssh 래퍼인가
 
+**`-tt` 를 빼면 재시작마다 데몬이 샌다.** launchd 가 ssh 클라이언트를 죽여도 원격 쪽 python 은
+SIGHUP 을 못 받고 init 으로 재부모화되어 계속 폴링한다. 2026-09-13 에 실제로 관측했다 —
+`launchctl kickstart -k` 뒤에 13분 된 고아 poll-loop 와 새 인스턴스가 같은 `state.json` 을
+동시에 돌고 있었다. 둘이 돌면 같은 멘션에 두 번 답하고 커서가 경합한다. `-tt` 가 1차 방어고,
+`daemon.lock` (`flock`) 이 2차 방어다 — 락을 못 잡은 인스턴스는 60초 자고 종료해서
+`ThrottleInterval 5` 가 재시작 폭풍이 되지 않게 한다.
+
+확인:
+
+```bash
+ssh bobeen 'ps -Ao pid,ppid,etime,args | grep kakao_ai_chat.py | grep -v /usr/bin/ssh | grep -v grep'
+```
+
+한 줄만 나와야 한다. 여러 줄이면 오래된 PID 를 `kill` 하고 원인을 찾는다.
+
 launchd 가 띄운 프로세스에는 TCC/Keychain 컨텍스트가 없어 카카오톡 DB 를 못 읽고,
 Accessibility 권한이 파이썬 런타임에 잘못 귀속된다
 (`tasks/2026-07-27-kakaotalk-accessibility-attribution-recovery.md`). 그래서 데몬 전체를
