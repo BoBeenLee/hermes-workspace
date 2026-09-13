@@ -200,6 +200,16 @@ setprop persist.sys.timezone Asia/Seoul
 | `/system/bin/sqlite3`, `/data/data` | present — the surface an Iris-style DB observer needs |
 | `adbd`, port 5555 | running, bound to `127.0.0.1` only |
 
+## Resuming After A Host Reboot
+
+Three things do not survive a reboot and must be redone in order before the container is useful
+again. The container itself and the KakaoTalk session do survive, because they live in the
+bind-mounted `/data`.
+
+1. `binder_linux` and the `/dev/binderfs` mount — re-run the host setup block above.
+2. `chmod 0666` on the three binderfs nodes — same block; without it Android's non-root services loop on `servicemanager.ready`.
+3. `docker start redroid-poc`, then start Iris again (see [Iris On DGX](iris-on-dgx.md)); `app_process` does not come back on its own.
+
 ## Teardown
 
 ```bash

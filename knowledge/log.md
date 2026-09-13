@@ -2,6 +2,9 @@
 
 ## 2026-09-13
 
+- Deferred the messenger-assistant policy-engine port to a later session and recorded what it actually involves: the Mac controller's fail-closed guards are written against macOS adapter evidence (`NTUser.directChatId`, `userType`) that the Android schema does not supply in the same shape, so it is a rule rewrite rather than a transport swap.
+- Wrote down the reboot-recovery order for the container, since the binder module, the binderfs mount and its `0666` permissions are all lost on a host reboot while the container and the KakaoTalk session survive in the bind mount.
+
 - **Completed the round trip: Iris sends as well as reads.** `POST /reply` delivered a message into the target room, and it came back through the observer as a new `chat_logs` row (253 → 254), confirmed on screen.
 - Resolved the `NotificationReferer` question: KakaoTalk 26.7.2 still writes the key, and it overwrote the injected placeholder with a real ~20-character token the moment an incoming message from another party raised a notification. No version incompatibility. Iris reads it once at startup, so it needs a restart whenever the referer changes.
 - Recorded that Iris `/reply` returns `{"success":true}` merely for queuing the intent — with a bogus referer it says the same and nothing is sent, so sends must be verified against `chat_logs`, not the response body.

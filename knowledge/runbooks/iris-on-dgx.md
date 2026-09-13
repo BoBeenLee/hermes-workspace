@@ -134,3 +134,27 @@ against `chat_logs` or the observer loop-back, never against the response body.
 
 - **Long-run stability**, reconnect behaviour, and whether an injected or stale referer survives KakaoTalk rewriting `shared_prefs`. Since the referer is issued per notification handling, expect it to rotate and plan an Iris restart around that.
 - Whether upstream redroid breaking on a kernel update takes this stack with it.
+
+## Next: Porting The Policy Engine
+
+Read and write both work, so the remaining gap between this and the Mac stack is
+`scripts/hermes/messenger_assistant.py` — the fail-closed controller described in
+[Jarvis Messenger Assistant](jarvis-messenger-assistant.md). **Deferred to a separate session
+(2026-09-13).**
+
+The port is not a transport swap. The controller's guards are written against the macOS
+adapter's evidence, and the Android side supplies different fields:
+
+| Mac guard | Evidence it uses | Android equivalent |
+| --- | --- | --- |
+| 1:1 room check | `NTUser.directChatId` plus `userType` classified `human` | not the same schema; needs a rule derived from `chat_rooms`/`chat_logs` |
+| read-state trigger | KakaoTalk-for-Mac read flags | `chat_logs.v` carries `isMine`, `pushAlert`, `enc` |
+| send binding | one no-send MCP call binding read-side chat id to the kmsg send id | `chat_id` is the same key on both sides, so this stage may collapse |
+| adapter transport | stdio MCP server, one tool call per action | HTTP `/reply` and `/query`, or the WebSocket feed |
+
+Two traps already established that the port must respect: `/reply` reporting success for a queued
+intent rather than a delivered message, and the referer needing an Iris restart when it rotates.
+
+Do not start this until the device-slot decision in
+[KakaoTalk Control Portability](kakaotalk-control-portability.md) is settled — the Mac client
+and this container cannot both hold the companion slot.

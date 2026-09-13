@@ -247,3 +247,13 @@ POST /reply {"type":"text","room":"128426307555607","data":"Iris 전송 테스�
 
 읽기·쓰기 양쪽 모두 DGX 컨테이너에서 동작한다. Mac의 `kakaocli` + `kmsg` 조합에 대한
 완전한 대체 경로가 확보됐다. 남은 것은 정책 엔진 이식과 장기 안정성이다.
+
+## 다음 작업 (보류)
+
+메신저 비서 정책 엔진 이식은 **별도 세션으로 미룬다**(사용자 결정, 2026-09-13).
+
+전송 계층 교체가 아니라 규칙 재작성이다. Mac 컨트롤러의 fail-closed 가드가 macOS 어댑터의
+근거(`NTUser.directChatId`, `userType`)에 묶여 있는데 Android 스키마는 같은 모양으로 주지
+않는다. 대응표는 [Iris On DGX](../knowledge/runbooks/iris-on-dgx.md)에 정리했다.
+
+착수 전제: 기기 슬롯 결정. Mac 클라이언트와 이 컨테이너가 동시에 companion 슬롯을 가질 수 없다.
