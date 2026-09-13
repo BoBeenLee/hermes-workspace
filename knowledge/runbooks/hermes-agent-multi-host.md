@@ -233,6 +233,36 @@ directory, so `skill-sources/hallmark` has files but no git metadata —
 been broken since that profile was deleted. They now read `HERMES_HALLMARK_PROFILE`,
 defaulting to `mac-jarvis`.
 
+### Moving A Discord Identity Between Hosts
+
+Only one websocket may consume a channel, so the order is stop-then-start, never the
+reverse. Two things that are not obvious:
+
+**`launchctl bootout gui/<uid>/<label>` fails with `Boot-out failed: 3: No such process`**
+even while `launchctl list` shows the label. Do not go hunting for the right launchd
+domain — use `hermes --profile <name> gateway stop`, which knows its own service target.
+
+**Count every profile on the channel, not just the two you are moving.** Before the
+dgx-jarvis cutover, channel …3051 was configured in *three* places: the jarvis profile
+(the identity being moved), the Mac's default profile, and — deliberately blanked
+beforehand — the restored mac-jarvis. The default profile turned out to be inert
+(`DISCORD_HOME_CHANNEL_NAME=default-disabled-migrated-to-jarvis`, and its log says
+`No messaging platforms enabled`), but that was luck rather than analysis. Grep every
+profile's `.env` for the channel id before flipping.
+
+Confirm the handover from the receiving host's log, not from the service state:
+
+```
+[Discord] Connected as <Bot>#<disc>
+✓ discord connected
+Gateway running with 1 platform(s)
+```
+
+The Mac's KakaoTalk messenger assistant then trips its own guard — `state.json` goes to
+`enabled=False`, `gateway_identity=missing` — and posts a shutdown notice. That is
+`messenger_assistant.py:1840` working as designed. Re-enable it from its own channel;
+it will not trip again, because the identity is now stably absent rather than changing.
+
 ## Completion Mode
 
 다음 작업은 완료 보고를 `review-required`로 둔다.

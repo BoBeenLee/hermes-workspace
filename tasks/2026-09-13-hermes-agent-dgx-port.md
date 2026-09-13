@@ -95,9 +95,46 @@ groq 413 은 DGX 만 그렇다. 같은 키로 Mac(v0.20.6)에서는 OK 가 나�
 오히려 적다(0개 대 24개). v0.21.2 의 내장 툴 스키마 크기 차이로 보이며 fallback 3순위
 하나만 잃는다. 이번 이식이 만든 문제가 아니다.
 
+## Discord 컷오버 - 완료 (2026-09-13 23:37)
+
+`launchctl bootout gui/<uid>/ai.hermes.gateway-jarvis` 는 **`Boot-out failed: 3: No such process`**
+로 실패한다 — `launchctl list` 에 버젓이 보이는데도 그렇다. 도메인을 맞히려 하지 말고
+네이티브 명령을 쓴다: `hermes --profile jarvis gateway stop` → `✓ Stopped hermes-gateway-jarvis service`.
+
+그 다음 `bin/hermes-remote gateway-restart`. DGX 로그가 인수를 확인해 준다:
+
+```
+[Discord] Registered /skill command with 53 skill(s) via autocomplete
+[Discord] Connected as Bob Hermes#7289
+✓ discord connected
+Gateway running with 1 platform(s)
+Channel directory built: 2 target(s)
+```
+
+예고한 fail-closed 도 정확히 발생했다 —
+`messenger-assistant/state.json` 이 `enabled=False`, `gateway_identity=missing`.
+
+**컷오버 전에 봇이 셋인 걸 먼저 세어야 한다.** 채널 …3051 에는 두 신원이 설정돼 있었다:
+jarvis 봇(`9ff5af…`, DGX 로 간 것)과 Mac 기본 프로필 봇(`a50489…`). 다행히 후자는 실질적으로
+죽어 있다 — `DISCORD_HOME_CHANNEL_NAME=default-disabled-migrated-to-jarvis` 이고 로그가
+`No messaging platforms enabled. Gateway will continue running for cron job execution.` 이다.
+살아 있었으면 컷오버 직후 …3051 에서 봇 둘이 답했을 것이다. "채널이 분리돼 있으니 안전하다"
+는 판단은 게이트웨이 대 메신저 비서만 센 것이었고, 프로필 **세 개**를 다 세야 맞다.
+
+최종 배치:
+
+| 소비자 | 봇 | 채널 | 방식 |
+| --- | --- | --- | --- |
+| DGX `hermes-gateway.service` | `9ff5af…` | …3051 | websocket |
+| Mac 메신저 비서 | `9ff5af…` (동일) | …9918 | REST 폴링 |
+| Mac `ai.hermes.gateway` (기본) | `a50489…` | - | 메시징 비활성, cron 전용 |
+| Mac `mac-jarvis` | `6fd532…` | 비움 | 게이트웨이 미설치 |
+
 ## Not Done - 사람이 해야 하는 단계
 
-1. **Discord 신원 컷오버.** 순서를 지켜야 한다 — websocket 소비자는 하나여야 한다.
+1. **메신저 비서 재활성화**: …9918 채널에 `메신저 시작`. Mac 의 jarvis 게이트웨이가 이제
+   영구히 내려가 있어 `gateway_identity()` 가 `missing` 으로 고정되므로 다시 트립하지 않는다.
+2. ~~Discord 신원 컷오버~~ - 완료. 아래는 기록용. 순서를 지켜야 한다 — websocket 소비자는 하나여야 한다.
    DGX `.env` 에는 토큰과 채널(…3051 / IGNORED …9918)이 **이미 들어 있다.** 겹침을
    막으려고 DGX 게이트웨이를 내려 둔 상태이므로, 남은 건 순서뿐이다.
    ```bash
@@ -128,15 +165,16 @@ groq 413 은 DGX 만 그렇다. 같은 키로 Mac(v0.20.6)에서는 OK 가 나�
 | 대상 | 변경 | 되돌리기 |
 | --- | --- | --- |
 | DGX `~/.hermes` | 신규 설치 (Hermes v0.21.2, node, uv, venv) | `hermes uninstall` 또는 디렉터리 삭제 |
-| DGX `hermes-gateway.service` | user unit 설치·enable. **컷오버 전까지 stop 상태** | `hermes gateway uninstall` |
+| DGX `hermes-gateway.service` | user unit 설치·enable·**기동 (Discord 연결됨)** | `hermes gateway uninstall` |
+| Mac `ai.hermes.gateway-jarvis` | **중지됨** (신원이 DGX 로 감) | `hermes --profile jarvis gateway start` |
 | DGX `~/.hermes/.env` | Mac jarvis `.env` 복사본 (키 + Discord 토큰·채널) | `.env.bak-pre-jarvis-*` 로 복원 |
 | DGX `llama-local.service` | 기동 (boot enable 은 **안 했다**) | `dgx-ai-control --service llama --action stop` |
 | DGX `~/Workspaces/hermes-workspace` | 클론 | 디렉터리 삭제 |
 | Mac `~/.hermes/profiles/mac-jarvis` | 복구 + 개명 | `hermes profile delete mac-jarvis` |
 | Mac `~/.hermes/profiles/.deleted/product` | tombstone 제거 | 파일 재생성 |
 
-`ai.hermes.gateway-jarvis` 는 **아직 내리지 않았다.** 컷오버는 위 "사람이 해야 하는
-단계" 2번에서 한다.
+`ai.hermes.gateway-jarvis` 는 중지됐다. 되돌리려면 DGX 를 먼저 내리고 Mac 을 올린다 —
+반대 순서로 하면 두 websocket 이 겹친다.
 
 ## 옆에서 발견한 것 (이번 범위 밖)
 
