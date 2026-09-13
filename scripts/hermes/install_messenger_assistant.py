@@ -30,7 +30,10 @@ import urllib.error
 import urllib.request
 
 
-PROFILE_DIR = Path.home() / ".hermes/profiles/jarvis"
+# The assistant used to live in the "jarvis" profile. That identity moved to the
+# DGX; the Mac-side profile is "mac-jarvis". Override with HERMES_MESSENGER_PROFILE.
+PROFILE = os.environ.get("HERMES_MESSENGER_PROFILE", "mac-jarvis")
+PROFILE_DIR = Path.home() / ".hermes/profiles" / PROFILE
 HERMES_BIN = Path.home() / ".local/bin/hermes"
 CHANNEL_NAME = "메신저-비서"
 CRON_NAME = "jarvis-messenger-assistant"
@@ -263,7 +266,7 @@ def reload_launch_agent(
 
 
 def legacy_cron_record() -> tuple[str, str] | None:
-    result = run([str(HERMES_BIN), "--profile", "jarvis", "cron", "list", "--all"])
+    result = run([str(HERMES_BIN), "--profile", PROFILE, "cron", "list", "--all"])
     current: tuple[str, str] | None = None
     for raw_line in result.stdout.splitlines():
         line = re.sub(r"\x1b\[[0-9;]*m", "", raw_line)
@@ -285,7 +288,7 @@ def pause_legacy_cron() -> tuple[str, bool]:
     job_id, state = record
     if state == "paused":
         return job_id, False
-    run([str(HERMES_BIN), "--profile", "jarvis", "cron", "pause", job_id])
+    run([str(HERMES_BIN), "--profile", PROFILE, "cron", "pause", job_id])
     updated = legacy_cron_record()
     if not updated or updated[0] != job_id or updated[1] != "paused":
         raise RuntimeError("Legacy Hermes cron did not pause after poller installation")
@@ -482,7 +485,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
     state_dir.chmod(0o700)
     config = {
         "version": 4,
-        "profile": "jarvis",
+        "profile": PROFILE,
         "profile_dir": str(PROFILE_DIR),
         "state_dir": str(state_dir),
         "hermes_bin": str(HERMES_BIN),

@@ -238,9 +238,15 @@ defaulting to `mac-jarvis`.
 Only one websocket may consume a channel, so the order is stop-then-start, never the
 reverse. Two things that are not obvious:
 
-**`launchctl bootout gui/<uid>/<label>` fails with `Boot-out failed: 3: No such process`**
-even while `launchctl list` shows the label. Do not go hunting for the right launchd
-domain — use `hermes --profile <name> gateway stop`, which knows its own service target.
+**Hermes LaunchAgents live in `gui/<uid>`, and a Hermes *gateway* does not answer to
+`bootout` at all.** `launchctl bootout gui/<uid>/ai.hermes.gateway-jarvis` returns
+`Boot-out failed: 3: No such process` while `launchctl list` is printing that very
+label — gateways are supervised differently and must be stopped with
+`hermes --profile <name> gateway stop`. The other agents (messenger assistant, kakao
+chat, camofox, mlx-qwen) *do* boot out cleanly, but only from `gui/<uid>`; the same
+command against `user/<uid>` returns the identical "No such process" and will send you
+chasing the wrong problem. Confirm a label's domain with `launchctl print <domain>/<uid>/<label>`
+before concluding anything.
 
 **Count every profile on the channel, not just the two you are moving.** Before the
 dgx-jarvis cutover, channel …3051 was configured in *three* places: the jarvis profile
@@ -257,6 +263,40 @@ Confirm the handover from the receiving host's log, not from the service state:
 ✓ discord connected
 Gateway running with 1 platform(s)
 ```
+
+### Standing The Mac Down Entirely
+
+Once the identity is on the DGX, taking the Mac out of service is five boot-outs plus
+two gateway stops — but three details decide whether it stays down.
+
+```bash
+hermes gateway stop                      # default profile
+hermes --profile jarvis gateway stop     # the migrated identity
+for L in ai.hermes.jarvis-messenger-assistant-discord \
+         ai.hermes.jarvis-messenger-assistant-poll \
+         ai.hermes.kakao-ai-chat ai.hermes.camofox ai.hermes.mlx-qwen; do
+  launchctl bootout "gui/$(id -u)/$L"
+  launchctl disable "gui/$(id -u)/$L"
+done
+launchctl disable "gui/$(id -u)/ai.hermes.gateway-jarvis"   # 아래 이유
+```
+
+**`disable`, not just `bootout`.** These agents carry `RunAtLoad`, so a reboot brings
+them back — and a resurrected `gateway-jarvis` would reconnect to the same channel the
+DGX now owns, which is exactly the double-answer this whole split exists to prevent.
+
+**`kakao_ai_chat` leaves an orphan.** It runs itself back through a local
+`ssh 127.0.0.1` wrapper (launchd has no TCC/Keychain context), so launchd supervises
+the *ssh* process. Boot it out and the Python child on the far side keeps polling.
+`pkill -f kakao_ai_chat.py` after the boot-out, then re-check.
+
+**`mlx-qwen` is 10 GB of resident model.** It is part of the `ai.hermes.*` stack and
+nothing else uses loopback 8080 once the agent is down, so it goes too — but say so,
+because that is the one stop a reader would not expect from "turn hermes off".
+
+What stays running: `application.ai.hermes.mac-manager.*` is the power-schedule GUI
+app, not the agent. KakaoTalk.app itself is untouched and keeps the account's companion
+slot, which is why KakaoTalk control cannot follow the agent to the DGX yet.
 
 The Mac's KakaoTalk messenger assistant then trips its own guard — `state.json` goes to
 `enabled=False`, `gateway_identity=missing` — and posts a shutdown notice. That is
