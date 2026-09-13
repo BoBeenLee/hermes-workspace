@@ -202,6 +202,12 @@ setprop persist.sys.timezone Asia/Seoul
 
 ## Resuming After A Host Reboot
 
+**The DGX AI Control app does all of this.** `~/src/dgx-ai-control` has an Android Container row
+with Start / Stop / Restart, and `dgx-ai-control --android start|stop|restart|status` from a
+shell. Start runs the binder prep, starts the container, waits for `boot_completed`, then starts
+Iris. Measured at roughly 9s cold, 10s to stop. Prefer it over the manual steps below; the manual
+path is here so the app's behaviour is auditable and so recovery is possible if the app breaks.
+
 Three things do not survive a reboot and must be redone in order before the container is useful
 again. The container itself and the KakaoTalk session do survive, because they live in the
 bind-mounted `/data`.

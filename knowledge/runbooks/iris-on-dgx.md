@@ -57,6 +57,8 @@ Android's `sh` has no process substitution, so `< <(...)` fails silently. Use th
 
 Run it detached: `docker exec -d redroid-poc sh -c 'sh /data/apk/iris_start.sh > /data/local/tmp/iris.log 2>&1'`.
 
+The DGX AI Control app wraps this; see [DGX Android Container](dgx-android-container.md).
+
 ## Blocker 2: `NotificationReferer` Is Missing
 
 With the environment fixed, Iris fails with:
