@@ -104,6 +104,21 @@ class IrisClient:
             raise IrisError(f"Iris reply refused: {str(payload)[:300]}")
         return payload
 
+    def reply_images(self, chat_id, images: list[str]) -> dict:
+        """Queue one or more base64 images. Queued is not delivered - read it back.
+
+        `file` and `link` are not options: this build's ReplyRequest rejects both, so
+        anything that is not an image has to travel as text.
+        """
+        if not images:
+            return {}
+        body = ({"type": "image", "data": images[0]} if len(images) == 1
+                else {"type": "image_multiple", "data": images})
+        payload = self._post("/reply", {"room": str(chat_id), **body})
+        if payload.get("success") is not True:
+            raise IrisError(f"Iris image reply refused: {str(payload)[:300]}")
+        return payload
+
     def watch(self, sink, cache: dict, stop: threading.Event | None = None) -> threading.Thread:
         """Feed live rows to `sink` and names to `cache`, in a daemon thread.
 

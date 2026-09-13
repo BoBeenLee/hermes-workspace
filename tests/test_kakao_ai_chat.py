@@ -54,10 +54,21 @@ class TriggerTests(unittest.TestCase):
             "mention",
         )
 
-    def test_mention_must_open_the_line(self):
-        # matching anywhere would fire on ordinary text that merely contains it
-        for content in ("이거 어때 @jarvis", "메일이 bob@jarvis.example 이야", "로그: [@jarvis] 어쩌고"):
+    def test_a_mention_anywhere_in_the_line_counts(self):
+        for content in ("이거 어때 @jarvis", "이거 @jarvis 어때", "@jarvis 이거 어때", "어때 @jarvis?"):
+            self.assertEqual(
+                module.classify_trigger(row(message=content), CONFIG, no_bot_parents), "mention", content
+            )
+
+    def test_a_mention_that_is_part_of_something_else_does_not_count(self):
+        # a mail address and a pasted log line both contain the string and mean nothing by it
+        for content in ("메일이 bob@jarvis.example 이야", "로그: [@jarvis] 어쩌고",
+                        "@jarvis.example 로 보내"):
             self.assertIsNone(module.classify_trigger(row(message=content), CONFIG, no_bot_parents), content)
+
+    def test_the_mention_comes_out_of_the_body_wherever_it_sat(self):
+        self.assertEqual(module.mention_body("오늘 날씨 어때 @jarvis", "@jarvis"), "오늘 날씨 어때")
+        self.assertEqual(module.mention_body("오늘 @jarvis 날씨 어때", "@jarvis"), "오늘 날씨 어때")
 
     def test_mention_needs_a_boundary_after_it(self):
         self.assertIsNone(module.classify_trigger(row(message="@jarvistest 안녕"), CONFIG, no_bot_parents))
@@ -103,15 +114,29 @@ class TriggerTests(unittest.TestCase):
     def test_plain_memo_is_not_a_trigger(self):
         self.assertIsNone(module.classify_trigger(row(message="그냥 메모"), CONFIG, no_bot_parents))
 
-    def test_last_trigger_per_room_wins(self):
+    def test_every_trigger_in_a_tick_is_answered(self):
+        # two mentions inside one 15s tick used to cost the first one silently
         rows = [
             row(log_id=1, message="@jarvis 첫 번째"),
             row(log_id=2, message="그냥 메모"),
             row(log_id=3, message="@jarvis 두 번째"),
         ]
         chosen = module.select_triggers(rows, CONFIG, no_bot_parents)
-        self.assertEqual(list(chosen), [CHAT])
-        self.assertEqual(chosen[CHAT]["log_id"], 3)
+        self.assertEqual([t["log_id"] for t in chosen], [1, 3])
+
+    def test_triggers_come_back_oldest_first(self):
+        rows = [row(log_id=9, message="@jarvis 나중"), row(log_id=4, message="@jarvis 먼저")]
+        chosen = module.select_triggers(rows, CONFIG, no_bot_parents)
+        self.assertEqual([t["log_id"] for t in chosen], [4, 9])
+
+    def test_rooms_do_not_shadow_each_other(self):
+        rows = [
+            row(log_id=1, chat_id=CHAT, message="@jarvis 이 방"),
+            row(log_id=2, chat_id=CHAT + 1, message="@jarvis 저 방"),
+        ]
+        chosen = module.select_triggers(rows, dict(CONFIG, all_rooms=True, backend="iris"),
+                                        no_bot_parents)
+        self.assertEqual([t["chat_id"] for t in chosen], [CHAT, CHAT + 1])
 
 
 class ContextTests(unittest.TestCase):
@@ -337,6 +362,65 @@ class IrisInboxTests(unittest.TestCase):
     def test_a_cold_inbox_replays_nothing(self):
         # a daemon that was down for a day must not answer a day of stale mentions
         self.assertEqual(module.drain_iris_inbox(self.config, cursor=0), [])
+
+
+class AttachmentTests(unittest.TestCase):
+    """The outbox fence is load-bearing: open-chat text reaches the model as context."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        # macOS hands out /var/... but resolve() returns /private/var/...
+        root = Path(self.tmp.name).resolve()
+        self.outbox = root / "outbox"
+        self.outbox.mkdir()
+        (root / "media").mkdir()
+        self.secret = root / "secret.png"
+        self.secret.write_bytes(b"\x89PNG")
+        patcher = mock.patch.multiple(module, OUTBOX_DIR=self.outbox, MEDIA_DIR=root / "media")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.config = dict(CONFIG, attach_max_bytes=1000)
+
+    def image(self, name="shot.png", size=4):
+        path = self.outbox / name
+        path.write_bytes(b"\x89PNG" + b"0" * (size - 4))
+        return path
+
+    def test_an_outbox_image_is_split_off_the_caption(self):
+        path = self.image()
+        text, images = module.extract_attachments(f"여기 있어\n[[image: {path}]]\n확인해", self.config)
+        self.assertEqual(text, "여기 있어\n확인해")
+        self.assertEqual(images, [path])
+
+    def test_a_path_outside_the_outbox_is_refused(self):
+        text, images = module.extract_attachments(f"[[image: {self.secret}]]", self.config)
+        self.assertEqual((text, images), ("", []))
+
+    def test_a_symlink_out_of_the_outbox_is_refused(self):
+        link = self.outbox / "escape.png"
+        link.symlink_to(self.secret)
+        self.assertEqual(module.extract_attachments(f"[[image: {link}]]", self.config)[1], [])
+
+    def test_a_non_image_is_refused(self):
+        doc = self.outbox / "notes.pdf"
+        doc.write_bytes(b"%PDF")
+        self.assertEqual(module.extract_attachments(f"[[image: {doc}]]", self.config)[1], [])
+
+    def test_an_oversized_image_is_refused(self):
+        big = self.image("big.png", size=1001)
+        self.assertEqual(module.extract_attachments(f"[[image: {big}]]", self.config)[1], [])
+
+    def test_a_bare_path_in_prose_is_not_an_attachment(self):
+        path = self.image()
+        text, images = module.extract_attachments(f"파일은 {path} 에 있다", self.config)
+        self.assertEqual(images, [])
+        self.assertIn(str(path), text)
+
+    def test_the_same_image_twice_is_sent_once(self):
+        path = self.image()
+        _, images = module.extract_attachments(f"[[image: {path}]]\n[[image: {path}]]", self.config)
+        self.assertEqual(images, [path])
 
 
 class AllRoomsTests(unittest.TestCase):
