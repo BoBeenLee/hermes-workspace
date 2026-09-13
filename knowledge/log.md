@@ -2,6 +2,9 @@
 
 ## 2026-09-13
 
+- Made the Android container a first-class service in the DGX AI Control app (`~/src/dgx-ai-control`, commit `07217a8`): Start / Stop / Restart / Logs plus `--android start|stop|restart|status`, with the binder prep, container start, boot wait and Iris launch behind one action. Measured ~9s to start, ~10s to stop.
+- Restyled that app, which had no styling at all, and recorded the reasoning in its own `PRODUCT.md` and `DESIGN.md`. It is light rather than dark because it is seen over RDP inside a macOS window, where compression bands dark tonal steps.
+
 - Deferred the messenger-assistant policy-engine port to a later session and recorded what it actually involves: the Mac controller's fail-closed guards are written against macOS adapter evidence (`NTUser.directChatId`, `userType`) that the Android schema does not supply in the same shape, so it is a rule rewrite rather than a transport swap.
 - Wrote down the reboot-recovery order for the container, since the binder module, the binderfs mount and its `0666` permissions are all lost on a host reboot while the container and the KakaoTalk session survive in the bind mount.
 
