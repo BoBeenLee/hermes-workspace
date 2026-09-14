@@ -132,6 +132,61 @@ gates it.
 Iris queued the intent; with a bogus referer it returns the same thing and nothing leaves. Verify
 against `chat_logs` or the observer loop-back, never against the response body.
 
+## Files: `/reply` Cannot, The Intent Behind It Can
+
+`/reply` takes exactly three types. `ReplyType` is a Kotlin enum with three entries and
+kotlinx.serialization rejects everything else in the request body, so `file`, `link` and a
+nonsense `zzzz` all fail identically - it is not a file-specific refusal:
+
+```
+{"status":false,"message":"Failed to convert request body to class party.qwer.iris.model.ReplyRequest"}
+```
+
+Upstream `main` has the same three entries, and v0.32 (2026-06-28) is the latest release, so
+there is no newer build to wait for and no undocumented fourth type. The `sendFile`/`FILE`
+strings in the dex are Ktor symbols, not Iris features.
+
+**But photos never went through `/reply`'s intent either.** `Replier.sendMultiplePhotosInternal`
+fires a plain Android share intent, and KakaoTalk's receiving filter is not image-only:
+
+```
+com.kakao.talk/.activity.RecentExcludeIntentFilterActivity
+  Action: SEND, SEND_MULTIPLE, SENDTO
+  StaticType: application, audio, image, video, text
+```
+
+`AndroidHiddenApi` falls back to the calling package `"com.android.shell"` - exactly what the
+container's `am` uses - so `am start` reproduces it with no APK rebuild. Verified 2026-09-14
+against the MemoChat room: a PDF and a `.txt` both landed as `chat_logs.type = 18` with
+`attachment.name`/`size`/`url`, headless, no picker and no tap.
+
+```sh
+D=/sdcard/Android/data/com.kakao.talk/files    # KakaoTalk's own dir, so u0_a79 can read it
+cp <src> $D/<name>; chmod 644 $D/<name>
+am start -a android.intent.action.SEND -t application/octet-stream \
+  --eu android.intent.extra.STREAM file://$D/<name> \
+  --el key_id <chatId> --ei key_type 1 --ez key_from_direct_share true \
+  -f 335544320 -n com.kakao.talk/.activity.RecentExcludeIntentFilterActivity
+```
+
+Four things decide whether this works:
+
+- **`-t text/plain` silently does nothing.** KakaoTalk reads that as a text share and looks for
+  `EXTRA_TEXT`; a `.txt` handed over as `EXTRA_STREAM` is dropped with no error, no picker and no
+  logcat complaint - the trampoline just forwards to `MainActivity` and the app sits there. Use
+  `application/octet-stream` for anything that is not real media. This is the whole reason the
+  first attempt looked like a hard refusal.
+- **`ACTION_SEND`, not `ACTION_SEND_MULTIPLE`.** `am --eu` sets a single Uri; `SEND_MULTIPLE`
+  wants an `ArrayList<Uri>`, which `am` cannot build. One file per call.
+- **The file must live under `/sdcard/Android/data/com.kakao.talk/files`.** The Uri is a bare
+  `file://`, so KakaoTalk reads it as itself. Elsewhere it is unreadable.
+- **`am` is not the limit and neither is the referer.** The share path never touches
+  `NotificationReferer`; only `/reply`'s text send does.
+
+Delivery still has to be read back from `chat_logs` - `am start` prints `Starting: Intent {...}`
+whether or not anything was sent, the same trap as `/reply`'s `{"success":true}`. KakaoTalk
+stamps files with a 14-day expiry (`attachment.expire`), so this is not archival transport.
+
 ## Not Verified
 
 - **Long-run stability**, reconnect behaviour, and whether an injected or stale referer survives KakaoTalk rewriting `shared_prefs`. Since the referer is issued per notification handling, expect it to rotate and plan an Iris restart around that.

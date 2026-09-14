@@ -124,8 +124,10 @@ class IrisClient:
     def reply_images(self, chat_id, images: list[str]) -> dict:
         """Queue one or more base64 images. Queued is not delivered - read it back.
 
-        `file` and `link` are not options: this build's ReplyRequest rejects both, so
-        anything that is not an image has to travel as text.
+        `file` and `link` are not options: ReplyType is a three-entry enum, so the
+        request body fails to deserialize - as does any other unknown type. Arbitrary
+        files still reach KakaoTalk, just not through Iris: an ACTION_SEND intent with
+        `-t application/octet-stream` does it. See knowledge/runbooks/iris-on-dgx.md.
         """
         if not images:
             return {}

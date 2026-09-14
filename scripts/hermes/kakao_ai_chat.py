@@ -1087,6 +1087,8 @@ def resolve_attachment(raw: str, config: dict) -> Path | None:
     if path.suffix.lower() not in SENDABLE_IMAGE_SUFFIXES:
         # Iris /reply takes text and images only. `file` and `link` are rejected by
         # its own ReplyRequest model - probed against the running build, not guessed.
+        # Non-images can still be sent, but only off this path (ACTION_SEND intent);
+        # see knowledge/runbooks/iris-on-dgx.md.
         log(f"첨부 거부: 이미지가 아니다 ({path.name})")
         return None
     size = path.stat().st_size
