@@ -365,7 +365,9 @@ class PromptTests(unittest.TestCase):
         # subtracted by agent.disabled_toolsets no matter what -t says
         self.assertNotIn("antigravity-worker", names)
         # `video` belongs here: the prompt tells the agent to open videos with it
-        self.assertLessEqual({"cronjob", "memory", "computer_use", "video"}, set(names))
+        # `delegation` likewise: the prompt tells the agent to hand hard work to a child
+        self.assertLessEqual({"cronjob", "memory", "computer_use", "video", "delegation"},
+                             set(names))
         # 14 tools for a board no chat room touches
         self.assertNotIn("kanban", names)
 
@@ -375,6 +377,14 @@ class PromptTests(unittest.TestCase):
         prompt = module.build_prompt([], [], "(없음)", "x", chat_id=4242)
         self.assertIn("cronjob_manage", prompt)
         self.assertIn("--send-to 4242", prompt)
+
+    def test_hard_work_is_told_to_fan_out_instead_of_one_child(self):
+        # one child with all 25 boroughs is the shape that already failed at the 20min
+        # cap, so the rule has to name the split and the schema, not just the tool
+        prompt = module.build_prompt([], [], "(없음)", "x", chat_id=4242)
+        self.assertIn("delegate_task", prompt)
+        self.assertIn("tasks", prompt)
+        self.assertIn("output_schema", prompt)
 
     def test_default_toolsets_hold_only_names_hermes_accepts(self):
         names = set(module.DEFAULT_CONFIG["toolsets"].split(","))
