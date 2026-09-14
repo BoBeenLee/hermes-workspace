@@ -45,7 +45,9 @@ Java.perform(function () {
           var hint = readPending();
           if (hint !== null) {
             send('iris-thread: ' + name + ' -> thread ' + hint);
-            return orig.call(this, a0, a1, 2, JLong.$new(hint), a4);
+            // scope 3 = 방+스레드: the media shows in the main timeline AND is linked
+            // as a 댓글. scope 2 (스레드에만) hid it from the main chat -> looked missing.
+            return orig.call(this, a0, a1, 3, JLong.$new(hint), a4);
           }
         }
       } catch (e) { send('iris-thread ERR ' + e); }
