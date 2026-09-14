@@ -376,11 +376,25 @@ hooks:
 - `sed` 가 아니라 `grep -o | head -1`: 선행 `.*` 가 greedy 라 `tool_input` 안의
   `"tool_name"` 문자열을 집는다. 페이로드 순서상 **첫 매치**가 진짜다.
 
-### 오픈채팅에서는 답이 댓글로 달린다 (2026-09-14)
+### 답은 멘션에 댓글로 달린다 (2026-09-14)
 
-`chat_rooms.link_id` 가 있는 방(= 오픈채팅)이면 `[jarvis]` 답·하트비트·실패 공지가 전부
-**그 턴을 부른 멘션에 달린 댓글**로 나간다. UI 가 무엇의 답인지 보여주므로 그 방에서는
-`- "원 요청"` 인용을 뺀다. 그 밖의 방은 그대로 인용만 붙는다.
+`[jarvis]` 답·하트비트·실패 공지가 전부 **그 턴을 부른 멘션에 달린 댓글**로 나간다.
+UI 가 무엇의 답인지 보여주므로 `- "원 요청"` 인용은 뺀다. 방 종류를 가리지 않는다 —
+오픈채팅 전용이라 믿고 `link_id` 로 걸렀던 적이 있는데, MemoChat 에 실어 보낸 threadId 도
+앱에서 진짜 댓글로 그려졌다 (눈으로 확인). 행 모양은 양쪽이 같아 DB 로는 알 수 없었다.
+
+**턴이 떼어 보낸 것도 같은 뿌리를 쓴다.** 렌더가 턴보다 길면 ComfyUI 배달자가
+`--send-to` 로 돌아오는데, 그 경로엔 근거가 없어 사진 캡션만 방에 따로 떨어졌다
+(2026-09-14 실측). `run_hermes` 가 자식 환경에 `KAKAO_THREAD_ID` 를 심고 `send_once` 가
+그걸 줍는다 — 배달자는 Popen 두 칸 건너라 argv 로는 못 꿴다. 턴 밖 발신(cron)은 변수가
+없어 그대로 평범한 줄로 남는다.
+
+**사진·파일 행은 댓글이 못 된다. 캡션만 된다.** `IrisServer.kt` 는 `threadId` 를 모든
+타입에서 읽지만 `ReplyType.TEXT` 에만 넘기고, `Replier.sendPhoto`/`sendMultiplePhotos` 엔
+받을 파라미터가 아예 없다. 텍스트는 REPLY_MESSAGE 알림 인텐트(`thread_id`,
+`is_chat_thread_notification`)로, 사진은 `ACTION_SEND_MULTIPLE` 공유 인텐트로 나가기
+때문이다 — 후자엔 실을 자리가 없다. 파일이 댓글이 못 되는 것과 같은 이유다. 그래서
+캡션을 먼저 보내고 사진을 바로 뒤에 붙인다. 사진 행의 `thread_id` 가 NULL 인 건 정상이다.
 
 **이게 Iris 가 보낼 수 있는 유일한 답장 형태다.** 카카오톡의 보통 답장은 `type=26` 행에
 `attachment` 로 `src_logId` 를 실은 것인데, `Replier.sendMessageInternal` 이 쏘는
@@ -403,8 +417,7 @@ WHERE chat_id = <방> ORDER BY _id DESC LIMIT 5
 
 (`user_id` 와 `v` 가 둘 다 없으면 `message` 가 base64 로 나온다. 에러는 안 난다.)
 
-방 종류는 `thread_root()` 가 `chat_rooms.link_id` 로 한 번만 조회하고 캐시한다. 조회가
-실패하면 댓글만 포기하고 답은 그대로 나간다.
+`thread_root()` 는 이제 조회를 하지 않는다. 트리거의 `log_id` 가 그대로 뿌리다.
 
 ## Operations
 
