@@ -188,6 +188,7 @@ CDN 호스트가 셋이다: `talk.kakaocdn.net`(https), `dn.talk.kakao.com`(http
 | --- | --- | --- |
 | `[[image: /절대/경로]]` | Iris `/reply` `image` (base64) | 사진 (`chat_logs.type` 2) |
 | `[[file: /절대/경로]]` | 카톡 공유 인텐트 (`docker exec … am start`) | 파일 (`chat_logs.type` 18) |
+| `[[file: ….mp4]]` | 같은 인텐트, mime 만 `video/mp4` | **재생되는 동영상** (`type` 3) |
 
 둘 다 `~/.hermes/kakao-ai-chat/outbox` 와 `media` 안으로 resolve 돼야 통과한다. **이 울타리가
 보안 경계다** — 방 텍스트가 컨텍스트로 모델에 들어가고, `all_rooms` 이후 그 텍스트를 모르는
@@ -201,6 +202,11 @@ CDN 호스트가 셋이다: `talk.kakaocdn.net`(https), `dn.talk.kakao.com`(http
 - 보내는 mime 은 **`text/plain` 이면 안 된다.** 카톡이 텍스트 공유로 읽고 `EXTRA_TEXT` 를 찾아
   파일을 조용히 버린다. 그래서 `send_file` 은 무조건 `application/octet-stream` 을 쓴다 —
   확장자는 파일 이름이 나르므로 mime 을 추측할 이유가 없다.
+- **mime 이 행 종류를 가른다.** `send_file` 의 `SHARE_MIMES` 는 `.mp4` 하나만 실제 타입으로
+  올리고 나머지는 `application/octet-stream` 이다. `mimetypes.guess_type` 으로 넓히지 마라 —
+  `.txt` 에 `text/plain` 을 답하고, 그게 위의 조용히 버려지는 함정이다. `.mp4` 만 매핑한 건
+  그것만 실측했기 때문이고, 다른 영상 확장자도 도착은 한다 (파일로).
+  동영상은 카톡이 전사하므로 파일보다 **눈에 띄게 늦게** 뜬다.
 - 파일 이름은 `safe_device_name` 으로 정제된다. 한글은 남고 구분자와 `..` 는 `_` 가 된다.
   이름이 argv 의 경로 조각으로 들어가므로, 이게 방 텍스트발 경로 조작을 막는 자리다.
 

@@ -171,6 +171,10 @@ am start -a android.intent.action.SEND -t application/octet-stream \
 
 Four things decide whether this works:
 
+- **The mime decides which row you get.** `application/octet-stream` gives a file
+  (`type = 18`); `video/mp4` gives a playable video (`type = 3`, carrying `w`/`h`/`d`
+  and a thumbnail key). A video also lands noticeably later, because KakaoTalk
+  transcodes it first - 12s was too early to see it, 37s was enough.
 - **`-t text/plain` silently does nothing.** KakaoTalk reads that as a text share and looks for
   `EXTRA_TEXT`; a `.txt` handed over as `EXTRA_STREAM` is dropped with no error, no picker and no
   logcat complaint - the trampoline just forwards to `MainActivity` and the app sits there. Use
@@ -186,6 +190,28 @@ Four things decide whether this works:
 Delivery still has to be read back from `chat_logs` - `am start` prints `Starting: Intent {...}`
 whether or not anything was sent, the same trap as `/reply`'s `{"success":true}`. KakaoTalk
 stamps files with a 14-day expiry (`attachment.expire`), so this is not archival transport.
+
+### Upstream Is Building This, Which Is When To Retire The Workaround
+
+[Iris#129](https://github.com/dolidolih/Iris/pull/129) adds video and arbitrary files to
+`/reply`. **Open, not merged** (checked 2026-09-14), so nothing to wait for yet - but read it
+before touching this code, for two reasons.
+
+First, it confirms the intent independently. Its `sendFileInternal` is the same
+`ACTION_SEND` + `key_id`/`key_type`/`key_from_direct_share` + `NEW_TASK|CLEAR_TOP` we
+reverse-engineered, with `type = mediaType` as the one variable. Upstream reaching the same
+shape is the strongest evidence available that this is the supported path and not a trick.
+
+Second, **it does not add a `file` ReplyType** - its `ReplyType.kt` change is a trailing
+newline. Files arrive as a raw binary body on a separate route, `POST /reply?room=…&filename=…`
+with the mime in `Content-Type`, streamed rather than base64'd so a large upload cannot OOM the
+device. So "the enum has three entries" stays true even after it merges, and a client that
+adopts it is writing a new call, not a new `type` value. Its cap is 300 MiB, which is the real
+KakaoTalk ceiling; our own `attach_max_bytes` is a much lower policy choice, not a limit.
+
+Adopting it means building an APK from an unmerged third-party branch and replacing the Iris
+on the device that holds the companion slot. The `am` path costs no build and is already
+verified, so the trade only becomes worth it once #129 is merged and released.
 
 ## Not Verified
 

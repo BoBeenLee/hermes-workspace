@@ -278,6 +278,17 @@ SHARE_ACTIVITY = "com.kakao.talk/.activity.RecentExcludeIntentFilterActivity"
 SHARE_FLAGS = "335544320"
 DOCKER_TIMEOUT_SECONDS = 120.0
 
+# KakaoTalk branches on the mime it is handed. `video/mp4` arrives as a playable
+# video row (`chat_logs.type` 3, with w/h/duration), everything else as a file row
+# (type 18). Only `.mp4` is mapped because only `.mp4` was measured against the
+# live app; other video suffixes still arrive, just as files.
+#
+# Never widen this with `mimetypes.guess_type`. It answers `text/plain` for `.txt`,
+# and KakaoTalk reads `text/*` as a text share - it looks for EXTRA_TEXT and drops
+# the file with no error, no picker and no logcat line.
+SHARE_MIMES = {".mp4": "video/mp4"}
+DEFAULT_SHARE_MIME = "application/octet-stream"
+
 
 def safe_device_name(name: str) -> str:
     """A file name that is safe as an argv path segment and still readable in the room.
@@ -290,6 +301,11 @@ def safe_device_name(name: str) -> str:
     return cleaned[:80] or "file"
 
 
+def share_mime(path: Path) -> str:
+    """The mime to hand KakaoTalk, which decides whether this is a video or a file."""
+    return SHARE_MIMES.get(path.suffix.lower(), DEFAULT_SHARE_MIME)
+
+
 def send_file(chat_id, path: Path, container: str = DEFAULT_CONTAINER) -> str:
     """Put one arbitrary file in a room. Returns the name KakaoTalk will show.
 
@@ -298,15 +314,14 @@ def send_file(chat_id, path: Path, container: str = DEFAULT_CONTAINER) -> str:
     share intent takes the file instead, and `am` may fire it because Iris's own
     hidden-API caller name falls back to "com.android.shell" anyway.
 
-    **The mime must not be `text/*`.** KakaoTalk reads that as a text share, looks
-    for EXTRA_TEXT, and drops a file handed over as EXTRA_STREAM with no error, no
-    picker and no logcat line. `application/octet-stream` is used unconditionally:
-    the name carries the extension, so guessing a real type buys nothing and only
-    reopens that trap. Photos keep their own path (`reply_images`), which is what
-    makes them arrive as photos rather than as attachments.
+    **The mime must not be `text/*`** - see SHARE_MIMES for why. `.mp4` is the one
+    suffix that earns a real type, because a video row plays inline where a file row
+    only downloads. Photos keep their own path (`reply_images`), which is what makes
+    them arrive as photos rather than as attachments.
 
     Queued is not delivered, same as `/reply`: `am` prints its intent either way.
-    Read `chat_logs` back - a delivered file is `type = 18`.
+    Read `chat_logs` back - a delivered file is `type = 18`, a video `type = 3`.
+    A video lands noticeably later than a file: KakaoTalk transcodes it first.
     """
     name = safe_device_name(path.name)
     target = f"{KAKAO_FILES_DIR}/{name}"
@@ -316,7 +331,7 @@ def send_file(chat_id, path: Path, container: str = DEFAULT_CONTAINER) -> str:
     _docker(["exec", container, "/system/bin/chmod", "644", target])
     _docker(["exec", container, "/system/bin/am", "start",
              "-a", "android.intent.action.SEND",
-             "-t", "application/octet-stream",
+             "-t", share_mime(path),
              "--eu", "android.intent.extra.STREAM", f"file://{target}",
              "--el", "key_id", str(chat_id),
              "--ei", "key_type", "1",
@@ -422,6 +437,13 @@ def demo() -> None:
     assert safe_device_name("...") == "file"
     assert safe_device_name("") == "file"
     assert "/" not in safe_device_name("x/y/z") and ".." not in safe_device_name("..a")
+
+    # the mime decides video vs file, and `.txt` must never become text/plain
+    assert share_mime(Path("clip.MP4")) == "video/mp4"
+    assert share_mime(Path("a.txt")) == "application/octet-stream"
+    assert share_mime(Path("a.pdf")) == "application/octet-stream"
+    assert share_mime(Path("noext")) == "application/octet-stream"
+    assert not any(m.startswith("text/") for m in SHARE_MIMES.values())
 
     print("iris_client demo ok")
 
