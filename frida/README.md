@@ -19,7 +19,9 @@ attaches the already-running app: no Magisk, no resign, no container recreate, l
 - `iris_thread.js` - the hook. Finds the primary media constructor
   `ChatSendingLog$b(long, cu8, int, java.lang.Long, boolean)` by argument SHAPE (not by
   obfuscated names - the enum's constant names `Photo`/`File`/... survive R8, and the arg
-  order type,scope,threadId is stable). When a fresh hint is present it rewrites scope=2 and
+  order type,scope,threadId is stable). When a fresh hint is present it rewrites scope=3
+  (방+스레드: the media shows in the main chat AND is linked as a 댓글; scope=2 hid it from
+  the main timeline, which read as "missing") and the
   threadId. Consume-once by mtime: it runs as the kakao uid and cannot delete the root-owned
   hint file, so it remembers the last mtime it used.
 - `driver.py` - host-side, keeps the hook attached; re-attaches when KakaoTalk restarts and
