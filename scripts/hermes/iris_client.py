@@ -43,10 +43,12 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
+import pathlib
 from pathlib import Path
 
 DEFAULT_BASE_URL = "http://172.17.0.2:3000"
@@ -384,6 +386,40 @@ def send_file(chat_id, path: Path, container: str = DEFAULT_CONTAINER) -> str:
     return name
 
 
+# Where the LSPosed hook looks for the "which thread does the next media send belong
+# to" hint. Inside the container this dir is world-traversable (771) and the file is
+# 644, so com.kakao.talk (uid 10087) can read it by its exact path. See
+# knowledge/runbooks/iris-on-dgx.md.
+HINT_DIR = "/data/local/tmp"
+
+
+def write_thread_hint(chat_id, thread_id, container: str = DEFAULT_CONTAINER) -> None:
+    """Tell the in-app LSPosed hook which thread a media send belongs to, or clear it.
+
+    Photo and file rows cannot carry a threadId through Iris - KakaoTalk builds the
+    share as ChatSendingLog.b(..., threadId=null) and drops anything we pass. The hook
+    reads this file, keyed by chat_id, and injects the threadId into the media send
+    instead. A None thread_id removes the file so a later non-thread send (a cron
+    result) is not wrongly threaded by a stale hint; the hook also ignores a hint
+    older than its TTL, so this is belt-and-suspenders.
+
+    Staged via a temp file and docker cp rather than a shell redirect - same argv-only
+    discipline as send_file, so nothing interpolates into a shell.
+    """
+    target = f"{HINT_DIR}/iris_thread_{int(chat_id)}"
+    if thread_id is None:
+        _docker(["exec", container, "/system/bin/rm", "-f", target])
+        return
+    with tempfile.NamedTemporaryFile("w", suffix=".hint", delete=False) as handle:
+        handle.write(str(int(thread_id)))
+        staged = handle.name
+    try:
+        _docker(["cp", staged, f"{container}:{target}"])
+        _docker(["exec", container, "/system/bin/chmod", "644", target])
+    finally:
+        pathlib.Path(staged).unlink(missing_ok=True)
+
+
 def _docker(args: list[str]) -> None:
     result = subprocess.run(
         ["docker", *args],
@@ -498,6 +534,26 @@ def demo() -> None:
     assert share_mime(Path("a.pdf")) == "application/octet-stream"
     assert share_mime(Path("noext")) == "application/octet-stream"
     assert not any(m.startswith("text/") for m in SHARE_MIMES.values())
+
+    # the thread hint: a set docker-cp's an int-only file to the int-only path; clear rm -f's it.
+    global _docker
+    real_docker, calls, staged_body = _docker, [], []
+    def fake_docker(args):
+        if args and args[0] == "cp":
+            staged_body.append(pathlib.Path(args[1]).read_text())
+        calls.append(args)
+    _docker = fake_docker
+    try:
+        write_thread_hint(128426307555607, 3929500590731, container="c")
+        tgt = "/data/local/tmp/iris_thread_128426307555607"
+        assert calls[0][0] == "cp" and calls[0][2] == f"c:{tgt}", calls
+        assert staged_body == ["3929500590731"], staged_body
+        assert calls[1] == ["exec", "c", "/system/bin/chmod", "644", tgt], calls
+        calls.clear()
+        write_thread_hint("128426307555607", None, container="c")
+        assert calls == [["exec", "c", "/system/bin/rm", "-f", tgt]], calls
+    finally:
+        _docker = real_docker
 
     print("iris_client demo ok")
 

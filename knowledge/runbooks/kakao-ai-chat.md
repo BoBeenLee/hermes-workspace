@@ -399,6 +399,18 @@ UI 가 무엇의 답인지 보여주므로 `- "원 요청"` 인용은 뺀다. �
 때문이다 — 후자엔 실을 자리가 없다. 파일이 댓글이 못 되는 것과 같은 이유다. 그래서
 캡션을 먼저 보내고 사진을 바로 뒤에 붙인다. 사진 행의 `thread_id` 가 NULL 인 건 정상이다.
 
+> **우회(구현됨, 배포는 컨테이너 작업 필요):** 카톡 클라이언트에 LSPosed 모듈을 붙이면
+> 사진·파일도 댓글에 넣을 수 있다. 능력은 클라이언트에 있다 — 빌더
+> `ChatSendingLog$b(id, type, scope, threadId, ...)` 는 타입 제한이 없고, 공유 경로가
+> scope=0·threadId=null 리터럴로 부를 뿐이다. 모듈 `android/iris-thread-hook/` 가 그
+> 생성자를 후킹해 미디어 타입일 때 두 인자를 채운다. 데몬은 전송 직전
+> `iris_client.write_thread_hint(chat_id, thread_id)` 로 `/data/local/tmp/iris_thread_<chatId>`
+> 에 힌트를 남기고(비-스레드면 지움), 후크가 chatId 로 읽어 주입한다(TTL 60s). 인텐트가
+> 아니라 파일로 넘기므로 사진(HTTP `/reply`)·파일(am start) 경로 둘 다 코드 변경 없이 커버.
+> 설치 경로는 stock redroid 에 Zygisk 가 없어 **Magisk 내장 redroid 이미지로 컨테이너 재생성**
+> 이 선행돼야 한다(`/data` 바인드 재사용 → 로그인 유지). 계획: `~/.claude/plans/`. 카톡
+> 업데이트 때 생성자 arg 순서 재핀(모듈 README).
+
 **이게 Iris 가 보낼 수 있는 유일한 답장 형태다.** 카카오톡의 보통 답장은 `type=26` 행에
 `attachment` 로 `src_logId` 를 실은 것인데, `Replier.sendMessageInternal` 이 쏘는
 `NotificationActionService` REPLY_MESSAGE 인텐트에 첨부를 실을 자리가 없어서 못 만든다.
