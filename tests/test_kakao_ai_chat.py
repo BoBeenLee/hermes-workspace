@@ -1380,5 +1380,66 @@ class SendMessageThreadHintTests(unittest.TestCase):
         client.reply_images.assert_called_once()  # the photo still went out
 
 
+class RoomDirectoryTests(unittest.TestCase):
+    """The three name sources, in the order they win, plus the room that has none."""
+
+    def test_my_own_name_for_the_room_wins(self):
+        meta = json.dumps([{"type": 3, "content": "플러그맨"}])
+        priv = json.dumps({"name": "패밀리", "favorite": "true"})
+        self.assertEqual(module.room_title(meta, priv, "링크이름"), "패밀리")
+
+    def test_the_room_title_is_used_when_i_never_renamed_it(self):
+        meta = json.dumps([{"type": 1, "content": "공지"}, {"type": 3, "content": "플러그맨"}])
+        self.assertEqual(module.room_title(meta, None, None), "플러그맨")
+
+    def test_an_open_chat_falls_back_to_its_link_name(self):
+        self.assertEqual(module.room_title("[]", None, "🌿오르미(OREUMI)🌿"), "🌿오르미(OREUMI)🌿")
+
+    def test_a_direct_chat_has_no_name_anywhere(self):
+        self.assertIsNone(module.room_title("[]", '{"chat_category":"default"}', None))
+
+    def test_broken_json_does_not_take_the_directory_down(self):
+        self.assertIsNone(module.room_title("{not json", "{also not", None))
+
+    def test_the_directory_is_newest_first_with_iris_string_columns(self):
+        rows = [
+            ["189940802272734", "MultiChat", None, "3", "0", "1587616706",
+             None, '{"name":"패밀리"}'],
+            ["18414802419126111", "OM", "341239813", "16", "2", "1789393322", "[]", None],
+        ]
+        with mock.patch.object(module, "backend_query",
+                               side_effect=[[["341239813", "🌿오르미(OREUMI)🌿"]], rows]):
+            directory = module.room_directory({"backend": "iris"})
+        self.assertEqual([room["name"] for room in directory],
+                         ["🌿오르미(OREUMI)🌿", "패밀리"])
+        self.assertEqual(directory[0]["chat_id"], 18414802419126111)
+        self.assertEqual(directory[0]["unread"], 2)
+
+
+class RoomLogTests(unittest.TestCase):
+    def test_old_messages_survive_the_age_filter(self):
+        old = row(log_id=1, message="작년 공지", sent_at=1)
+        config = {**module.DEFAULT_CONFIG, "backend": "iris", "my_user_id": ME,
+                  "room_context_max_age_hours": 24}
+        with mock.patch.object(module, "fetch_room_context", return_value=[old]), \
+             mock.patch.object(module, "learn_room_names"), \
+             mock.patch.object(module, "load_name_cache"):
+            lines = module.room_log(config, 123, 60)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("작년 공지", lines[0])
+
+    def test_attachments_are_labelled_and_never_downloaded(self):
+        photo = row(log_id=2, type=2, message="",
+                    attachment=json.dumps({"url": "https://x/y.jpg", "w": 100, "h": 100}))
+        config = {**module.DEFAULT_CONFIG, "backend": "iris", "my_user_id": ME}
+        with mock.patch.object(module, "fetch_room_context", return_value=[photo]), \
+             mock.patch.object(module, "learn_room_names"), \
+             mock.patch.object(module, "load_name_cache"), \
+             mock.patch.object(module, "download_media",
+                               side_effect=AssertionError("must not download")):
+            lines = module.room_log(config, 123, 60)
+        self.assertIn("[사진", lines[0])
+
+
 if __name__ == "__main__":
     unittest.main()
