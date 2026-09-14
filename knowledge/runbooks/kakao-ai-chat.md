@@ -426,6 +426,7 @@ WHERE chat_id = <방> ORDER BY _id DESC LIMIT 5
 | 설정·DB 접근 점검 | `kakao_ai_chat.py --check` |
 | 한 번만 돌려보기 | `kakao_ai_chat.py --once` (**바로 끝난다** - 턴은 워커가 가져간다) |
 | 프롬프트만 보기 (발신 없음) | `kakao_ai_chat.py --once --dry-run` |
+| 방 사람 프로필 보기 | `kakao_ai_chat.py --profiles <chat_id> [--match 이름] [--image]` |
 | 켜기 / 끄기 (평소) | Discord 채널에서 `AI대화 시작` / `AI대화 종료` |
 | 비상 정지 (Discord 가 죽었을 때) | `touch ~/.hermes/kakao-ai-chat/DISABLED` |
 | 비상 정지 해제 | `rm ~/.hermes/kakao-ai-chat/DISABLED` |
@@ -436,6 +437,29 @@ WHERE chat_id = <방> ORDER BY _id DESC LIMIT 5
 | 방 일시정지 해제 | `AI대화 방 재개` |
 
 `config.json` 을 고치면 다음 tick 이 바로 반영한다 (매 tick 다시 읽는다). 재시작 불필요.
+
+## 방 사람 프로필 (`--profiles`)
+
+닉네임과 프사 URL 을 JSON 으로 찍고, `--image` 를 주면 사진을 `media/profiles/` 에 받아
+`file` 경로까지 준다. 그 경로는 첨부 울타리 안이라 답에 `[[image: ...]]` 로 그대로 넣으면 나간다.
+프롬프트에 이 명령이 한 줄 들어 있어서 jarvis 가 turn 중에 terminal 도구로 직접 부른다.
+
+```json
+{ "chat_id": 18414802419126111, "cached_members": 1, "members": [
+  { "user_id": "76235885825...", "nickname": "김관수/91/홍제/ESTJ",
+    "profile_image_url": "https://open.kakaocdn.net/dn/.../img_l.jpg",
+    "file": "~/.hermes/kakao-ai-chat/media/profiles/76235885825...-2pxxI1jfcUUXpFSCKimgljpg.jpg" } ] }
+```
+
+**한계 둘 다 출력에서 읽혀야 한다** ([Iris On DGX](iris-on-dgx.md) 에 근거):
+
+- **오픈채팅만 나온다.** 일반 방(DirectChat/MultiChat/PlusChat)은 기기에 명단 자체가 없어서
+  `members: []` 가 정상 응답이지 실패가 아니다. 실측: MultiChat `69449294935152` → 0.
+- **오픈채팅도 부분 캐시다.** 카톡이 렌더한 사람만 들어 있다 - 80명 방에 5행. 그래서
+  `cached_members` 를 같이 찍는다. 프롬프트가 "없는 사람 = 캐시에 없음" 이라고 못 박는다.
+
+파일 이름에 URL 경로 토막이 붙는 건 `download_media` 가 이미 있는 파일을 그냥 돌려주기
+때문이다 - user_id 만 쓰면 프사를 바꿔도 처음 받은 사진이 계속 나간다.
 
 ## Fail-Closed Rules
 
