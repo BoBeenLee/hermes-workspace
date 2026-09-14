@@ -559,6 +559,20 @@ class HermesInvocationTests(unittest.TestCase):
         # a daemon has no TTY for the first-use consent prompt
         self.assertEqual(env["HERMES_ACCEPT_HOOKS"], "1")
 
+    def test_the_turn_root_reaches_whatever_the_turn_spawns(self):
+        # the ComfyUI deliverer is two Popen hops away and neither hop is ours, so
+        # the env is the only way the 댓글 root gets down to it
+        with mock.patch.object(module.subprocess, "Popen") as popen:
+            popen.return_value = fake_popen()
+            module.run_hermes(dict(CONFIG, hermes_bin="/bin/true"), "안녕", chat_id=7)
+        self.assertNotIn("KAKAO_THREAD_ID", popen.call_args.kwargs["env"])
+        with mock.patch.object(module.subprocess, "Popen") as popen:
+            popen.return_value = fake_popen()
+            module.run_hermes(dict(CONFIG, hermes_bin="/bin/true"), "안녕", chat_id=7,
+                              thread_id=3929500590641731586)
+        self.assertEqual(popen.call_args.kwargs["env"]["KAKAO_THREAD_ID"],
+                         "3929500590641731586")
+
     def test_the_agent_tree_gets_its_own_process_group(self):
         # the cap kills a group, and without this the group is the worker's own
         with mock.patch.object(module.subprocess, "Popen") as popen:
@@ -706,6 +720,23 @@ class SendOnceAttachmentTests(unittest.TestCase):
         self.assertEqual(sent["images"], [self.photo])
         self.assertIn("shot.png", sent["body"])
         self.assertTrue(sent["body"].startswith(self.config["bot_prefix"]))
+
+    def test_a_late_photo_hangs_off_the_turn_that_promised_it(self):
+        # measured: the answer was a 댓글 and the photo it promised arrived as a
+        # loose line minutes later, because --send-to carried no root
+        with mock.patch.dict(module.os.environ, {"KAKAO_THREAD_ID": "3929500590641731586"}):
+            _, sent = self._send(f"[[image: {self.photo}]]\n다 됐어")
+        self.assertEqual(sent["thread_id"], 3929500590641731586)
+
+    def test_a_send_from_outside_a_turn_stays_a_loose_line(self):
+        # a cron result answers nothing in particular; an unusable value is the same
+        for value in ("", "0", "nope"):
+            with mock.patch.dict(module.os.environ, {"KAKAO_THREAD_ID": value}):
+                _, sent = self._send("예약 결과")
+            self.assertIsNone(sent["thread_id"], value)
+        with mock.patch.dict(module.os.environ, {}, clear=True):
+            _, sent = self._send("예약 결과")
+        self.assertIsNone(sent["thread_id"])
 
     def test_an_overflowing_answer_leaves_as_a_file_not_as_a_path(self):
         # 800 chars is our own cap, not KakaoTalk's, so the tail has to arrive some

@@ -351,6 +351,12 @@ class AsyncTest(unittest.TestCase):
         self.assertEqual(plugin._caption(""), "다 됐어")
         self.assertNotIn("\n", plugin._caption("두 줄\n짜리 요청"))
 
+    def test_a_threaded_photo_does_not_repeat_the_question(self):
+        """The 댓글 draws the request right above the photo; quoting says it twice."""
+        with unittest.mock.patch.dict(plugin.os.environ,
+                                      {"KAKAO_THREAD_ID": "3929500590641731586"}):
+            self.assertEqual(plugin._caption("a cat"), "다 됐어")
+
     def test_a_fast_job_still_answers_in_the_same_turn(self):
         """Only when a host opts into waiting; the default window is 0 (see the constant)."""
         result, spawned = self._run(FakeComfy(history=done_entry()))
