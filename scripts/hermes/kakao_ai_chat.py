@@ -462,6 +462,13 @@ def iris_send_file(chat_id, path: Path, container: str):
     return send_file(chat_id, path, container)
 
 
+def iris_write_thread_hint(chat_id, thread_id, container: str):
+    """Drop the 댓글-root hint the LSPosed media hook reads - see iris_client.write_thread_hint."""
+    from iris_client import write_thread_hint
+
+    return write_thread_hint(chat_id, thread_id, container)
+
+
 def backend_query(config: dict, sql: str, columns: tuple[str, ...]) -> list[list]:
     """One choke point for reads, positional rows either way."""
     if backend_name(config) == "iris":
@@ -1401,6 +1408,12 @@ def send_message(config: dict, room: dict, text: str, images: list[Path] | None 
         # Caption first: an image row carries no bot_prefix, so the text beside it is
         # the only thing that later marks the pair as ours.
         client.reply(room["chat_id"], text, thread_id)
+        if images or files:
+            # Photo/file rows drop threadId on KakaoTalk's share path, so the caption
+            # above threads but the media would not. Hand the root to the in-app hook
+            # out of band; a failure here just costs the thread, never the send.
+            with contextlib.suppress(Exception):
+                iris_write_thread_hint(room["chat_id"], thread_id, str(config["iris_container"]))
         if images:
             client.reply_images(
                 room["chat_id"],

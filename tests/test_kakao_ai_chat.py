@@ -1315,5 +1315,57 @@ class SingleInstanceTests(unittest.TestCase):
                 holder.close()
 
 
+class SendMessageThreadHintTests(unittest.TestCase):
+    """Media rows drop threadId on KakaoTalk's share path, so send_message hands the
+    root to the in-app hook out of band right before the photo/file leaves."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.photo = Path(self.tmp.name) / "shot.png"
+        self.photo.write_bytes(b"\x89PNG" + b"0" * 16)
+        self.config = dict(CONFIG, backend="iris", iris_container="c-test")
+
+    def _send(self, *, images=None, files=None, thread_id):
+        hints = []
+        client = mock.Mock()
+        with mock.patch.object(module, "iris_client", return_value=client), \
+             mock.patch.object(module, "iris_write_thread_hint",
+                               side_effect=lambda cid, tid, c: hints.append((cid, tid, c))), \
+             mock.patch.object(module, "iris_send_file"):
+            module.send_message(self.config, {"chat_id": CHAT}, "cap",
+                                images=images, files=files, thread_id=thread_id)
+        return hints, client
+
+    def test_a_photo_send_hints_the_thread_before_it_leaves(self):
+        hints, client = self._send(images=[self.photo], thread_id=42)
+        self.assertEqual(hints, [(CHAT, 42, "c-test")])
+        client.reply_images.assert_called_once()
+
+    def test_a_file_send_hints_the_thread_too(self):
+        hints, _ = self._send(files=[self.photo], thread_id=42)
+        self.assertEqual(hints, [(CHAT, 42, "c-test")])
+
+    def test_a_non_thread_media_send_clears_the_hint(self):
+        # a cron result carries no root; the None clear stops a stale hint threading it
+        hints, _ = self._send(images=[self.photo], thread_id=None)
+        self.assertEqual(hints, [(CHAT, None, "c-test")])
+
+    def test_a_text_only_send_writes_no_hint(self):
+        hints, client = self._send(thread_id=42)
+        self.assertEqual(hints, [])
+        client.reply.assert_called_once()
+
+    def test_a_hint_failure_never_blocks_the_send(self):
+        client = mock.Mock()
+        with mock.patch.object(module, "iris_client", return_value=client), \
+             mock.patch.object(module, "iris_write_thread_hint",
+                               side_effect=RuntimeError("docker down")), \
+             mock.patch.object(module, "iris_send_file"):
+            module.send_message(self.config, {"chat_id": CHAT}, "cap",
+                                images=[self.photo], thread_id=42)
+        client.reply_images.assert_called_once()  # the photo still went out
+
+
 if __name__ == "__main__":
     unittest.main()
