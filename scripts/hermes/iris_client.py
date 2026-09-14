@@ -142,6 +142,17 @@ class IrisClient:
     def reply_images(self, chat_id, images: list[str], thread_id=None) -> dict:
         """Queue one or more base64 images. Queued is not delivered - read it back.
 
+        **`thread_id` is accepted and dropped.** A photo row cannot be a 댓글:
+        `IrisServer.kt` reads `threadId` for every type but hands it only to
+        `ReplyType.TEXT`, and `Replier.sendPhoto`/`sendMultiplePhotos` have no such
+        parameter to hand it to. The two paths are different intents - text goes out
+        as a NotificationActionService REPLY_MESSAGE carrying `thread_id` and
+        `is_chat_thread_notification`, photos as an ACTION_SEND_MULTIPLE share, which
+        has no slot for either. Measured 2026-09-14: a threaded caption and its photo
+        arrived one second apart, the caption with `thread_id`, the photo with NULL.
+        It is still sent because it costs nothing and upstream may wire it up; the
+        caption beside the photo is what carries the thread today.
+
         `file` and `link` are not options: ReplyType is a three-entry enum, so the
         request body fails to deserialize - as does any other unknown type. Arbitrary
         files still reach KakaoTalk, just not through Iris: an ACTION_SEND intent with
