@@ -323,17 +323,73 @@ Accessibility 권한이 파이썬 런타임에 잘못 귀속된다
 `profiles/jarvis/bin/gateway-via-local-ssh.sh` 가 쓰는 것과 같은 수법이고, 이렇게 하면
 kakaocli 와 kmsg 가 함께 실제 사용자 세션을 상속한다.
 
+## 비동기 턴 (2026-09-14)
+
+**턴은 tick 을 막지 않는다.** tick 은 `jobs/<chat_id>.json` 을 쓰고 detached 워커
+(`--run-turn`) 를 띄운 뒤 바로 돌아온다. 답·실패·하드캡 공지는 전부 워커가 보낸다.
+
+이전에는 `subprocess.run(timeout=180)` 이었고, tick 이 단일 스레드라 그 180초가
+**다른 모든 방이 침묵한 시간**이었다. 넘기면 작업은 버려지고 커서는 그냥 전진해서
+"답이 너무 오래 걸려서 중단했어요" 만 남았다 (DGX 에서 2026-09-14 하루에 네 번).
+
+| 조각 | 값 |
+| --- | --- |
+| 하드캡 | `TURN_HARD_CAP_SECONDS = 1200` (20분). 넘기면 워커가 프로세스 **그룹**을 죽이고 공지 |
+| 동시성 | **방당 1턴**, 방끼리는 병렬. 방이 바쁘면 그 멘션은 `TURN_BUSY_NOTE` 한 번으로 돌려보낸다 (job 당 1회) |
+| 진행 보고 | 90초에서 시작해 1.6배씩 늘어난다 → 대략 1.5·3.9·7.7·13.9분. 캡 안에서 4번쯤 |
+| 워커 로그 | `~/.hermes/kakao-ai-chat/turns.log` (**데몬 journal 이 아니다**) |
+| 늦은 메시지 | 전부 원 요청을 `- "..."` 로 인용한다. Iris 는 카톡 답장(type=26)을 못 보낸다 |
+
+**bench: `jobs/<chat_id>.json` 이 방 락이자 회수 기록이다.** state.json 에 못 넣는다 —
+부모가 매 루프 통째로 덮어써서 자식이 쓸 자리가 없다. 워커는 성공하면 파일을 지우지 않고
+`done` 에 발신 지문을 남기고, 다음 tick 의 `reap_jobs` 가 그걸 `pending_send` 로 옮겨
+`verify_pending_sends` 의 자동 일시정지를 그대로 살린다. 죽은 pid 인데 `done` 이 없으면
+워커가 말없이 사라진 것이므로 부모가 대신 `TURN_LOST_NOTE` 를 말한다.
+
+### `systemctl restart` 는 도는 턴을 죽인다 (의도)
+
+`start_new_session=True` 는 **세션/프로세스그룹만** 분리하고 cgroup 은 안 바꾼다. 유닛이
+`KillMode=control-group`(기본)·`Delegate=no` 라 재시작은 워커까지 같이 죽인다. 그래서
+워커에 SIGTERM 핸들러를 달아 `TURN_STOPPED_NOTE` 를 먼저 말하게 했다.
+**`KillMode=process` 는 일부러 안 넣었다** — 넣으면 `stop` 뒤에도 워커가 계속 말한다.
+
+같은 이유로 **ComfyUI 배달자도 배포 때마다 조용히 사라진다.** 렌더 중 배포하지 마라.
+
+### 진행 훅 (`post_tool_call`) — 손으로 붙여야 한다
+
+`hermes -z` 는 stdout 에 **최종 답만** 내므로 (`hermes_cli/oneshot.py`) 도는 턴을 볼
+길이 셸 훅뿐이다. `--install` 이 `~/.hermes/kakao-ai-chat/bin/turn-progress.sh` 를 깔고
+붙일 블록을 출력하지만, `~/.hermes/config.yaml` 은 게이트웨이와 공유하므로 사람이 붙인다:
+
+```yaml
+hooks:
+  post_tool_call:
+    - command: "/home/<user>/.hermes/kakao-ai-chat/bin/turn-progress.sh"
+      timeout: 5
+```
+
+- 게이트 하나로 격리한다: `KAKAO_PROGRESS_FILE` 이 없으면 첫 줄에서 `exit 0` 이라
+  **Discord 게이트웨이 턴은 이 훅을 지나가도 아무 일도 안 한다.**
+- 최초 1회 동의는 워커가 `HERMES_ACCEPT_HOOKS=1` 로 대신한다 (데몬에 TTY 가 없다).
+- 훅을 안 붙여도 하트비트는 나간다. 도구 이름만 못 붙는다. `--check` 의
+  `progress_hook`·`turns_in_flight` 로 확인한다.
+- `sed` 가 아니라 `grep -o | head -1`: 선행 `.*` 가 greedy 라 `tool_input` 안의
+  `"tool_name"` 문자열을 집는다. 페이로드 순서상 **첫 매치**가 진짜다.
+
 ## Operations
 
 | 할 일 | 명령 |
 | --- | --- |
 | 설정·DB 접근 점검 | `kakao_ai_chat.py --check` |
-| 한 번만 돌려보기 | `kakao_ai_chat.py --once` |
+| 한 번만 돌려보기 | `kakao_ai_chat.py --once` (**바로 끝난다** - 턴은 워커가 가져간다) |
 | 프롬프트만 보기 (발신 없음) | `kakao_ai_chat.py --once --dry-run` |
 | 켜기 / 끄기 (평소) | Discord 채널에서 `AI대화 시작` / `AI대화 종료` |
 | 비상 정지 (Discord 가 죽었을 때) | `touch ~/.hermes/kakao-ai-chat/DISABLED` |
 | 비상 정지 해제 | `rm ~/.hermes/kakao-ai-chat/DISABLED` |
-| 로그 | `tail -f ~/.hermes/kakao-ai-chat/daemon.log` |
+| 로그 | `tail -f ~/.hermes/kakao-ai-chat/daemon.log` (DGX 는 `journalctl --user -u kakao-ai-chat -f`) |
+| 비동기 턴 로그 | `tail -f ~/.hermes/kakao-ai-chat/turns.log` |
+| 도는 턴 보기 | `ls ~/.hermes/kakao-ai-chat/jobs/` |
+| 낀 턴 풀기 | `rm ~/.hermes/kakao-ai-chat/jobs/<chat_id>.json` (다음 tick 이 방을 연다) |
 | 방 일시정지 해제 | `AI대화 방 재개` |
 
 `config.json` 을 고치면 다음 tick 이 바로 반영한다 (매 tick 다시 읽는다). 재시작 불필요.
