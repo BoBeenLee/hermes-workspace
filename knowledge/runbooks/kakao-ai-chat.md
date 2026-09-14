@@ -77,7 +77,10 @@ on the import.
 운영자가 카카오톡 방에서 `@jarvis <질문>`을 치면, 그 방의 최근 대화를 문맥으로 읽고
 Hermes 에이전트가 같은 방에 `[jarvis] …` 로 답한다. 그 답에 카카오톡 **답장**을 달면
 멘션 없이 대화가 이어진다. 사진·영상·파일은 로컬로 받아 경로를 프롬프트에 실어주고,
-에이전트가 `vision_analyze` / video / file / stt 도구로 직접 연다.
+에이전트가 `vision_analyze` / video / file / stt 도구로 직접 연다. 사진 답이 이상하면
+모델보다 먼저 비전 경로를 의심한다 — `auxiliary.vision.api_key` 가 비면 `vision_analyze`
+자체가 턴에서 사라지고 모델은 그걸 환각처럼 보고한다
+([DGX vision route](../tools/local-llm-providers.md#dgx-vision-route-2026-09-14-measured)).
 
 [Jarvis Messenger Assistant](jarvis-messenger-assistant.md)와는 **용도가 다르고 코드도
 공유하지 않는다.** 저쪽은 "남이 보낸 메시지에 나 대신 답장"이고 Discord 승인 카드를 거친다.

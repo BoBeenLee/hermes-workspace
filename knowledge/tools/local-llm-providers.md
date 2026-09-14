@@ -326,6 +326,110 @@ chain. Confirm a provider is dead with curl before believing it.
   `delegation.fallback_providers` (upstream #94629 still open). Without it a single 429
   ends the child.
 
+## DGX vision route (2026-09-14, measured)
+
+The Cloud Vision Bridge section above is the **Mac era** (all five profiles, Google primary).
+It no longer describes any live host. On the DGX the primary chat model `zai` /
+`glm-4.7-flash` is **text-only**, so every image takes the `vision_analyze` ->
+`auxiliary.vision` hop; there is no native attach path.
+
+The inbound half was already wired and needed no change: `kakao_ai_chat.py` downloads a
+photo into `MEDIA_DIR`, renders it as a `[사진] file=/absolute/path` line, the prompt
+template names `vision_analyze` explicitly, and `vision,video` are both in the default
+`toolsets` string.
+
+### `auxiliary.vision.api_key` is load-bearing, even for a keyless endpoint
+
+`check_vision_requirements()` (`tools/vision_tools.py:800`) returns True only when
+`resolve_vision_provider_client()` hands back a client. A custom provider with no
+resolvable key returns `None`, the check returns False, and **`vision_analyze` is dropped
+from the tool list for every turn**. Pointing the route at a local llama.cpp — which wants
+no key — silently triggers this.
+
+What reaches the room is not "the tool failed". It is the model answering *"that tool is
+not registered in this session"*, or emitting a **fake tool call as body text**:
+
+```json
+{"tool": "vision_analyze", "arguments": {"path": "/home/bobeenlee/.hermes/cache/images/x.png"}}
+```
+
+Both read as hallucination and send you after the model. They are literally true: the tool
+was not in the request. The only trace is one line at daemon level:
+
+```text
+check_fn check_vision_requirements returned False; dependent tools will be unavailable this turn
+```
+
+A dummy key clears it. The working shape:
+
+```yaml
+auxiliary:
+  vision:
+    provider: custom:llama-local
+    model: /home/bobeenlee/models/qwen3.8-27b/Qwen3.8-27B-UD-Q6_K_XL.gguf
+    base_url: http://127.0.0.1:8080/v1
+    api_key: local          # placeholder; llama.cpp ignores it, the gate does not
+    timeout: 120
+```
+
+Measure the gate with `skip_tool_search_assembly=False`. The `True` form used to prove a
+toolset is present hides `check_fn` failures too, so it reports a tool that no turn will
+ever see:
+
+```bash
+HERMES_GATEWAY_SESSION=1 ~/.hermes/hermes-agent/venv/bin/python -c '
+import sys; sys.path.insert(0,"/home/bobeenlee/.hermes/hermes-agent")
+from tools.vision_tools import check_vision_requirements
+print("check:", check_vision_requirements())
+from model_tools import get_tool_definitions
+n=[x["function"]["name"] for x in get_tool_definitions(enabled_toolsets=["vision"],
+   disabled_toolsets=[],quiet_mode=True,skip_tool_search_assembly=False)]
+print("vision_analyze:", "vision_analyze" in n)'
+```
+
+### llama-local already serves the projector
+
+`models/qwen3.8-27b/mmproj-F16.gguf` sits next to the GGUF and the running server reports
+it, so the vision backend costs nothing extra to stand up:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/models   # -> "capabilities":["completion","multimodal"]
+```
+
+| image | `vision_analyze` wall clock |
+|---|---|
+| 960x544 PNG | 45-57s |
+| 4032x2284 JPEG | 66s |
+
+Both are inside the default `timeout: 120`. Large phone photos are downscaled before the
+call, so the 4K number is the realistic ceiling rather than an outlier.
+
+End to end on the live KakaoTalk prompt shape: default model **2/2** accurate (it read
+footprints in the sand off a 960x544 frame), `custom:llama-local` as primary **1/1**.
+Cost is **4-5 minutes per image turn** — the same GPU runs the chat model and the vision
+call in series. That is inside the detached worker's cap but it is not interactive.
+
+### Every cloud vision provider on this host was dead the same day
+
+Checked 2026-09-14, which is why the route moved local rather than to another key:
+
+| provider | result |
+|---|---|
+| `gemini` / `gemini-3.6-flash` | `429 RESOURCE_EXHAUSTED` — "Your prepayment credits are depleted". The key is fine; `GET /v1beta/models` still returns 200 |
+| `openrouter` free vision | `429 free-models-per-day`, 50/50 used, resets 00:00 UTC |
+| `groq` / `qwen/qwen3.6-27b` | not a VLM. Groq's model list carries **no** vision model at all, so this rung could never have answered |
+| `zai` / `glm-4.6v`, `glm-5v-turbo` | `1113 Insufficient balance`. Only `glm-4.7-flash` is free, and it is text-only |
+
+`glm-4.7-flash` itself is intermittent under load — three back-to-back probes returned
+200/429/429 (`1305` overloaded, `1302` rate limit). When it is throttled the turn is
+answered by the fallback chain, and a fallback answering an image prompt **invents from the
+filename**: `comfyui_1789351131972.png` came back as "a ComfyUI workflow diagram" when the
+frame was a lighthouse at sunset. Before trusting an image answer, establish which model
+produced it.
+
+Backup taken before the change: `~/.hermes/config.yaml.bak-vision-20260914162823`. No
+gateway restart is needed — the config cache keys on the file's mtime and size.
+
 ## Altalt Routing
 
 Since 2026-08-21 `altalt` is the first fallback of the `default` and `jarvis`
