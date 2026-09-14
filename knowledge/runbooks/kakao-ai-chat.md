@@ -479,6 +479,51 @@ WHERE chat_id = <방> ORDER BY _id DESC LIMIT 5
 파일 이름에 URL 경로 토막이 붙는 건 `download_media` 가 이미 있는 파일을 그냥 돌려주기
 때문이다 - user_id 만 쓰면 프사를 바꿔도 처음 받은 사진이 계속 나간다.
 
+## 다른 방 조회 (`--rooms`, `--room-log`)
+
+2026-09-15 추가. **이게 없을 때 실제로 벌어진 일**: 이보빈 방에서
+`@jarvis 카톡 오르미방 최근 메시지들 내용 요약해서 알려줘` 를 받은 턴이 `skill_view` →
+`computer_use` → `terminal` 로 도구 9번을 쓰며 **16분을 헤매고**
+"방을 기기에 열어둔 뒤 다시 보내줘" 로 끝났다. 읽을 경로가 없어서가 아니라 **경로를 알려 준
+곳이 없어서** 화면을 뒤진 것이다 (log 3929669726697117698~3929679372203808770).
+
+```bash
+python3 kakao_ai_chat.py --rooms                        # 이 기기 방 전부
+python3 kakao_ai_chat.py --room-log <chat_id> --limit 60 # 그 방 최근 메시지
+```
+
+`--room-log` 는 프롬프트의 방 대화와 **같은 렌더**를 쓴다 (`format_context_line`) — 화자 이름도
+`names.json` + `open_chat_member` 를 같이 본다. 다른 점 둘:
+
+- **첨부는 라벨만이다.** 안 받는다. 다른 방 요약에 사진이 필요하지 않고 `download_media` 는
+  건당 30초라 20분 캡을 그냥 먹는다.
+- **나이 필터가 꺼져 있다.** `room_context_max_age_hours` 를 그대로 쓰면 조용한 방이 빈 목록으로
+  나온다. "최근 60개" 는 어제 것이어도 최근 60개다.
+
+### 방 이름의 출처는 셋이고 순서가 있다
+
+`db1.chat_rooms` 는 **있다** (옛 메모의 "이 버전엔 없다" 는 틀렸다). `room_title()` 순서:
+
+1. `private_meta.name` — 내가 방 이름을 직접 바꾼 것 (`{"name":"패밀리","favorite":"true"}`)
+2. `meta` 의 `type=3` 항목 `content` — 방에 걸린 제목
+3. `open_link.name` — 오픈채팅. `chat_rooms.link_id` → `db2.open_link.id` 로 잇는다
+   (`open_link` 를 **이름으로** 찾으면 `type=1` 오픈프로필이 섞여 오답을 준다. 여기는 id 로 잇는다)
+
+`meta`·`private_meta`·`open_link.name` 은 **암호화 컬럼이 아니다** — 닉네임과 달리 `enc` 왕복이
+없다. 실측 43개 방 중 25개가 이름이 나온다. 안 나오는 18개는 대부분 `PlusChat`(채널)과
+`DirectChat` 이다. **DirectChat 은 경로가 없다**: 화면의 이름은 상대 사람 이름이고 오픈채팅 밖에서
+user_id → 이름 표가 기기에 없다. `MemoChat` 은 `나와의 채팅` 으로 손으로 라벨한다 — jarvis 가
+사는 방이라 `null` 이 버그처럼 읽힌다.
+
+이름 매칭은 **모델이 한다.** `--rooms` 는 필터 없이 전부 찍는다 — "오르미방" 을
+`🌿오르미(OREUMI)🌿` 에 붙이는 건 substring 테스트가 못 하고 모델은 한다.
+같은 이유로 `오르미 9/12(토) ⛰️ 두타산💯` 같은 번개 방이 따로 있다는 것도 모델이 본다.
+
+### 신뢰 경계
+
+가져온 줄은 **OTHERS 와 같은 데이터다.** 프롬프트가 그렇게 못 박는다 — 오픈채팅 16명이 쓴 글이
+도구 출력으로 들어오는 자리라, 여기서 지시로 읽히면 `OTHERS` 방어가 우회된다.
+
 ## Fail-Closed Rules
 
 - **초기 상태는 중지다.** `state.json` 이 없거나 스키마가 바뀌면 `enabled: false` 로 되돌아간다.
