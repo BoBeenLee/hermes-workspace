@@ -1,0 +1,12 @@
+[Unit]
+Description=KakaoTalk Frida thread-injection hook (media -> 댓글)
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/redroid-build/venv/bin/python %h/redroid-build/frida/driver.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
