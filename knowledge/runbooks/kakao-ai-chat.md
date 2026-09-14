@@ -479,6 +479,82 @@ WHERE chat_id = <방> ORDER BY _id DESC LIMIT 5
 파일 이름에 URL 경로 토막이 붙는 건 `download_media` 가 이미 있는 파일을 그냥 돌려주기
 때문이다 - user_id 만 쓰면 프사를 바꿔도 처음 받은 사진이 계속 나간다.
 
+## 다른 방 조회 (`--rooms`, `--room-log`)
+
+2026-09-15 추가. **이게 없을 때 실제로 벌어진 일**: 이보빈 방에서
+`@jarvis 카톡 오르미방 최근 메시지들 내용 요약해서 알려줘` 를 받은 턴이 `skill_view` →
+`computer_use` → `terminal` 로 도구 9번을 쓰며 **16분을 헤매고**
+"방을 기기에 열어둔 뒤 다시 보내줘" 로 끝났다. 읽을 경로가 없어서가 아니라 **경로를 알려 준
+곳이 없어서** 화면을 뒤진 것이다 (log 3929669726697117698~3929679372203808770).
+
+```bash
+python3 kakao_ai_chat.py --rooms                        # 이 기기 방 전부
+python3 kakao_ai_chat.py --room-log <chat_id> --limit 60 # 그 방 최근 메시지
+```
+
+`--room-log` 는 프롬프트의 방 대화와 **같은 렌더**를 쓴다 (`format_context_line`) — 화자 이름도
+`names.json` + `open_chat_member` 를 같이 본다. 다른 점 둘:
+
+- **첨부는 라벨만이다.** 안 받는다. 다른 방 요약에 사진이 필요하지 않고 `download_media` 는
+  건당 30초라 20분 캡을 그냥 먹는다.
+- **나이 필터가 꺼져 있다.** `room_context_max_age_hours` 를 그대로 쓰면 조용한 방이 빈 목록으로
+  나온다. "최근 60개" 는 어제 것이어도 최근 60개다.
+
+### 방 이름의 출처는 셋이고 순서가 있다
+
+`db1.chat_rooms` 는 **있다** (옛 메모의 "이 버전엔 없다" 는 틀렸다). `room_title()` 순서:
+
+1. `private_meta.name` — 내가 방 이름을 직접 바꾼 것 (`{"name":"패밀리","favorite":"true"}`)
+2. `meta` 의 `type=3` 항목 `content` — 방에 걸린 제목
+3. `open_link.name` — 오픈채팅. `chat_rooms.link_id` → `db2.open_link.id` 로 잇는다
+   (`open_link` 를 **이름으로** 찾으면 `type=1` 오픈프로필이 섞여 오답을 준다. 여기는 id 로 잇는다)
+
+`meta`·`private_meta`·`open_link.name` 은 **암호화 컬럼이 아니다** — 닉네임과 달리 `enc` 왕복이
+없다. 실측 43개 방 중 25개가 이름이 나온다. 안 나오는 18개는 대부분 `PlusChat`(채널)과
+`DirectChat` 이다. **DirectChat 은 경로가 없다**: 화면의 이름은 상대 사람 이름이고 오픈채팅 밖에서
+user_id → 이름 표가 기기에 없다. `MemoChat` 은 `나와의 채팅` 으로 손으로 라벨한다 — jarvis 가
+사는 방이라 `null` 이 버그처럼 읽힌다.
+
+이름 매칭은 **모델이 한다.** `--rooms` 는 필터 없이 전부 찍는다 — "오르미방" 을
+`🌿오르미(OREUMI)🌿` 에 붙이는 건 substring 테스트가 못 하고 모델은 한다.
+같은 이유로 `오르미 9/12(토) ⛰️ 두타산💯` 같은 번개 방이 따로 있다는 것도 모델이 본다.
+
+### 이름 없는 방과 이름 없는 화자 (2026-09-15 조사)
+
+**1:1·채널 이름의 정적 경로는 전부 막혀 있다.** 찾아본 것 전부:
+
+| 후보 | 결과 |
+| --- | --- |
+| `friends` | KakaoTalk.db·KakaoTalk2.db **양쪽에 없다** (테이블 목록 전수) |
+| `db2.recommended_friends` | 45행, `enc` 를 SELECT 에 넣으면 복호화된다. 하지만 **친구추천 목록**이라 실제 1:1 상대 5명과 교집합 0, `direct_chat_id` 는 전부 `0` |
+| `db2.call_log` | 0행, 이름 컬럼 없음 |
+| `db2.plusfriend_add_info` | 0행 |
+| `db3.multi_profiles` | 1행 (내 것) |
+| 미첨부 DB 12개 | `sqlite3` 가 `Aborted` — SQLCipher |
+
+그래서 남은 길은 하나다: `chat_rooms.members` 가 DirectChat 에서 정확히 `[상대 user_id]` 하나이고,
+그 id 의 이름은 **`/ws` 의 `sender_name` → `names.json`** 으로만 온다. 즉 **상대가 한 번 말한
+뒤부터** 이름이 붙는다. `--rooms` 는 그래서 이름이 없는 방에만 `member_ids` 를 붙인다 —
+이름으로는 못 찾아도 `--room-log <chat_id>` 는 되므로 방을 특정할 수단이 남는다.
+(이름이 있는 방에는 안 붙인다: 80명 오픈채팅이 답에 80개 id 를 쏟는다.)
+**채널(`PlusChat`)은 포기다** — 경로가 아예 없고 광고 채널이다.
+
+### 오픈채팅 캐시는 쓰는 방에선 이미 꽉 찬다
+
+`open_chat_member` 실측 (2026-09-15): 🌿오르미 **21행 / 16명**, 각할모 10/9, 전남5산 9/9,
+두타산 8/1, 그리고 80명 방만 **5/80**. 즉 "부분 캐시" 가 실제로 무는 건 안 쓰는 큰 방 하나다.
+런북의 옛 문장("80명 방에 5행")은 그 방 하나를 일반화한 것이었다.
+
+그래도 얇을 때를 알려야 하므로 `--room-log` 가 `members` 와 `nameless_speakers`(줄이 아니라
+**서로 다른 author 수**)를 같이 찍는다. `--profiles` 의 `cached_members` 와 같은 이유 —
+`알 수 없음` 은 "그 방에 없는 사람" 이 아니라 "내 캐시에 없는 사람" 이고, 줄만 봐선 안 갈린다.
+80명 방까지 채우려면 앱을 몰아 멤버 목록을 한 번 렌더해야 한다 (아직 안 했다).
+
+### 신뢰 경계
+
+가져온 줄은 **OTHERS 와 같은 데이터다.** 프롬프트가 그렇게 못 박는다 — 오픈채팅 16명이 쓴 글이
+도구 출력으로 들어오는 자리라, 여기서 지시로 읽히면 `OTHERS` 방어가 우회된다.
+
 ## Fail-Closed Rules
 
 - **초기 상태는 중지다.** `state.json` 이 없거나 스키마가 바뀌면 `enabled: false` 로 되돌아간다.

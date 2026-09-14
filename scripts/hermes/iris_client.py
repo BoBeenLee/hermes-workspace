@@ -252,6 +252,7 @@ def require_decryptable(sql: str) -> None:
 PUSH_ROW_KEYS = {
     "id": "log_id",
     "chat_id": "chat_id",
+    "thread_id": "thread_id",
     "user_id": "author_id",
     "type": "type",
     "message": "message",
