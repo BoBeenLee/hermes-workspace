@@ -1,10 +1,10 @@
 ---
 type: Runbook
 title: DGX Android Container
-description: Verified recipe for running a redroid Android container on the DGX Spark, and the five kernel and container gotchas that must each be worked around, including one that hard-resets the host.
+description: Verified recipe for running a redroid Android container on the DGX Spark, the five kernel and container gotchas that must each be worked around including one that hard-resets the host, and why the KakaoTalk login inside it has no expiry clock to read.
 resource: repo://hermes-workspace/knowledge/runbooks/dgx-android-container.md
-tags: [dgx-spark, redroid, android, docker, binderfs, arm64]
-timestamp: 2026-09-13T20:15:00+09:00
+tags: [dgx-spark, redroid, android, docker, binderfs, arm64, kakaotalk]
+timestamp: 2026-09-14T14:40:00+09:00
 ---
 
 # DGX Android Container
@@ -220,6 +220,78 @@ Locale and timezone persist in the bind-mounted `/data`:
 setprop persist.sys.locale ko-KR
 setprop persist.sys.timezone Asia/Seoul
 ```
+
+## The Login Session Has No Expiry Clock
+
+Nothing on the device, in the app, or in the server's replies says when the companion login will
+end. Checked on 2026-09-14 against the running container, a jadx export of KakaoTalk 25.7.2, and
+node-kakao; all three agree that no such timestamp exists.
+
+**The credential store holds no time field.** The tokens are not in `shared_prefs` any more; they
+moved to a Jetpack Preferences DataStore. Parsing all 36 keys of
+`/data/data/com.kakao.talk/files/datastore/LocalUser_DataStore.pref.preferences_pb`:
+
+| Kind | Keys |
+| --- | --- |
+| Tokens | `encrypted_auth_token_v2`, `encrypted_auth_token`, `old_encrypted_auth_token`, `hashedRefreshToken` |
+| State | `authenticationStatus`, `needToReauthenticate`, `authentication_at_install` |
+| Rest | account id, phone number, revision counters |
+
+None of them is a timestamp. `sekdlak` in `KakaoTalk.hw.perferences.xml` is **not** the access
+token, despite looking like the only credential-shaped value in the prefs: it is the screen-lock
+passcode, read only on the `PassLockActivity` / `PatternLockActivity` branch.
+
+**The app refreshes reactively, not on a schedule.** In `OauthHelper` (`zK/C75681b` in the jadx
+export) the refresh entry point runs only after a request has already failed. Its one time
+constant, `last + 20000 < currentTimeMillis()`, is a 20-second debounce per token pair, not a TTL.
+The 19-digit number taken from `accessToken.substring(32, 51)` is a pair identifier checked against
+the refresh token (`OauthTokenValidatePairException`), not an issue time.
+
+**The server reports failure, never a deadline.** The status enum has no `TOKEN_EXPIRED` member:
+
+| Code | Name |
+| --- | --- |
+| -100002 | `INVALID_TOKEN` |
+| -950 | `TOKEN_REFRESH_REQUIRED` |
+| -998 | `AUTHENTICATION_REQUIRED` |
+| -151 | `LOGIN_DENIED_BY_MAIN_DEVICE` |
+| -101 | `ANOTHER_DEVICE_LOGGED_IN` |
+| -100 | `NEED_DEVICE_AUTH` |
+
+Each of these drives the logout path, which clears the token keys and sets `authenticationStatus`
+away from `AllDone`. No public Kakao documentation states a companion-session lifetime either; the
+"refresh token lasts two months" figure that search turns up belongs to third-party Kakao Login
+OAuth, which is a different credential from the talk client's session.
+
+### Do Not Call `oauth2_token.json` To Find Out
+
+`POST katalk.kakao.com/<agent>/account/oauth2_token.json` with `grant_type=refresh_token` is the
+one place that returns `expires_in`
+([node-kakao `oauth-api-client.ts`](https://github.com/storycraft/node-kakao/blob/master/src/api/oauth-api-client.ts)).
+It is a rotation, not a read: it mints a new pair and invalidates the old one. KakaoTalk in the
+container still holds its own copy, so its next request fails with -950 or -100002 and takes the
+logout path. Asking when the session expires this way expires it.
+
+### Detect It Instead
+
+Read the app's own verdict. `AllDone` means the login is still good:
+
+```bash
+docker exec redroid-poc strings \
+  /data/data/com.kakao.talk/files/datastore/LocalUser_DataStore.pref.preferences_pb |
+  grep -A1 '^authenticationStatus$' | tail -1
+```
+
+Prefer this to watching the LOCO socket. That check is
+`docker exec redroid-poc grep ':2442 ' /proc/net/tcp6 | grep -c ' 10087 '` — port 9282 to
+`chat-api-relay-*.kakao.com`, uid 10087 being `com.kakao.talk`, and it must read `tcp6` rather than
+`tcp` because the connection is IPv4-mapped and `tcp` therefore always reports zero. But the socket
+also disappears for a network outage or a reconnect, while `authenticationStatus` changes only when
+the app itself considers the login gone.
+
+Iris is not a source for this. `GET /dashboard/status` returns `isObserving`, the state of its DB
+observer thread, which stays `true` after a logout because the database file is still there. It
+also listens on the container address (`172.17.0.2:3000`), not on the host's loopback.
 
 ## Verified Control Surface
 
