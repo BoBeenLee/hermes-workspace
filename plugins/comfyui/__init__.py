@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -57,6 +58,13 @@ LORAS = (
 POLL_TIMEOUT_S = 380.0  # Inside the 420s tool deadline, so we fail with a sentence.
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024  # KakaoTalk's attach_max_bytes; the tightest consumer.
 
+# How long the async path is willing to hold the turn open before handing the job
+# to a deliverer. Measured on this box: 9s resident, 21s cold (an 18.2 GB stack
+# load), so this covers both and only a genuine eviction escapes to the child.
+ASYNC_WINDOW_S = 25.0
+DELIVER_TIMEOUT_S = 900.0
+DELIVERER = Path(__file__).resolve().parent / "deliver.py"
+
 
 def _destination_dir() -> Path:
     """Where the finished file is handed over.
@@ -81,40 +89,7 @@ def _max_bytes() -> int:
 
 
 def _hand_over(rendered: Path, max_bytes: int) -> Path:
-    """Copy the render out of ComfyUI's tree, shrinking it if a consumer would refuse it.
-
-    ComfyUI only writes PNG. At 0.52 MP that is comfortably small, but the same
-    path carries an upscaled render later, so the guard is here rather than
-    discovered by a silent drop at send time.
-    """
-    dest_dir = _destination_dir()
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"comfyui_{int(time.time() * 1000)}{rendered.suffix}"
-    shutil.copy2(rendered, dest)
-    if dest.stat().st_size <= max_bytes:
-        return dest
-    try:
-        from PIL import Image
-
-        jpeg = dest.with_suffix(".jpg")
-        with Image.open(dest) as image:
-            image.convert("RGB").save(jpeg, "JPEG", quality=90)
-        dest.unlink(missing_ok=True)
-        return jpeg
-    except Exception as exc:  # noqa: BLE001 - an oversized PNG still beats no image
-        logger.debug("JPEG re-encode failed (%s); handing over the PNG", exc)
-        return dest
-
-
-def _prune(directory: Path, days: int = 7) -> None:
-    """Drop handed-over files older than ``days``; this directory is never read back."""
-    cutoff = time.time() - days * 86400
-    try:
-        for path in directory.glob("comfyui_*"):
-            if path.is_file() and path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
-    except OSError:
-        pass
+    return comfy.hand_over(rendered, _destination_dir(), max_bytes)
 
 
 def _style_for(prompt: str) -> Optional[tuple]:
@@ -124,6 +99,49 @@ def _style_for(prompt: str) -> Optional[tuple]:
         if any(key in lowered for key in keys):
             return lora_name, strength, trigger
     return None
+
+
+def _async_target() -> Optional[tuple]:
+    """(outbox, chat_id, send_bin) when this turn must not block, else None.
+
+    Only the KakaoTalk daemon sets these. Its tick is single-threaded, so a turn
+    that waits on a render silences every other room for that long -- and its own
+    budget is 180s for the whole turn, most of which the LLM already spends.
+    The gateway sets nothing and keeps the synchronous path.
+    """
+    outbox = os.environ.get("COMFYUI_OUTBOX_DIR")
+    chat_id = os.environ.get("COMFYUI_CHAT_ID")
+    send_bin = os.environ.get("COMFYUI_SEND_BIN")
+    if not (outbox and chat_id and send_bin):
+        return None
+    try:
+        return Path(os.path.expanduser(outbox)), int(chat_id), send_bin
+    except ValueError:
+        return None
+
+
+def _spawn_deliverer(prompt_id: str, target: tuple, client) -> bool:
+    """Detach a child to finish the job and send it. True when it started.
+
+    ``start_new_session`` and closed stdio are the point: this must survive the
+    hermes process exiting at the end of the turn. One child per submit, and
+    prompt_ids are unique per submit, so no de-dup key is needed.
+    """
+    outbox, chat_id, send_bin = target
+    try:
+        subprocess.Popen(  # noqa: S603 - argv only, every value is ours
+            [sys.executable, str(DELIVERER),
+             "--prompt-id", prompt_id, "--node", SAVE_NODE,
+             "--chat-id", str(chat_id), "--send-bin", send_bin,
+             "--outbox", str(outbox), "--url", client.base_url,
+             "--output-root", str(client.output_root),
+             "--max-bytes", str(_max_bytes()), "--timeout", str(DELIVER_TIMEOUT_S)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("comfyui: could not spawn the deliverer (%s)", exc)
+        return False
 
 
 class ComfyUIImageGenProvider(ImageGenProvider):
@@ -208,19 +226,32 @@ class ComfyUIImageGenProvider(ImageGenProvider):
             patches[SAMPLER_NODE]["model"] = [LORA_NODE, 0]
         patches[PROMPT_NODE] = {"text": text}
 
+        target = _async_target()
         try:
             graph = comfy.patch(graph, patches)
             prompt_id = client.submit(graph)
-            entry = client.poll(prompt_id, timeout=POLL_TIMEOUT_S)
+            window = ASYNC_WINDOW_S if target else POLL_TIMEOUT_S
+            entry = client.poll(prompt_id, timeout=window)
             if entry is None:
+                if target and _spawn_deliverer(prompt_id, target, client):
+                    # Not an error: the job is running and a child owns delivering
+                    # it. The turn ends here so the other rooms are not held.
+                    return {
+                        "success": True, "image": None, "status": "queued",
+                        "prompt_id": prompt_id, "provider": self.name, "model": MODEL_ID,
+                        "prompt": prompt, "aspect_ratio": aspect,
+                        "note": ("아직 그리는 중이다. 사진은 다 되면 따로 이 방으로 간다. "
+                                 "지금은 '만들고 있어' 한 줄만 답하고 턴을 끝내라. "
+                                 "다시 부르지 마라 - 중복으로 두 장이 나간다."),
+                    }
                 return fail(
-                    f"{int(POLL_TIMEOUT_S)}초 안에 안 끝났다 (prompt_id={prompt_id}). "
+                    f"{int(window)}초 안에 안 끝났다 (prompt_id={prompt_id}). "
                     "ComfyUI 에서는 계속 돌고 있다", "timeout")
             rendered = client.output_paths(entry, SAVE_NODE)[0]
             if not rendered.is_file():
                 return fail(f"ComfyUI 는 끝났다는데 파일이 없다: {rendered}", "empty_response")
             handed = _hand_over(rendered, _max_bytes())
-            _prune(handed.parent)
+            comfy.prune(handed.parent)
         except comfy.ComfyError as exc:
             return fail(str(exc), "api_error")
         except Exception as exc:  # noqa: BLE001 - one uniform shape for the dispatcher

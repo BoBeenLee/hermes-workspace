@@ -10,6 +10,7 @@ import copy
 import json
 import os
 import random
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -175,3 +176,45 @@ def patch(graph: dict, patches: dict[str, dict[str, Any]]) -> dict:
 
 def random_seed() -> int:
     return random.randint(0, 2**32 - 1)
+
+
+# -- handing the file over ------------------------------------------------
+
+
+def hand_over(rendered: Path, dest_dir: Path, max_bytes: int) -> Path:
+    """Copy a render out of ComfyUI's tree, shrinking it if a consumer would refuse it.
+
+    ComfyUI only writes PNG. At 0.5 MP that is comfortably small, but the same
+    path carries an upscaled render later and KakaoTalk drops an oversized
+    attachment without a word, so the guard sits here rather than being
+    discovered as a silent no-send.
+
+    Lives in this module, not the provider, so the detached deliverer can reuse
+    it without importing ``agent.*``.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"comfyui_{int(time.time() * 1000)}{rendered.suffix}"
+    shutil.copy2(rendered, dest)
+    if dest.stat().st_size <= max_bytes:
+        return dest
+    try:
+        from PIL import Image
+
+        jpeg = dest.with_suffix(".jpg")
+        with Image.open(dest) as image:
+            image.convert("RGB").save(jpeg, "JPEG", quality=90)
+        dest.unlink(missing_ok=True)
+        return jpeg
+    except Exception:  # noqa: BLE001 - an oversized PNG still beats no image
+        return dest
+
+
+def prune(directory: Path, days: int = 7) -> None:
+    """Drop handed-over files older than ``days``; nothing ever reads them back."""
+    cutoff = time.time() - days * 86400
+    try:
+        for path in directory.glob("comfyui_*"):
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+    except OSError:
+        pass

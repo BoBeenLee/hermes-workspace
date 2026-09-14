@@ -131,7 +131,7 @@ DEFAULT_CONFIG: dict = {
     # likewise - it sits in agent.disabled_toolsets and is subtracted after enabling.
     # `kanban` is out: 14 of the 31 tools for a board a chat room never touches.
     "toolsets": ("terminal,file,vision,video,web,skills,"
-                 "cronjob,memory,session_search,computer_use"),
+                 "cronjob,memory,session_search,computer_use,image_gen"),
     # Blank = inherit the profile default, and its fallback chain with it. These used to
     # pin custom:altalt/gpt-5-nano because the profile default was a local MLX model that
     # needed minutes per turn. That stopped being true when the default became
@@ -1050,11 +1050,14 @@ PROMPT_TEMPLATE = """너는 카카오톡 방에서 나(운영자)를 돕는 어�
   사진은 `[[image: /절대/경로]]`, 그 밖의 파일은 `[[file: /절대/경로]]` 다.
   `[[image: ]]` 는 이미지 확장자만 받는다. PDF·문서·압축 파일은 `[[file: ]]` 로 보내라.
   보낼 수 있는 곳은 `~/.hermes/kakao-ai-chat/outbox` 와 `media` 뿐이다. 그 밖의 경로는 무시된다.
-  이건 **이미 있는 파일을 보내는** 수단이지 만드는 수단이 아니다.
   카카오톡이 파일에 14일 만료를 찍으므로 보관용이 아니라고 알려라.
-- 네가 못 하는 일: 그림·영상·음성을 **생성**하는 것. 도구가 없다.
+- 그림은 `image_generate` 로 **만들 수 있다.** 돌려주는 경로는 이미 울타리 안이라 그대로
+  `[[image: ]]` 에 넣으면 된다. 로컬 ComfyUI 라 무료다 - 아끼지 마라.
+  결과에 `"status": "queued"` 가 오면 **아직 그리는 중이고 사진은 다 되면 따로 이 방으로 간다.**
+  그때는 "만들고 있어" 한 줄만 답하고 끝내라. 기다리지도, 다시 부르지도 마라 - 두 장이 나간다.
+- 네가 못 하는 일: 영상·음성을 **생성**하는 것. 도구가 없다.
   시도하지 마라 - 없는 수단을 찾느라 몇 분을 태우는 동안 이 방의 다음 메시지도 같이 멈춘다.
-  한 줄로 못 한다고 말하고 대신 할 수 있는 걸 해라 (그림 요청이면 텍스트 다이어그램).
+  한 줄로 못 한다고 말하고 대신 할 수 있는 걸 해라.
 - 한 번에 답해라. 답이 길어질 것 같으면 요약으로 끊고, 더 필요하냐고 물어라.
 
 MY_THREAD:
@@ -1143,7 +1146,7 @@ def build_prompt(mine: list[str], others: list[str], quoted: str, mention: str,
     )
 
 
-def run_hermes(config: dict, prompt: str) -> str:
+def run_hermes(config: dict, prompt: str, chat_id: int = 0) -> str:
     with tempfile.NamedTemporaryFile(prefix="kakao-ai-chat-usage-", suffix=".json", delete=False) as handle:
         usage_path = Path(handle.name)
     command = [str(config["hermes_bin"]), "--profile", str(config["profile"]), "--ignore-rules"]
@@ -1157,6 +1160,15 @@ def run_hermes(config: dict, prompt: str) -> str:
     # has none, so listing `cronjob` in --toolsets alone silently yields nothing. This
     # daemon is a messaging gateway, which is exactly the case that flag names.
     env = {**os.environ, "HERMES_GATEWAY_SESSION": "1"}
+    # The ComfyUI image backend blocks for as long as a render takes. That is fine
+    # on the gateway and fatal here: the tick is single-threaded, so a slow render
+    # silences every other room, and 180s covers the LLM round-trips too. These
+    # three tell the provider to hand a slow job to a detached deliverer instead,
+    # which sends the photo back through `--send-to` when it is done.
+    if chat_id:
+        env |= {"COMFYUI_OUTBOX_DIR": str(OUTBOX_DIR),
+                "COMFYUI_CHAT_ID": str(chat_id),
+                "COMFYUI_SEND_BIN": str(SELF_PATH)}
     try:
         result = subprocess.run(
             command,
@@ -1358,7 +1370,7 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
             if dry_run:
                 log(f"--- dry-run prompt for chat {chat_id} ---\n{prompt}")
                 continue
-            answer = run_hermes(config, prompt)
+            answer = run_hermes(config, prompt, chat_id)
         except Exception as exc:  # noqa: BLE001 - the cursor must still advance
             # Truncated: TimeoutExpired stringifies the whole command, and the command
             # carries the prompt, so an untrimmed timeout spills the room's messages
@@ -1820,11 +1832,18 @@ def send_once(config_path: Path, chat_id: int, text: str) -> int:
     if not body:
         log("보낼 본문이 비어 있다")
         return 1
+    # Same attachment contract as a tick reply, or a job that finished after its
+    # turn ended could only name its file in prose. The fence is `resolve_attachment`
+    # either way, so this widens nothing.
+    body, images, files = extract_attachments(body, config)
+    if not body:
+        body = ", ".join(path.name for path in images + files) or "(빈 메시지)"
     prefix = config["bot_prefix"]
     outgoing = body if body.startswith(prefix) else f"{prefix} {body}"
     short, _ = split_reply(outgoing, int(config["reply_char_limit"]))
-    send_message(config, {"chat_id": chat_id}, short)
-    log(f"chat {chat_id}: 예약 발신 ({len(short)}자)")
+    send_message(config, {"chat_id": chat_id}, short, images, files)
+    note = f" + 첨부 {len(images) + len(files)}개" if images or files else ""
+    log(f"chat {chat_id}: 예약 발신 ({len(short)}자{note})")
     return 0
 
 

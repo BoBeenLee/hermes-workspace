@@ -297,11 +297,25 @@ class PromptTests(unittest.TestCase):
         self.assertIn("그때 그 장소의 것", prompt)
 
     def test_the_agent_is_told_what_it_cannot_do(self):
-        # a "draw me a diagram" turn once ran 9m33s hunting for an image generator that
-        # does not exist on this host, muting every room behind it
+        # a "draw me a diagram" turn once ran 9m33s hunting for a generator that did not
+        # exist on this host, muting every room behind it. Images exist now; video and
+        # audio still do not, and the sentence that says so is what stops the hunt.
         prompt = module.build_prompt([], [], "(없음)", "다이어그램 그림으로 표현해줘")
         self.assertIn("네가 못 하는 일", prompt)
-        self.assertIn("이미 있는 파일을 보내는", prompt)
+        self.assertIn("영상·음성", prompt)
+        self.assertNotIn("그림·영상·음성", prompt)
+
+    def test_the_agent_is_told_it_can_draw_and_how_the_slow_case_ends(self):
+        # a queued render is delivered by a detached child, so waiting or re-calling
+        # inside the turn either blocks every room or sends the photo twice
+        prompt = module.build_prompt([], [], "(없음)", "고양이 그려줘")
+        self.assertIn("image_generate", prompt)
+        self.assertIn("queued", prompt)
+        self.assertIn("다시 부르지도 마라", prompt)
+
+    def test_the_image_toolset_actually_reaches_the_turn(self):
+        # the prompt promising image_generate is worthless if -t never carries image_gen
+        self.assertIn("image_gen", module.DEFAULT_CONFIG["toolsets"].split(","))
 
     def test_a_turn_cannot_mute_the_bot_for_a_quarter_hour(self):
         # the tick is single-threaded, so this ceiling is how long every other room waits
@@ -587,6 +601,61 @@ class AttachmentTests(unittest.TestCase):
             f"둘 다\n[[image: {shot}]]\n[[file: {doc}]]", self.config)
         self.assertEqual(text, "둘 다")
         self.assertEqual((images, files), ([shot], [doc]))
+
+
+class SendOnceAttachmentTests(unittest.TestCase):
+    """`--send-to` is the only way a job that outlived its turn can reach the room.
+
+    A detached ComfyUI deliverer hands back `[[image: ...]]`; without extraction
+    here that line is printed as literal text and the photo never leaves.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name).resolve()
+        self.outbox = root / "outbox"
+        self.outbox.mkdir()
+        (root / "media").mkdir()
+        patcher = mock.patch.multiple(module, OUTBOX_DIR=self.outbox, MEDIA_DIR=root / "media")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.config = dict(CONFIG, backend="iris", attach_max_bytes=10_000)
+        self.photo = self.outbox / "shot.png"
+        self.photo.write_bytes(b"\x89PNG" + b"0" * 32)
+
+    def _send(self, text):
+        sent = {}
+
+        def capture(config, room, body, images=None, files=None):
+            sent.update(room=room, body=body, images=list(images or []), files=list(files or []))
+
+        with mock.patch.object(module, "load_config", return_value=self.config), \
+             mock.patch.object(module, "send_message", capture):
+            code = module.send_once(Path("/x/config.json"), 4242, text)
+        return code, sent
+
+    def test_an_image_line_leaves_as_a_photo_not_as_text(self):
+        code, sent = self._send(f"[[image: {self.photo}]]\n다 됐어")
+        self.assertEqual(code, 0)
+        self.assertEqual(sent["images"], [self.photo])
+        self.assertNotIn("[[image:", sent["body"])
+        self.assertIn("다 됐어", sent["body"])
+
+    def test_a_bare_image_line_still_gets_a_caption(self):
+        # the photo row carries no bot prefix, so text beside it is the only thing
+        # that later marks the pair as ours
+        _, sent = self._send(f"[[image: {self.photo}]]")
+        self.assertEqual(sent["images"], [self.photo])
+        self.assertIn("shot.png", sent["body"])
+        self.assertTrue(sent["body"].startswith(self.config["bot_prefix"]))
+
+    def test_the_fence_still_applies_to_outside_callers(self):
+        outside = Path(self.tmp.name).resolve() / "secret.png"
+        outside.write_bytes(b"\x89PNG")
+        _, sent = self._send(f"[[image: {outside}]]\n이거 봐")
+        self.assertEqual(sent["images"], [])
+        self.assertIn("이거 봐", sent["body"])
 
 
 class StartupClampTests(unittest.TestCase):

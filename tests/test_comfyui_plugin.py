@@ -289,6 +289,92 @@ class GenerateTest(unittest.TestCase):
         self.assertIn("KSampler", result["error"])
 
 
+class AsyncTest(unittest.TestCase):
+    """The KakaoTalk path: hold the turn briefly, then hand the job to a child."""
+
+    def setUp(self):
+        import tempfile
+
+        self.workdir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.workdir, ignore_errors=True))
+        self.outbox = self.workdir / "outbox"
+        rendered = self.workdir / "out" / "hermes" / "img_00001_.png"
+        rendered.parent.mkdir(parents=True)
+        rendered.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        self.env = {"COMFYUI_OUTBOX_DIR": str(self.outbox),
+                    "COMFYUI_CHAT_ID": "12345",
+                    "COMFYUI_SEND_BIN": "/x/kakao_ai_chat.py",
+                    "COMFYUI_OUTPUT_ROOT": str(self.workdir / "out")}
+
+    def _run(self, fake, env=None, spawn_ok=True):
+        provider = plugin.ComfyUIImageGenProvider()
+        spawned = []
+
+        def fake_popen(argv, **kwargs):
+            spawned.append((argv, kwargs))
+            if not spawn_ok:
+                raise OSError("no fork for you")
+            return unittest.mock.Mock()
+
+        with unittest.mock.patch.object(comfy, "requests", fake), \
+             unittest.mock.patch.object(comfy, "mem_available_gb", return_value=90.0), \
+             unittest.mock.patch.object(comfy.time, "sleep", lambda _s: None), \
+             unittest.mock.patch.object(plugin, "ASYNC_WINDOW_S", 0.05), \
+             unittest.mock.patch.object(plugin.subprocess, "Popen", fake_popen), \
+             unittest.mock.patch.dict("os.environ", env if env is not None else self.env):
+            return provider.generate("a cat", "square"), spawned
+
+    def test_unfinished_job_is_handed_to_a_detached_child(self):
+        result, spawned = self._run(FakeComfy(history=None))
+        self.assertTrue(result["success"])
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["prompt_id"], "pid-1")
+        self.assertIsNone(result["image"])
+        self.assertEqual(len(spawned), 1)
+        argv, kwargs = spawned[0]
+        self.assertIn("--prompt-id", argv)
+        self.assertEqual(argv[argv.index("--chat-id") + 1], "12345")
+        self.assertEqual(argv[argv.index("--outbox") + 1], str(self.outbox))
+        # Must outlive the hermes turn that started it.
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertEqual(kwargs["stdout"], plugin.subprocess.DEVNULL)
+
+    def test_a_fast_job_still_answers_in_the_same_turn(self):
+        result, spawned = self._run(FakeComfy(history=done_entry()))
+        self.assertTrue(result["success"])
+        self.assertNotIn("status", result)
+        self.assertEqual(Path(result["image"]).parent, self.outbox)
+        self.assertEqual(spawned, [])
+
+    def test_gateway_has_no_async_env_and_waits(self):
+        """Without the daemon's three variables this must stay synchronous."""
+        result, spawned = self._run(FakeComfy(history=done_entry()),
+                                    env={"COMFYUI_OUTPUT_ROOT": self.env["COMFYUI_OUTPUT_ROOT"]})
+        self.assertTrue(result["success"])
+        self.assertEqual(spawned, [])
+
+    def test_a_partial_env_does_not_half_enable_the_async_path(self):
+        """All three or none: a child with no send target would render into silence."""
+        self.assertIsNotNone(_target_with(self.env))
+        for missing in ("COMFYUI_SEND_BIN", "COMFYUI_CHAT_ID", "COMFYUI_OUTBOX_DIR"):
+            env = {k: v for k, v in self.env.items() if k != missing}
+            self.assertIsNone(_target_with(env), missing)
+
+    def test_a_nonnumeric_chat_id_is_rejected_not_crashed_on(self):
+        self.assertIsNone(_target_with(dict(self.env, COMFYUI_CHAT_ID="not-a-number")))
+
+    def test_spawn_failure_degrades_to_a_plain_timeout_error(self):
+        """A child that never started must not leave the room expecting a photo."""
+        result, _ = self._run(FakeComfy(history=None), spawn_ok=False)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_type"], "timeout")
+
+
+def _target_with(env):
+    with unittest.mock.patch.dict("os.environ", env, clear=True):
+        return plugin._async_target()
+
+
 class HandOverTest(unittest.TestCase):
     def test_oversized_png_is_reencoded_as_jpeg(self):
         try:
@@ -302,7 +388,7 @@ class HandOverTest(unittest.TestCase):
         source = workdir / "big.png"
         Image.new("RGB", (64, 64), (200, 30, 30)).save(source)
         _MEDIA.cache_dir = lambda kind: workdir / "dest"
-        handed = plugin._hand_over(source, max_bytes=1)
+        handed = comfy.hand_over(source, workdir / "dest", max_bytes=1)
         self.assertEqual(handed.suffix, ".jpg")
         self.assertTrue(handed.is_file())
 
