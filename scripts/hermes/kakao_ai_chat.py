@@ -1206,7 +1206,7 @@ def build_prompt(mine: list[str], others: list[str], quoted: str, mention: str,
 
 def run_hermes(config: dict, prompt: str, chat_id: int = 0, request: str = "",
                timeout: float = TURN_HARD_CAP_SECONDS, progress_path: Path | None = None,
-               on_wait=None) -> str:
+               on_wait=None, thread_id=None) -> str:
     with tempfile.NamedTemporaryFile(prefix="kakao-ai-chat-usage-", suffix=".json", delete=False) as handle:
         usage_path = Path(handle.name)
     command = [str(config["hermes_bin"]), "--profile", str(config["profile"]), "--ignore-rules"]
@@ -1232,6 +1232,13 @@ def run_hermes(config: dict, prompt: str, chat_id: int = 0, request: str = "",
     # silences every other room, and 180s covers the LLM round-trips too. These
     # three tell the provider to hand a slow job to a detached deliverer instead,
     # which sends the photo back through `--send-to` when it is done.
+    # Everything this turn spawns that sends on its own - the ComfyUI deliverer, and
+    # the model running the send_bin line from its own prompt - answers the same
+    # message the turn does, so it belongs on the same 댓글 root. It rides in the
+    # environment because the deliverer is two Popen hops away and neither hop is
+    # ours to thread an argument through.
+    if thread_id:
+        env |= {"KAKAO_THREAD_ID": str(int(thread_id))}
     if chat_id:
         env |= {"COMFYUI_OUTBOX_DIR": str(OUTBOX_DIR),
                 "COMFYUI_CHAT_ID": str(chat_id),
@@ -1616,7 +1623,8 @@ def run_turn_job(config_path: Path, path: Path) -> int:
     try:
         _, prompt, _ = build_turn(config, trigger)
         answer = run_hermes(config, prompt, chat_id, request,
-                            timeout=TURN_HARD_CAP_SECONDS, progress_path=progress, on_wait=beat)
+                            timeout=TURN_HARD_CAP_SECONDS, progress_path=progress, on_wait=beat,
+                            thread_id=root)
     except subprocess.TimeoutExpired:
         log(f"chat {chat_id}: 턴 하드캡 {int(TURN_HARD_CAP_SECONDS // 60)}분 초과")
         say(TURN_TIMEOUT_NOTE + quote_suffix(quoted))
@@ -2288,6 +2296,23 @@ def install(config_path: Path) -> int:
     return 0
 
 
+def inherited_thread_id():
+    """The 댓글 root of the turn this process was spawned inside, or None.
+
+    A photo that finishes after the turn used to land as a loose line: the answer
+    hung off the mention, the photo the answer promised did not. It is the same
+    turn answering the same message, so it takes the same root. Set by run_hermes
+    and inherited across both Popen hops to the deliverer.
+
+    Nothing outside a turn has the variable - a cron result still lands as an
+    ordinary line, which is right, since it answers nothing in particular.
+    """
+    try:
+        return int(os.environ.get("KAKAO_THREAD_ID") or "") or None
+    except ValueError:
+        return None
+
+
 def send_once(config_path: Path, chat_id: int, text: str) -> int:
     """One message into one room, for a scheduled job or any other outside caller.
 
@@ -2305,7 +2330,7 @@ def send_once(config_path: Path, chat_id: int, text: str) -> int:
         return 1
     # Same path a detached turn takes, so the attachment fence, the bot prefix and
     # the overflow file have one implementation rather than two that drift.
-    outgoing = deliver_answer(config, chat_id, body)
+    outgoing = deliver_answer(config, chat_id, body, thread_id=inherited_thread_id())
     log(f"chat {chat_id}: 예약 발신 ({len(outgoing)}자)")
     return 0
 

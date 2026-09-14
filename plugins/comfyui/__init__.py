@@ -148,16 +148,17 @@ def _async_target() -> Optional[tuple]:
 
 
 def _caption(prompt: str, limit: int = 60) -> str:
-    """Caption that names the request it answers.
+    """Caption that names the request it answers, unless the photo is a 댓글.
 
     A bare "다 됐어" arriving minutes later is orphaned -- by then the room has
-    moved on and nothing ties it to what was asked. KakaoTalk's own reply form
-    (a type=26 row carrying src_logId) would do this properly, but Iris cannot
-    send one: ReplyRequest is a fixed {type, room, data} and rejects the whole
-    body when any other field is present (probed against the running build).
-    Quoting the request in the caption is what is left, and it answers the same
-    question for a reader.
+    moved on and nothing ties it to what was asked. When the daemon threads the
+    delivery (KAKAO_THREAD_ID), KakaoTalk already draws the question above the
+    answer and the quote just repeats the line the reader is looking at. Without
+    a thread, quoting is the only tie left: KakaoTalk's own reply form (a type=26
+    row carrying src_logId) is unreachable through Iris.
     """
+    if os.environ.get("KAKAO_THREAD_ID"):
+        return "다 됐어"
     # The caller's own words when it passed them: what reaches this provider is
     # the model's expanded English rewrite, which nobody asked for by that name.
     text = " ".join((os.environ.get("COMFYUI_REQUEST") or prompt or "").split())
