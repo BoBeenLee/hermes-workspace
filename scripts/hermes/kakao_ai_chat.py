@@ -534,8 +534,10 @@ CONTEXT_COLUMNS = DETECT_COLUMNS + ("sender_name", "local_file_path")
 
 # Iris answers keyed by SQL column name; as_row() speaks the internal names.
 # `v` rides along because Iris only decrypts when it is in the SELECT.
-IRIS_SQL_COLUMNS = ("id", "chat_id", "user_id", "type", "message", "attachment", "created_at", "v")
-IRIS_ROW_COLUMNS = ("log_id", "chat_id", "author_id", "type", "message", "attachment", "sent_at", "v")
+IRIS_SQL_COLUMNS = ("id", "chat_id", "user_id", "type", "message", "attachment", "created_at", "v",
+                    "thread_id")
+IRIS_ROW_COLUMNS = ("log_id", "chat_id", "author_id", "type", "message", "attachment", "sent_at", "v",
+                    "thread_id")
 
 
 def as_row(values: list, columns: tuple[str, ...]) -> dict:
@@ -586,7 +588,7 @@ def fetch_new_rows(config: dict, cursor: int) -> list[dict]:
         # merge because they alone carry sender_name.
         merged = {int(row["log_id"]): row for row in drain_iris_inbox(config, int(cursor))}
         sql = (
-            "SELECT id, chat_id, user_id, type, message, attachment, created_at, v "
+            "SELECT id, chat_id, user_id, type, message, attachment, created_at, v, thread_id "
             f"FROM chat_logs WHERE id > {int(cursor)}"
             + ("" if all_rooms(config) else f" AND chat_id IN ({id_list})")
             + f" ORDER BY id ASC LIMIT {DETECT_LIMIT}"
@@ -607,7 +609,7 @@ def fetch_new_rows(config: dict, cursor: int) -> list[dict]:
 def fetch_room_context(config: dict, chat_id: int, up_to_log_id: int, limit: int) -> list[dict]:
     if backend_name(config) == "iris":
         sql = (
-            "SELECT id, chat_id, user_id, type, message, attachment, created_at, v "
+            "SELECT id, chat_id, user_id, type, message, attachment, created_at, v, thread_id "
             "FROM chat_logs "
             f"WHERE chat_id = {int(chat_id)} AND id <= {int(up_to_log_id)} "
             f"ORDER BY id DESC LIMIT {int(limit)}"
@@ -631,7 +633,7 @@ def fetch_room_context(config: dict, chat_id: int, up_to_log_id: int, limit: int
 def fetch_row_by_log_id(config: dict, chat_id: int, log_id: int) -> dict | None:
     if backend_name(config) == "iris":
         sql = (
-            "SELECT id, chat_id, user_id, type, message, attachment, created_at, v "
+            "SELECT id, chat_id, user_id, type, message, attachment, created_at, v, thread_id "
             f"FROM chat_logs WHERE chat_id = {int(chat_id)} AND id = {int(log_id)} LIMIT 1"
         )
         rows = backend_query(config, sql, IRIS_SQL_COLUMNS)
@@ -1375,8 +1377,14 @@ def kill_process_group(process: subprocess.Popen) -> None:
         process.kill()
 
 
-def thread_root(config: dict, chat_id: int, log_id) -> int | None:
+def thread_root(config: dict, trigger: dict | None) -> int | None:
     """The 댓글 root for a reply, or None when there is nothing to hang it off.
+
+    A mention typed *inside* a 댓글 roots at that same 댓글, not at itself. Rooting
+    at the mention opened a second thread hanging off a comment, which the app shows
+    nowhere the asker was looking - the answer reads as "@jarvis did not fire".
+    Measured 2026-09-14 22:40 in chat 128426307555607: mention 3929693779839375363
+    sat under thread 3929689952310482946 and the reply went to its own id.
 
     Every room gets one. This used to ask `chat_rooms.link_id` first and send a
     thread only for open chats, on the belief that 댓글 is an open-chat feature and
@@ -1390,9 +1398,11 @@ def thread_root(config: dict, chat_id: int, log_id) -> int | None:
     The value is `chat_logs.id`, not `_id` - an `_id` is accepted and stored
     verbatim, producing a 댓글 rooted at a message that does not exist.
     """
-    if not log_id or backend_name(config) != "iris":
+    trigger = trigger or {}
+    root = trigger.get("thread_id") or trigger.get("log_id")
+    if not root or backend_name(config) != "iris":
         return None
-    return int(log_id)
+    return int(root)
 
 
 def send_message(config: dict, room: dict, text: str, images: list[Path] | None = None,
@@ -1519,7 +1529,7 @@ def reap_jobs(config: dict, state: dict, now: float | None = None) -> None:
             # The worker is gone and never spoke - SIGKILL, OOM, a reboot. Silence is
             # the one answer a chat bot must never give, and there is nobody else left
             # to notice.
-            root = thread_root(config, chat_id, (job.get("trigger") or {}).get("log_id"))
+            root = thread_root(config, job.get("trigger"))
             quoted = "" if root else quote_request(str(job.get("request") or ""))
             log(f"chat {chat_id}: 턴 워커가 말없이 사라졌다")
             with contextlib.suppress(Exception):
@@ -1669,7 +1679,7 @@ def run_turn_job(config_path: Path, path: Path) -> int:
     # answers and the quote would just repeat the line above it. The quote survives
     # for the one path with nothing to hang off - `--send-to`, where a photo or a
     # cron result lands minutes later with no trigger of its own.
-    root = thread_root(config, chat_id, trigger.get("log_id"))
+    root = thread_root(config, trigger)
     quoted = "" if root else quote_request(request)
     load_name_cache()
     PROGRESS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1886,7 +1896,7 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None,
                 save_json(job_path(chat_id), job)
                 with contextlib.suppress(Exception):
                     send_message(config, room, f"{config['bot_prefix']} {TURN_BUSY_NOTE}",
-                                 thread_id=thread_root(config, chat_id, trigger.get("log_id")))
+                                 thread_id=thread_root(config, trigger))
                     state["rate"] = recent + [time.time()]
                 log(f"chat {chat_id}: 앞 턴이 돌고 있어 이번 멘션은 넘긴다")
             continue
@@ -1916,7 +1926,7 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None,
             # launch - timeouts included - is the worker's to announce.
             with contextlib.suppress(Exception):
                 send_message(config, room, f"{config['bot_prefix']} {TURN_FAILED_NOTE}",
-                             thread_id=thread_root(config, chat_id, trigger.get("log_id")))
+                             thread_id=thread_root(config, trigger))
                 state["rate"] = recent + [time.time()]
             continue
 

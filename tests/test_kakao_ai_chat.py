@@ -37,6 +37,7 @@ def row(**overrides):
         "message": "hello",
         "attachment": None,
         "sent_at": int(time.time()),
+        "thread_id": None,
         "sender_name": None,
         "local_file_path": None,
     }
@@ -1171,15 +1172,21 @@ class ThreadRootTests(unittest.TestCase):
         # on 2026-09-14. The row shape is identical to an open chat's, so no query
         # could have told us, and the query itself is now gone.
         with mock.patch.object(module, "backend_query") as query:
-            self.assertEqual(module.thread_root(self.config, CHAT, 999), 999)
+            self.assertEqual(module.thread_root(self.config, row(log_id=999)), 999)
             query.assert_not_called()
+
+    def test_a_mention_inside_a_comment_answers_in_that_comment(self):
+        # rooting at the mention itself hides the answer: the app shows it under the
+        # comment, not in the thread the asker had open (chat 128426307555607, 22:40)
+        self.assertEqual(
+            module.thread_root(self.config, row(log_id=999, thread_id=42)), 42)
 
     def test_no_trigger_means_no_thread(self):
         # a cron job reaching the room through --send-to has nothing to hang off
-        self.assertIsNone(module.thread_root(self.config, CHAT, None))
+        self.assertIsNone(module.thread_root(self.config, None))
 
     def test_only_the_iris_backend_has_threads(self):
-        self.assertIsNone(module.thread_root(dict(CONFIG, backend="mac"), CHAT, 999))
+        self.assertIsNone(module.thread_root(dict(CONFIG, backend="mac"), row(log_id=999)))
 
 
 class ThreadedDeliveryTests(AsyncTurnBase):
