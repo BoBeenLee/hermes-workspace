@@ -100,9 +100,24 @@ class IrisClient:
         require_decryptable(sql)
         return [[row.get(name) for name in columns] for row in self.query(sql)]
 
-    def reply(self, chat_id, text: str) -> dict:
-        """Queue one text message. Success here is not delivery - read it back."""
-        payload = self._post("/reply", {"type": "text", "room": str(chat_id), "data": text})
+    def reply(self, chat_id, text: str, thread_id=None) -> dict:
+        """Queue one text message. Success here is not delivery - read it back.
+
+        `thread_id` is an open-chat 댓글 root, and it is the ONLY reply form Iris can
+        send. KakaoTalk's ordinary 답장 is a `type=26` row carrying `src_logId` in its
+        attachment, and that is unreachable: `Replier.sendMessageInternal` fires a
+        NotificationActionService REPLY_MESSAGE intent with nowhere to put one. Adding
+        `src_logId` to this body does not fail on that - kotlinx rejects the whole
+        request on the unknown key first, which makes it look like a body-shape problem
+        when it is not.
+
+        The value is `chat_logs.id`, not `_id`. Measured: an `_id` is accepted and
+        stored verbatim, producing a 댓글 rooted at a message that does not exist.
+        """
+        body = {"type": "text", "room": str(chat_id), "data": text}
+        if thread_id is not None:
+            body["threadId"] = int(thread_id)
+        payload = self._post("/reply", body)
         if payload.get("success") is not True:
             raise IrisError(f"Iris reply refused: {str(payload)[:300]}")
         return payload
@@ -124,7 +139,7 @@ class IrisClient:
         plain = payload.get("plain_text")
         return plain if isinstance(plain, str) and plain else None
 
-    def reply_images(self, chat_id, images: list[str]) -> dict:
+    def reply_images(self, chat_id, images: list[str], thread_id=None) -> dict:
         """Queue one or more base64 images. Queued is not delivered - read it back.
 
         `file` and `link` are not options: ReplyType is a three-entry enum, so the
@@ -136,6 +151,8 @@ class IrisClient:
             return {}
         body = ({"type": "image", "data": images[0]} if len(images) == 1
                 else {"type": "image_multiple", "data": images})
+        if thread_id is not None:
+            body["threadId"] = int(thread_id)
         payload = self._post("/reply", {"room": str(chat_id), **body})
         if payload.get("success") is not True:
             raise IrisError(f"Iris image reply refused: {str(payload)[:300]}")

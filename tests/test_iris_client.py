@@ -91,5 +91,34 @@ class WatchLoopTests(unittest.TestCase):
         self.assertEqual([row["log_id"] for row in rows], [9])
 
 
+class ThreadReplyTests(unittest.TestCase):
+    """An open-chat 댓글 is the only reply form Iris can send."""
+
+    def bodies(self, call):
+        seen = []
+        client = module.IrisClient("http://iris")
+        with unittest.mock.patch.object(
+            module.IrisClient, "_post",
+            side_effect=lambda path, body: seen.append(body) or {"success": True},
+        ):
+            call(client)
+        return seen[0]
+
+    def test_a_plain_reply_carries_no_thread(self):
+        body = self.bodies(lambda c: c.reply(1, "안녕"))
+        self.assertNotIn("threadId", body)
+
+    def test_a_thread_id_rides_along_as_an_int(self):
+        # the value is chat_logs.id; a str would still be accepted and stored, so the
+        # cast is the only thing keeping a stringly-typed caller honest
+        body = self.bodies(lambda c: c.reply(1, "안녕", "3929360413260732419"))
+        self.assertEqual(body["threadId"], 3929360413260732419)
+
+    def test_photos_thread_too(self):
+        body = self.bodies(lambda c: c.reply_images(1, ["Yg=="], 77))
+        self.assertEqual(body["threadId"], 77)
+        self.assertEqual(body["type"], "image")
+
+
 if __name__ == "__main__":
     unittest.main()

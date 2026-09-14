@@ -48,6 +48,19 @@ def no_bot_parents(_log_id):
     return False
 
 
+def fake_popen(stdout="ok", stderr="", returncode=0):
+    """run_hermes drives Popen + communicate() now, not subprocess.run.
+
+    The switch is what lets a turn be heartbeat-ed while it runs; these tests only
+    need the shape.
+    """
+    process = mock.Mock()
+    process.communicate.return_value = (stdout, stderr)
+    process.returncode = returncode
+    process.pid = 4242
+    return process
+
+
 class TriggerTests(unittest.TestCase):
     def test_mention_starts_a_thread(self):
         self.assertEqual(
@@ -317,9 +330,19 @@ class PromptTests(unittest.TestCase):
         # the prompt promising image_generate is worthless if -t never carries image_gen
         self.assertIn("image_gen", module.DEFAULT_CONFIG["toolsets"].split(","))
 
-    def test_a_turn_cannot_mute_the_bot_for_a_quarter_hour(self):
-        # the tick is single-threaded, so this ceiling is how long every other room waits
-        self.assertLessEqual(module.HERMES_TIMEOUT_SECONDS, 180)
+    def test_a_long_turn_no_longer_mutes_the_other_rooms(self):
+        # this used to assert a 180s ceiling because the tick ran turns serially and
+        # the budget WAS the time every other room waited. Turns are detached now, so
+        # the cap is only about the asker's patience - and the coupling is what the
+        # AsyncSpawnTests below actually pin.
+        self.assertEqual(module.TURN_HARD_CAP_SECONDS, 1200)
+        self.assertFalse(hasattr(module, "HERMES_TIMEOUT_SECONDS"))
+
+    def test_the_agent_is_told_the_new_ceiling(self):
+        # "한 번에 답해라" implied be quick; scoping to 20 minutes is the honest rule
+        prompt = module.build_prompt([], [], "(없음)", "x")
+        self.assertIn("20분", prompt)
+        self.assertNotIn("이 방의 다음 메시지도 같이 멈춘다", prompt)
 
     def test_facts_have_to_be_looked_up(self):
         self.assertIn("web_search", module.build_prompt([], [], "(없음)", "x"))
@@ -328,10 +351,10 @@ class PromptTests(unittest.TestCase):
         # a pin here silently bypasses the profile default AND its fallback chain
         self.assertEqual(module.DEFAULT_CONFIG["provider"], "")
         self.assertEqual(module.DEFAULT_CONFIG["model"], "")
-        with mock.patch.object(module.subprocess, "run") as run:
-            run.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
+        with mock.patch.object(module.subprocess, "Popen") as popen:
+            popen.return_value = fake_popen()
             module.run_hermes(dict(CONFIG, hermes_bin="/bin/true", provider="", model=""), "안녕")
-        command = run.call_args.args[0]
+        command = popen.call_args.args[0]
         self.assertNotIn("--provider", command)
         self.assertNotIn("-m", command)
 
@@ -505,11 +528,33 @@ class NicknameTests(unittest.TestCase):
 class HermesInvocationTests(unittest.TestCase):
     def test_the_run_declares_itself_a_gateway_session(self):
         # without this cronjob_manage is filtered out and `cronjob` in --toolsets is a no-op
-        with mock.patch.object(module.subprocess, "run") as run:
-            run.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
+        with mock.patch.object(module.subprocess, "Popen") as popen:
+            popen.return_value = fake_popen()
             module.run_hermes(dict(CONFIG, hermes_bin="/bin/true"), "안녕")
-        self.assertEqual(run.call_args.kwargs["env"]["HERMES_GATEWAY_SESSION"], "1")
-        self.assertIn("PATH", run.call_args.kwargs["env"])
+        self.assertEqual(popen.call_args.kwargs["env"]["HERMES_GATEWAY_SESSION"], "1")
+        self.assertIn("PATH", popen.call_args.kwargs["env"])
+
+    def test_the_progress_hook_is_only_armed_when_a_worker_asks(self):
+        # the same hook fires for the Discord gateway; the env var is its whole gate
+        with mock.patch.object(module.subprocess, "Popen") as popen:
+            popen.return_value = fake_popen()
+            module.run_hermes(dict(CONFIG, hermes_bin="/bin/true"), "안녕")
+        self.assertNotIn("KAKAO_PROGRESS_FILE", popen.call_args.kwargs["env"])
+        with mock.patch.object(module.subprocess, "Popen") as popen:
+            popen.return_value = fake_popen()
+            module.run_hermes(dict(CONFIG, hermes_bin="/bin/true"), "안녕",
+                              progress_path=Path("/tmp/p.log"))
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["KAKAO_PROGRESS_FILE"], "/tmp/p.log")
+        # a daemon has no TTY for the first-use consent prompt
+        self.assertEqual(env["HERMES_ACCEPT_HOOKS"], "1")
+
+    def test_the_agent_tree_gets_its_own_process_group(self):
+        # the cap kills a group, and without this the group is the worker's own
+        with mock.patch.object(module.subprocess, "Popen") as popen:
+            popen.return_value = fake_popen()
+            module.run_hermes(dict(CONFIG, hermes_bin="/bin/true"), "안녕")
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
     def test_the_scheduler_toolset_is_offered(self):
         self.assertIn("cronjob", module.DEFAULT_CONFIG["toolsets"].split(","))
@@ -627,8 +672,9 @@ class SendOnceAttachmentTests(unittest.TestCase):
     def _send(self, text):
         sent = {}
 
-        def capture(config, room, body, images=None, files=None):
-            sent.update(room=room, body=body, images=list(images or []), files=list(files or []))
+        def capture(config, room, body, images=None, files=None, thread_id=None):
+            sent.update(room=room, body=body, images=list(images or []),
+                        files=list(files or []), thread_id=thread_id)
 
         with mock.patch.object(module, "load_config", return_value=self.config), \
              mock.patch.object(module, "send_message", capture):
@@ -829,67 +875,340 @@ class DiscordControlTests(unittest.TestCase):
         self.assertTrue(any("방 재개" in message for message in self.discord.sent))
 
 
-class TurnFailureTests(unittest.TestCase):
-    """A failed turn has to say so. The cursor advances either way, so silence is final."""
+class AsyncTurnBase(unittest.TestCase):
+    """Anything that runs a tick must have its own jobs/ - a stray spawn forks for real."""
 
     def setUp(self):
         module._IRIS_INBOX.clear()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        (root / "jobs").mkdir()
+        (root / "progress").mkdir()
+        patcher = mock.patch.multiple(
+            module, JOBS_DIR=root / "jobs", PROGRESS_DIR=root / "progress",
+            TURNS_LOG_PATH=root / "turns.log", RESULTS_DIR=root / "results",
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.config = dict(CONFIG, backend="iris")
         self.state = module.default_state()
+        self.sent = []
 
-    def run_tick(self, outcome):
-        sent = []
-        trigger = row(log_id=5, message="@jarvis 뭐야")
+    def run_tick(self, trigger=None, spawn=True, rows=None, config=None):
+        rows = rows if rows is not None else [
+            trigger if trigger is not None else row(log_id=5, message="@jarvis 뭐야")]
+        spawn_turn = mock.Mock(return_value=spawn)
         with mock.patch.multiple(
             module,
             process_discord_commands=mock.DEFAULT,
-            fetch_new_rows=mock.Mock(return_value=[trigger]),
-            build_turn=mock.Mock(return_value=([], "prompt", "고양이 그려줘")),
-            run_hermes=mock.Mock(**outcome),
-            send_message=mock.Mock(side_effect=lambda c, r, text, *a: sent.append(text)),
+            fetch_new_rows=mock.Mock(return_value=rows),
+            spawn_turn=spawn_turn,
+            send_message=mock.Mock(side_effect=lambda c, r, text, *a, **k: self.sent.append(text)),
         ):
-            module.tick(self.config, self.state, discord=FakeDiscord())
-        return sent
+            module.tick(config or self.config, self.state, discord=FakeDiscord())
+        return spawn_turn
 
-    def test_a_timeout_is_announced_in_the_room(self):
-        sent = self.run_tick({"side_effect": subprocess.TimeoutExpired("hermes", 180)})
-        self.assertEqual(len(sent), 1)
-        self.assertIn(module.TURN_TIMEOUT_NOTE, sent[0])
-        self.assertTrue(sent[0].startswith(self.config["bot_prefix"]))
+    def write_job(self, **overrides):
+        job = {"pid": os.getpid(), "chat_id": CHAT, "request": "고양이 그려줘",
+               "created_at": time.time(), "trigger": row(log_id=5), "notified": False}
+        job.update(overrides)
+        module.save_json(module.job_path(CHAT), job)
+        return job
 
-    def test_any_other_failure_is_announced_too(self):
-        sent = self.run_tick({"side_effect": RuntimeError("hermes failed (1): boom")})
-        self.assertEqual(len(sent), 1)
-        self.assertIn(module.TURN_FAILED_NOTE, sent[0])
+
+class AsyncSpawnTests(AsyncTurnBase):
+    """The tick hands turns off and returns. It no longer waits for an answer."""
+
+    def test_a_trigger_is_handed_to_a_worker_not_run_inline(self):
+        spawn = self.run_tick()
+        spawn.assert_called_once()
+        self.assertEqual(spawn.call_args.args[1]["log_id"], 5)
+        self.assertEqual(spawn.call_args.args[2], "뭐야")  # what the worker will quote
+        self.assertEqual(self.sent, [])  # the answer is the worker's to send
+
+    def test_a_second_mention_for_a_busy_room_is_turned_away_once(self):
+        self.write_job()
+        spawn = self.run_tick()
+        spawn.assert_not_called()
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn(module.TURN_BUSY_NOTE, self.sent[0])
+        # and not again for the next one, or tapping "아직?" eats the whole budget
+        self.run_tick(trigger=row(log_id=6, message="@jarvis 아직?"))
+        self.assertEqual(len(self.sent), 1)
+
+    def test_a_busy_room_does_not_block_a_different_room(self):
+        """The whole point: one slow turn used to silence every room."""
+        self.write_job()
+        spawn = self.run_tick(
+            rows=[row(log_id=5, message="@jarvis 여기"),
+                  row(log_id=6, chat_id=555, message="@jarvis 딴 방")],
+            config=dict(self.config, all_rooms=True))
+        spawn.assert_called_once()
+        self.assertEqual(spawn.call_args.args[1]["chat_id"], 555)
+
+    def test_a_spawn_that_never_launched_is_announced(self):
+        # everything after the launch is the worker's to announce; this is the one
+        # failure with no worker left to speak for it
+        self.run_tick(spawn=False)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn(module.TURN_FAILED_NOTE, self.sent[0])
 
     def test_the_room_text_does_not_leak_into_the_log(self):
-        # TimeoutExpired stringifies the command, and the command holds the prompt
-        self.run_tick({"side_effect": subprocess.TimeoutExpired("hermes " + "비밀 " * 200, 180)})
+        with mock.patch.multiple(
+            module,
+            process_discord_commands=mock.DEFAULT,
+            fetch_new_rows=mock.Mock(return_value=[row(log_id=5, message="@jarvis 뭐야")]),
+            spawn_turn=mock.Mock(side_effect=RuntimeError("비밀 " * 200)),
+            send_message=mock.Mock(),
+        ):
+            module.tick(self.config, self.state, discord=FakeDiscord())
         self.assertLessEqual(len(self.state["last_error"]), 340)
+        self.assertIn("비밀", self.state["last_error"])
 
-    def test_the_notice_counts_against_the_rate_limit(self):
-        self.run_tick({"side_effect": RuntimeError("boom")})
+    def test_a_launch_costs_one_rate_slot(self):
+        # charged at launch, not at delivery: it is the only moment the parent sees
+        self.run_tick()
+        self.assertEqual(len(self.state["rate"]), 1)
+
+    def test_a_failed_launch_costs_one_too(self):
+        self.run_tick(spawn=False)
         self.assertEqual(len(self.state["rate"]), 1)
 
     def test_the_cursor_still_moves_so_it_is_not_retried_forever(self):
-        self.run_tick({"side_effect": RuntimeError("boom")})
+        self.run_tick(spawn=False)
         self.assertEqual(self.state["cursor_log_id"], 5)
 
-    def test_a_good_turn_sends_the_answer_and_no_notice(self):
-        sent = self.run_tick({"return_value": "답이다"})
-        self.assertEqual(len(sent), 1)
-        self.assertNotIn(module.TURN_FAILED_NOTE, sent[0])
-        self.assertIn("답이다", sent[0])
+    def test_a_turned_away_mention_does_not_come_back(self):
+        # the busy note does not promise a retry, so the cursor must not hold it
+        self.write_job()
+        self.run_tick()
+        self.assertEqual(self.state["cursor_log_id"], 5)
+
+
+class JobReapTests(AsyncTurnBase):
+    """A detached worker cannot write state.json, so the parent closes the loop."""
+
+    def test_a_live_worker_keeps_its_room(self):
+        self.write_job()
+        module.reap_jobs(self.config, self.state)
+        self.assertTrue(module.job_path(CHAT).exists())
+
+    def test_a_dead_worker_that_delivered_hands_back_its_fingerprint(self):
+        self.write_job(pid=999999, done="[jarvis] 답이다")
+        module.reap_jobs(self.config, self.state)
+        self.assertFalse(module.job_path(CHAT).exists())
+        pending = self.state["rooms"][str(CHAT)]["pending_send"]
+        self.assertEqual(pending["fingerprint"], "[jarvis] 답이다")
+        self.assertEqual(pending["ticks"], 0)
+
+    def test_a_worker_that_died_without_a_word_gets_one(self):
+        self.write_job(pid=999999)
+        with mock.patch.object(module, "send_message",
+                               side_effect=lambda c, r, text, *a, **k: self.sent.append(text)):
+            module.reap_jobs(self.config, self.state)
+        self.assertFalse(module.job_path(CHAT).exists())
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn(module.TURN_LOST_NOTE, self.sent[0])
+        self.assertIn("고양이 그려줘", self.sent[0])
+
+    def test_a_recycled_pid_cannot_hold_a_room_forever(self):
+        # os.kill(pid, 0) alone would call a reused pid "alive"; age is the tiebreak
+        self.write_job(created_at=time.time() - module.TURN_HARD_CAP_SECONDS - 300)
+        with mock.patch.object(module, "send_message"):
+            module.reap_jobs(self.config, self.state)
+        self.assertFalse(module.job_path(CHAT).exists())
+
+
+class TurnWorkerTests(AsyncTurnBase):
+    """The worker always says something. There is no tick left to notice silence."""
+
+    def run_worker(self, **outcome):
+        self.write_job()
+        path = module.job_path(CHAT)
+        with mock.patch.multiple(
+            module,
+            load_config=mock.Mock(return_value=self.config),
+            load_name_cache=mock.DEFAULT,
+            build_turn=mock.Mock(return_value=([], "prompt", "고양이 그려줘")),
+            run_hermes=mock.Mock(**outcome),
+            send_message=mock.Mock(side_effect=lambda c, r, text, *a, **k: self.sent.append(text)),
+        ):
+            code = module.run_turn_job(Path("config.json"), path)
+        return code, path
+
+    def test_an_answer_is_delivered_quoting_what_it_answers(self):
+        code, path = self.run_worker(return_value="답이다")
+        self.assertEqual(code, 0)
+        self.assertIn("답이다", self.sent[0])
+        self.assertIn("고양이 그려줘", self.sent[0])
+        # kept, not unlinked: the fingerprint is the parent's only way to verify it
+        self.assertEqual(module.load_json(path, {})["done"][:9], "[jarvis] ")
+
+    def test_the_hard_cap_is_announced(self):
+        code, path = self.run_worker(side_effect=subprocess.TimeoutExpired("hermes", 1200))
+        self.assertEqual(code, 1)
+        self.assertIn(module.TURN_TIMEOUT_NOTE, self.sent[0])
+        self.assertIn("고양이 그려줘", self.sent[0])
+        self.assertFalse(path.exists())
+
+    def test_any_other_failure_is_announced_too(self):
+        code, path = self.run_worker(side_effect=RuntimeError("hermes failed (1): boom"))
+        self.assertEqual(code, 1)
+        self.assertIn(module.TURN_FAILED_NOTE, self.sent[0])
+        self.assertFalse(path.exists())
+
+    def test_the_room_text_does_not_leak_into_the_worker_log(self):
+        # TimeoutExpired stringifies the command, and the command holds the prompt.
+        # It matters more here than in the tick: turns.log persists on disk.
+        with mock.patch.object(module, "log") as logged:
+            self.run_worker(side_effect=subprocess.TimeoutExpired("hermes " + "비밀 " * 200, 1200))
+        for call in logged.call_args_list:
+            self.assertLessEqual(len(call.args[0]), 340)
 
     def test_an_attachment_only_answer_still_gets_a_caption(self):
         """A file row carries no bot_prefix, so an empty caption is unattributable."""
-        outbox = Path(tempfile.mkdtemp())
+        outbox = Path(self.tmp.name) / "outbox"
+        outbox.mkdir()
         doc = outbox / "보고서.pdf"
         doc.write_bytes(b"%PDF")
         with mock.patch.multiple(module, OUTBOX_DIR=outbox, MEDIA_DIR=outbox / "none"):
-            sent = self.run_tick({"return_value": f"[[file: {doc}]]"})
-        self.assertEqual(len(sent), 1)
-        self.assertIn("보고서.pdf", sent[0])
+            self.run_worker(return_value=f"[[file: {doc}]]")
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("보고서.pdf", self.sent[0])
+
+    def test_a_long_answer_keeps_its_quote_instead_of_truncating_it(self):
+        config = dict(self.config, reply_char_limit=80)
+        self.write_job()
+        with mock.patch.multiple(
+            module,
+            load_config=mock.Mock(return_value=config),
+            load_name_cache=mock.DEFAULT,
+            build_turn=mock.Mock(return_value=([], "prompt", "고양이 그려줘")),
+            run_hermes=mock.Mock(return_value="가" * 500),
+            send_message=mock.Mock(side_effect=lambda c, r, text, *a, **k: self.sent.append(text)),
+        ):
+            module.run_turn_job(Path("config.json"), module.job_path(CHAT))
+        self.assertTrue(self.sent[0].endswith('- "고양이 그려줘"'))
+
+
+class ThreadRootTests(unittest.TestCase):
+    """Only an open chat has 댓글. Everywhere else a threadId is a lie in the row."""
+
+    def setUp(self):
+        module._OPEN_CHAT_CACHE.clear()
+        self.config = dict(CONFIG, backend="iris")
+
+    def root(self, link_id, log_id=999, calls=None):
+        rows = [[link_id]] if link_id is not None else [[None]]
+        query = mock.Mock(return_value=rows)
+        with mock.patch.object(module, "backend_query", query):
+            out = module.thread_root(self.config, CHAT, log_id)
+            if calls is not None:
+                for _ in range(calls - 1):
+                    module.thread_root(self.config, CHAT, log_id)
+        return out, query
+
+    def test_an_open_chat_threads(self):
+        out, _ = self.root(342982962)
+        self.assertEqual(out, 999)
+
+    def test_a_room_without_a_link_does_not(self):
+        out, _ = self.root(None)
+        self.assertIsNone(out)
+
+    def test_the_room_type_is_looked_up_once(self):
+        _, query = self.root(342982962, calls=3)
+        self.assertEqual(query.call_count, 1)
+
+    def test_no_trigger_means_no_thread(self):
+        # a cron job reaching the room through --send-to has nothing to hang off
+        with mock.patch.object(module, "backend_query") as query:
+            self.assertIsNone(module.thread_root(self.config, CHAT, None))
+            query.assert_not_called()
+
+    def test_a_lookup_failure_costs_the_thread_not_the_answer(self):
+        with mock.patch.object(module, "backend_query", side_effect=RuntimeError("iris down")):
+            self.assertIsNone(module.thread_root(self.config, CHAT, 999))
+
+
+class ThreadedDeliveryTests(AsyncTurnBase):
+    """In an open chat the 댓글 says what it answers, so the quote would repeat it."""
+
+    def deliver(self, link_id):
+        module._OPEN_CHAT_CACHE.clear()
+        self.write_job(trigger=row(log_id=3929360413260732419))
+        captured = {}
+
+        def capture(config, room, text, images=None, files=None, thread_id=None):
+            captured.setdefault("calls", []).append((text, thread_id))
+
+        with mock.patch.multiple(
+            module,
+            load_config=mock.Mock(return_value=self.config),
+            load_name_cache=mock.DEFAULT,
+            backend_query=mock.Mock(return_value=[[link_id]]),
+            build_turn=mock.Mock(return_value=([], "prompt", "고양이 그려줘")),
+            run_hermes=mock.Mock(return_value="답이다"),
+            send_message=mock.Mock(side_effect=capture),
+        ):
+            module.run_turn_job(Path("config.json"), module.job_path(CHAT))
+        return captured["calls"][-1]
+
+    def test_an_open_chat_answer_hangs_off_the_mention(self):
+        text, thread_id = self.deliver(342982962)
+        self.assertEqual(thread_id, 3929360413260732419)
+        self.assertIn("답이다", text)
+        self.assertNotIn("고양이 그려줘", text)  # the 댓글 already shows it
+
+    def test_elsewhere_the_quote_is_still_the_only_link_back(self):
+        text, thread_id = self.deliver(None)
+        self.assertIsNone(thread_id)
+        self.assertIn("고양이 그려줘", text)
+
+
+class HeartbeatTests(unittest.TestCase):
+    """`hermes -z` prints only the final answer, so the hook file is the only view in."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.progress = Path(self.tmp.name) / "p.log"
+
+    def test_no_hook_no_crash_just_no_tool_counts(self):
+        text = module.heartbeat_text(200, "서울 25개 구 날씨", self.progress)
+        self.assertIn("3분째", text)
+        self.assertIn("서울 25개 구 날씨", text)
+        self.assertNotIn("도구", text)
+
+    def test_one_tool(self):
+        self.progress.write_text("web_search\n", encoding="utf-8")
+        self.assertIn("도구 1번 (마지막 web_search)", module.heartbeat_text(100, "x", self.progress))
+
+    def test_many_tools_fold_into_one_line(self):
+        # one message per tool call would be 25 notifications for 25 boroughs
+        self.progress.write_text("web_search\n" * 24 + "terminal\n", encoding="utf-8")
+        text = module.heartbeat_text(400, "서울 25개 구 날씨", self.progress)
+        self.assertIn("도구 25번 (마지막 terminal)", text)
+        self.assertEqual(len(text.splitlines()), 1)
+
+    def test_a_torn_last_line_is_not_fatal(self):
+        self.progress.write_bytes(b"web_search\nterm")
+        self.assertEqual(module.fold_progress(self.progress), (2, "term"))
+
+    def test_the_beat_backs_off_so_the_cap_is_not_thirteen_pings(self):
+        total, gap, beats = 0.0, float(module.HEARTBEAT_SECONDS), 0
+        while total + gap <= module.TURN_HARD_CAP_SECONDS:
+            total += gap
+            beats += 1
+            gap = module.next_beat(gap)
+        self.assertLessEqual(beats, 6)
+        self.assertGreaterEqual(beats, 3)
+
+    def test_a_quote_is_trimmed_not_dropped(self):
+        self.assertEqual(module.quote_request("  아 주   긴  "), "아 주 긴")
+        self.assertTrue(module.quote_request("가" * 200).endswith("…"))
+        self.assertEqual(module.quote_request("   "), "")
 
 
 class SingleInstanceTests(unittest.TestCase):

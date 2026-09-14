@@ -54,6 +54,19 @@ NAMES_PATH = BASE_DIR / "names.json"
 # delivery target of its own.
 SELF_PATH = BASE_DIR / "kakao_ai_chat.py"
 RESULTS_DIR = BASE_DIR / "results"
+# One file per in-flight turn, named by room: the room lock and the reaping record
+# in one. Not a key in state.json - the parent rewrites that whole file every loop
+# (:save_json at the end of poll_loop), so a detached child has nowhere to write.
+JOBS_DIR = BASE_DIR / "jobs"
+# Tool names appended by the post_tool_call shell hook, one per line. `hermes -z`
+# prints only the final answer, so this file is the only view into a running turn.
+PROGRESS_DIR = BASE_DIR / "progress"
+# Workers are detached, so their stdout cannot be the daemon's journal without a
+# child holding the parent's pipe open - the orphan the self-ssh wrapper fights.
+TURNS_LOG_PATH = BASE_DIR / "turns.log"
+# Appended to by the post_tool_call shell hook; pasted into ~/.hermes/config.yaml by
+# hand, because that file is shared with the gateway and is review-required.
+HOOK_PATH = BASE_DIR / "bin" / "turn-progress.sh"
 WRAPPER_PATH = BASE_DIR / "bin" / "kakao-ai-chat-via-local-ssh.sh"
 PLIST_LABEL = "ai.hermes.kakao-ai-chat"
 PLIST_PATH = HOME / "Library" / "LaunchAgents" / f"{PLIST_LABEL}.plist"
@@ -66,7 +79,18 @@ DETECT_LIMIT = 50
 # single unanswerable question could mute the bot for a quarter of an hour - measured,
 # after a "draw me a diagram" turn sat at 9m33s with two mentions queued behind it.
 # The slowest ordinary answer on the current model was 83s, so this is generous.
-HERMES_TIMEOUT_SECONDS = 180
+# What a detached turn gets. This was 180s, and 180s was not arbitrary: the tick ran
+# turns serially, so the budget WAS the time every other room spent muted, and 900s
+# once meant one "draw me a diagram" question silenced the bot for nine and a half
+# minutes. That coupling is gone - one worker per room, rooms in parallel - so the
+# number is now only about the asker's patience and about not leaking wedged agents.
+# Measured on the live DGX before this change: ordinary answers 43-170s, and the turns
+# this cap exists for were the ones dying at 180s several times a day.
+TURN_HARD_CAP_SECONDS = 1200
+# First heartbeat. It backs off from here (next_beat), because flat 90s would be
+# thirteen notifications inside the cap, and one line per tool call would be worse:
+# "search 25 boroughs" is 25 tool calls.
+HEARTBEAT_SECONDS = 90
 KAKAOCLI_TIMEOUT_SECONDS = 60
 KMSG_TIMEOUT_SECONDS = 120
 MEDIA_DOWNLOAD_TIMEOUT_SECONDS = 30
@@ -79,9 +103,18 @@ SEND_VERIFY_TICKS = 2
 STARTUP_REPLAY_SECONDS = 600
 
 # Said in the room when a turn produces nothing, so a failure reads as a failure
-# rather than as the bot ignoring you.
-TURN_TIMEOUT_NOTE = "답이 너무 오래 걸려서 중단했어요. 범위를 좁혀서 다시 불러 주세요."
+# rather than as the bot ignoring you. Every branch of the worker says one of these
+# or the answer - a room that was told nothing is the one failure mode that matters.
+TURN_TIMEOUT_NOTE = "답이 20분 넘게 걸려서 중단했어요. 범위를 좁혀서 다시 불러 주세요."
 TURN_FAILED_NOTE = "지금은 답을 만들지 못했어요. 잠시 뒤에 다시 불러 주세요."
+# Deliberately does not promise to come back to it: the cursor advances past this
+# trigger, so nothing is holding it. Queueing it would need a second cursor per room,
+# and a re-ask is cheap now that the room can see the first turn is still alive.
+TURN_BUSY_NOTE = "앞 질문 아직 하는 중이에요. 그거 끝나고 다시 불러 주세요."
+# systemd restarts the daemon by killing its whole cgroup, workers included.
+TURN_STOPPED_NOTE = "데몬이 다시 뜨느라 이 답은 중단됐어요. 다시 불러 주세요."
+# The reaper speaking for a worker that died without a word (SIGKILL, OOM, reboot).
+TURN_LOST_NOTE = "이 답을 만들던 작업이 사라졌어요. 다시 불러 주세요."
 SEND_FINGERPRINT_CHARS = 48
 
 # KakaoTalk NTChatMessage.type. Verified against the live DB on 2026-09-13 by
@@ -1057,9 +1090,11 @@ PROMPT_TEMPLATE = """너는 카카오톡 방에서 나(운영자)를 돕는 어�
   결과에 `"status": "queued"` 가 오면 **아직 그리는 중이고 사진은 다 되면 따로 이 방으로 간다.**
   그때는 "만들고 있어" 한 줄만 답하고 끝내라. 기다리지도, 다시 부르지도 마라 - 두 장이 나간다.
 - 네가 못 하는 일: 영상·음성을 **생성**하는 것. 도구가 없다.
-  시도하지 마라 - 없는 수단을 찾느라 몇 분을 태우는 동안 이 방의 다음 메시지도 같이 멈춘다.
+  시도하지 마라 - 없는 수단을 찾는 동안 묻는 사람은 진행 표시만 보고 기다린다.
   한 줄로 못 한다고 말하고 대신 할 수 있는 걸 해라.
-- 한 번에 답해라. 답이 길어질 것 같으면 요약으로 끊고, 더 필요하냐고 물어라.
+- **시간은 최대 20분이고, 오래 걸리는 일을 해도 된다.** 진행 상황은 호출자가 따로 알린다 -
+  "지금 찾는 중" 같은 중간 보고를 네가 쓰지 마라. 20분을 넘기면 잘리니 그 안에 끝낼 범위로 잡아라.
+- 답은 카카오톡 메시지 한 개다. 길어질 것 같으면 요약으로 끊고, 더 필요하냐고 물어라.
 
 MY_THREAD:
 {mine}
@@ -1147,7 +1182,9 @@ def build_prompt(mine: list[str], others: list[str], quoted: str, mention: str,
     )
 
 
-def run_hermes(config: dict, prompt: str, chat_id: int = 0, request: str = "") -> str:
+def run_hermes(config: dict, prompt: str, chat_id: int = 0, request: str = "",
+               timeout: float = TURN_HARD_CAP_SECONDS, progress_path: Path | None = None,
+               on_wait=None) -> str:
     with tempfile.NamedTemporaryFile(prefix="kakao-ai-chat-usage-", suffix=".json", delete=False) as handle:
         usage_path = Path(handle.name)
     command = [str(config["hermes_bin"]), "--profile", str(config["profile"]), "--ignore-rules"]
@@ -1161,6 +1198,13 @@ def run_hermes(config: dict, prompt: str, chat_id: int = 0, request: str = "") -
     # has none, so listing `cronjob` in --toolsets alone silently yields nothing. This
     # daemon is a messaging gateway, which is exactly the case that flag names.
     env = {**os.environ, "HERMES_GATEWAY_SESSION": "1"}
+    if progress_path is not None:
+        # `hermes -z` prints the final answer and nothing else (hermes_cli/oneshot.py),
+        # so the only view into a running turn is the post_tool_call shell hook. The
+        # hook exits immediately when this variable is unset, which is how the Discord
+        # gateway's turns pass through it untouched. HERMES_ACCEPT_HOOKS stands in for
+        # the first-use consent prompt a daemon can never answer (agent/shell_hooks.py).
+        env |= {"KAKAO_PROGRESS_FILE": str(progress_path), "HERMES_ACCEPT_HOOKS": "1"}
     # The ComfyUI image backend blocks for as long as a render takes. That is fine
     # on the gateway and fatal here: the tick is single-threaded, so a slow render
     # silences every other room, and 180s covers the LLM round-trips too. These
@@ -1174,30 +1218,88 @@ def run_hermes(config: dict, prompt: str, chat_id: int = 0, request: str = "") -
                 # The model's own prompt is an expanded English rewrite - useless
                 # to a reader scrolling back for their own request.
                 "COMFYUI_REQUEST": request}
+    # `start_new_session` so the whole agent tree lands in one process group we can
+    # kill at the cap. Without it the group is the worker's own and killpg takes the
+    # worker down with it, losing the message that says what happened.
+    process = subprocess.Popen(
+        command,
+        text=True,
+        env=env,
+        # hermes -z blocks forever on an open stdin; launchd hides this, a shell does not.
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    started = time.monotonic()
     try:
-        result = subprocess.run(
-            command,
-            text=True,
-            env=env,
-            # hermes -z blocks forever on an open stdin; launchd hides this, a shell does not.
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=HERMES_TIMEOUT_SECONDS,
-            check=False,
-        )
+        while True:
+            slice_seconds = min(HEARTBEAT_SECONDS, max(1.0, timeout - (time.monotonic() - started)))
+            try:
+                # Retrying communicate() after a timeout is the documented pattern and
+                # keeps the partial output it already buffered; a plain wait() here
+                # would deadlock on a full stdout pipe.
+                out, err = process.communicate(timeout=slice_seconds)
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() - started >= timeout:
+                    kill_process_group(process)
+                    process.communicate()
+                    raise subprocess.TimeoutExpired(command[:1], timeout) from None
+                if on_wait is not None:
+                    with contextlib.suppress(Exception):
+                        on_wait(time.monotonic() - started)
     finally:
         usage_path.unlink(missing_ok=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"hermes failed ({result.returncode}): {result.stderr.strip()[:300]}")
-    answer = (result.stdout or "").strip()
+    if process.returncode != 0:
+        raise RuntimeError(f"hermes failed ({process.returncode}): {(err or '').strip()[:300]}")
+    answer = (out or "").strip()
     if not answer:
         raise RuntimeError("hermes returned an empty answer")
     return answer
 
 
+def kill_process_group(process: subprocess.Popen) -> None:
+    """SIGKILL the whole agent tree, not just the `hermes` entrypoint.
+
+    hermes spawns tool subprocesses (terminal, MCP servers, a browser); killing the
+    parent alone leaves them running and holding the GPU. The group only exists
+    because run_hermes passed start_new_session.
+    """
+    with contextlib.suppress(Exception):
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    with contextlib.suppress(Exception):
+        process.kill()
+
+
+# chat_id -> is it an open chat. A room never changes type, so one query each.
+_OPEN_CHAT_CACHE: dict[int, bool] = {}
+
+
+def thread_root(config: dict, chat_id: int, log_id) -> int | None:
+    """The 댓글 root for a reply in this room, or None when the room has no 댓글.
+
+    Only an open chat has threads. `chat_rooms.link_id` is the test: it is the
+    open_link this room hangs off, and it is null for DirectChat/MemoChat/PlusChat.
+    Elsewhere a threadId is accepted and stored and then renders as an ordinary
+    line, which is worse than not sending one - the row claims a reply nobody sees.
+    """
+    if not log_id or backend_name(config) != "iris":
+        return None
+    chat_id = int(chat_id)
+    if chat_id not in _OPEN_CHAT_CACHE:
+        try:
+            rows = backend_query(config, f"SELECT link_id FROM chat_rooms WHERE id = {chat_id}",
+                                 ("link_id",))
+        except Exception as exc:  # noqa: BLE001 - a missing thread must not cost the answer
+            log(f"chat {chat_id}: 방 종류를 못 읽었다 ({str(exc)[:120]})")
+            return None
+        _OPEN_CHAT_CACHE[chat_id] = bool(rows and rows[0][0])
+    return int(log_id) if _OPEN_CHAT_CACHE[chat_id] else None
+
+
 def send_message(config: dict, room: dict, text: str, images: list[Path] | None = None,
-                 files: list[Path] | None = None) -> None:
+                 files: list[Path] | None = None, thread_id=None) -> None:
     images = list(images or [])
     files = list(files or [])
     if backend_name(config) == "iris":
@@ -1208,11 +1310,12 @@ def send_message(config: dict, room: dict, text: str, images: list[Path] | None 
         client = iris_client(config)
         # Caption first: an image row carries no bot_prefix, so the text beside it is
         # the only thing that later marks the pair as ours.
-        client.reply(room["chat_id"], text)
+        client.reply(room["chat_id"], text, thread_id)
         if images:
             client.reply_images(
                 room["chat_id"],
                 [base64.b64encode(path.read_bytes()).decode("ascii") for path in images],
+                thread_id,
             )
         for path in files:
             # Not Iris: `/reply` has no file type and never had one. This leaves
@@ -1237,6 +1340,289 @@ def send_message(config: dict, room: dict, text: str, images: list[Path] | None 
     )
     if result.returncode != 0:
         raise RuntimeError(f"kmsg send failed ({result.returncode}): {result.stderr.strip()[:300]}")
+
+
+# --------------------------------------------------------------------------
+# detached turns
+# --------------------------------------------------------------------------
+#
+# A tick used to wait out `hermes -z` with a 180s cap, and every room waited with it.
+# Past the cap the work was killed and thrown away while the cursor moved on, so the
+# room heard "답이 너무 오래 걸려서 중단했어요" and the answer never existed. Measured on
+# the DGX: four such kills on 2026-09-14 alone, one of them "서울 25개 구 날씨를 검색해서
+# 표로".
+#
+# Now the tick writes a job file and spawns a worker that outlives it, the same shape
+# plugins/comfyui already used for slow renders. One worker per room; other rooms are
+# never blocked; the answer arrives whenever it arrives, quoting the question it
+# answers because Iris cannot send a KakaoTalk reply row (type=26).
+#
+# The worker - not the tick - calls build_turn. That is not tidiness: build_turn reaches
+# the network twice (fetch_room_context, and download_media at 30s x media_per_turn),
+# so leaving it in the parent would keep up to two minutes of the head-of-line block
+# this change exists to remove.
+
+
+def job_path(chat_id: int) -> Path:
+    return JOBS_DIR / f"{chat_id}.json"
+
+
+def job_alive(job: dict | None, now: float | None = None) -> bool:
+    """True while a worker still owns this room.
+
+    Two ways to be dead and both are needed: the pid is gone (normal exit, SIGKILL,
+    a reboot), or it is still there but older than the cap, which on a recycled pid
+    is the only thing that tells the two apart.
+    """
+    if not isinstance(job, dict) or job.get("done") is not None:
+        return False
+    current = time.time() if now is None else now
+    if current - float(job.get("created_at") or 0) > TURN_HARD_CAP_SECONDS + 120:
+        return False
+    try:
+        os.kill(int(job.get("pid") or 0), 0)
+    except PermissionError:
+        return True  # someone else's pid - never ours to reap
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
+def reap_jobs(config: dict, state: dict, now: float | None = None) -> None:
+    """Close out finished workers. Must run before fetch_new_rows.
+
+    Three jobs in one sweep, because a detached child cannot touch state.json:
+    hand a delivered answer's fingerprint back so verify_pending_sends still covers
+    it, speak for a worker that died without a word, and unlock the room either way.
+    """
+    for path in sorted(JOBS_DIR.glob("*.json")):
+        job = load_json(path, None)
+        if job_alive(job, now):
+            continue
+        if not isinstance(job, dict):
+            path.unlink(missing_ok=True)
+            continue
+        chat_id = int(job.get("chat_id") or 0)
+        done = job.get("done")
+        if done:
+            room_state = state.setdefault("rooms", {}).setdefault(str(chat_id), {})
+            room_state["pending_send"] = {"fingerprint": str(done)[:SEND_FINGERPRINT_CHARS], "ticks": 0}
+        else:
+            # The worker is gone and never spoke - SIGKILL, OOM, a reboot. Silence is
+            # the one answer a chat bot must never give, and there is nobody else left
+            # to notice.
+            root = thread_root(config, chat_id, (job.get("trigger") or {}).get("log_id"))
+            quoted = "" if root else quote_request(str(job.get("request") or ""))
+            log(f"chat {chat_id}: 턴 워커가 말없이 사라졌다")
+            with contextlib.suppress(Exception):
+                send_message(config, {"chat_id": chat_id},
+                             f"{config['bot_prefix']} {TURN_LOST_NOTE}" + quote_suffix(quoted),
+                             thread_id=root)
+        path.unlink(missing_ok=True)
+
+
+def quote_request(request: str, limit: int = 60) -> str:
+    """The asker's own words, trimmed. Empty when there is nothing worth quoting.
+
+    A message that lands minutes later is orphaned - the room has moved on and
+    nothing ties it to the question. KakaoTalk's reply row would do this properly but
+    Iris has no type for it, so quoting is what is left (plugins/comfyui/__init__.py).
+    """
+    text = " ".join((request or "").split())
+    if not text:
+        return ""
+    return text[:limit].rstrip() + "…" if len(text) > limit else text
+
+
+def quote_suffix(quoted: str) -> str:
+    return f'\n\n- "{quoted}"' if quoted else ""
+
+
+def fold_progress(path: Path) -> tuple[int, str]:
+    """(how many tool calls, the last tool's name) from the hook's append-only file."""
+    try:
+        names = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except OSError:
+        return 0, ""
+    return len(names), (names[-1] if names else "")
+
+
+def heartbeat_text(elapsed: float, request: str, progress: Path) -> str:
+    """One line saying the turn is alive and what it has been doing.
+
+    Folded, not streamed: the hook writes a line per tool call and a 25-search turn
+    would otherwise be 25 notifications.
+    """
+    minutes = max(1, int(elapsed // 60))
+    head = f"⏳ {minutes}분째 하는 중" + quote_dash(quote_request(request))
+    count, last = fold_progress(progress)
+    return f"{head} · 도구 {count}번 (마지막 {last})" if count else head
+
+
+def quote_dash(quoted: str) -> str:
+    return f' - "{quoted}"' if quoted else ""
+
+
+def next_beat(previous: float) -> float:
+    """Backs off 1.6x from HEARTBEAT_SECONDS: ~1.5, 3.9, 7.7, 13.9 minutes in.
+
+    Flat 90s would be thirteen notifications across the cap. Dense while somebody is
+    still watching the screen, sparse once they have clearly stopped.
+    """
+    return previous * 1.6
+
+
+def deliver_answer(config: dict, chat_id: int, answer: str, quote: str = "",
+                   thread_id=None) -> str:
+    """Turn a finished answer into one room message. The only place answers go out.
+
+    Shared with `--send-to` so the attachment fence, the bot prefix, the overflow
+    file and the transport have exactly one implementation.
+    """
+    body, images, files = extract_attachments(answer, config)
+    if not body:
+        # Neither an image row nor a file row carries bot_prefix, so the caption beside
+        # it is the only thing that later marks the pair as ours.
+        body = ", ".join(path.name for path in images + files) or "(빈 메시지)"
+    suffix = quote_suffix(quote)
+    # Budget the quote before splitting: appending it afterwards is what pushes a
+    # long answer past reply_char_limit, and trimming it away loses the one thing
+    # that says which question this answers.
+    short, full = split_reply(body, max(1, int(config["reply_char_limit"]) - len(suffix)))
+    if full:
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        result_path = RESULTS_DIR / f"{dt.datetime.now(KST).strftime('%Y%m%d-%H%M%S')}-{chat_id}.md"
+        result_path.write_text(full, encoding="utf-8")
+        os.chmod(result_path, 0o600)
+        short = f"{short}\n\n... (전체: {result_path})"
+    prefix = config["bot_prefix"]
+    outgoing = (short if short.startswith(prefix) else f"{prefix} {short}") + suffix
+    send_message(config, {"chat_id": chat_id}, outgoing, images, files, thread_id)
+    return outgoing
+
+
+def spawn_turn(config_path: Path, trigger: dict, request: str) -> bool:
+    """Hand one turn to a detached worker. True when it started.
+
+    The trigger row travels in a 0600 file rather than argv: /proc/<pid>/cmdline is
+    world-readable and the row carries the room's text.
+    """
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(JOBS_DIR, 0o700)
+    chat_id = int(trigger["chat_id"])
+    path = job_path(chat_id)
+    save_json(path, {"pid": 0, "chat_id": chat_id, "request": request,
+                     "created_at": time.time(), "trigger": trigger, "notified": False})
+    # Not DEVNULL like the ComfyUI deliverer: the worker owns the delivery log line,
+    # and that line is the only record that an async answer went out at all. Not the
+    # parent's own stdout either - a child holding that pipe open is the orphan the
+    # macOS self-ssh wrapper already fights.
+    try:
+        with open(TURNS_LOG_PATH, "a", encoding="utf-8") as sink:
+            process = subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()),
+                 "--config", str(config_path), "--run-turn", str(path)],
+                stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
+                start_new_session=True)
+    except Exception as exc:  # noqa: BLE001
+        path.unlink(missing_ok=True)
+        log(f"chat {chat_id}: 턴 워커를 못 띄웠다 ({str(exc)[:200]})")
+        return False
+    job = load_json(path, {})
+    job["pid"] = process.pid
+    save_json(path, job)
+    return True
+
+
+def run_turn_job(config_path: Path, path: Path) -> int:
+    """The worker: run one turn with no one waiting, then say what happened.
+
+    Every exit path sends a message, SIGTERM included. A room told nothing is the
+    failure that matters, and unlike the old inline path there is no tick left to
+    notice the silence.
+
+    `--run-turn` takes a path to a file this daemon wrote. It is not a new hole -
+    `--send-to --text` is strictly more powerful - but it is trusted input.
+    """
+    job = load_json(path, None)
+    if not isinstance(job, dict) or not job.get("chat_id"):
+        log(f"턴 job 파일을 읽을 수 없다: {path}")
+        path.unlink(missing_ok=True)
+        return 1
+    config = load_config(config_path)
+    chat_id = int(job["chat_id"])
+    request = str(job.get("request") or "")
+    trigger = job.get("trigger") or {}
+    # In an open chat the answer hangs off the mention as a 댓글, so the UI already
+    # says what it answers and the quote would just repeat the line above it. Every
+    # other room has no 댓글 form, and there the quote is the only thing tying a
+    # message that lands minutes later to its question.
+    root = thread_root(config, chat_id, trigger.get("log_id"))
+    quoted = "" if root else quote_request(request)
+    load_name_cache()
+    PROGRESS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(PROGRESS_DIR, 0o700)
+    progress = PROGRESS_DIR / f"{chat_id}-{os.getpid()}.log"
+    started = time.time()
+    beat_at = [started + HEARTBEAT_SECONDS, float(HEARTBEAT_SECONDS)]
+
+    def say(text: str) -> None:
+        with contextlib.suppress(Exception):
+            send_message(config, {"chat_id": chat_id}, f"{config['bot_prefix']} {text}",
+                         thread_id=root)
+
+    def on_sigterm(_signum, _frame):
+        # systemd kills the whole cgroup on restart, `start_new_session` or not: that
+        # escapes the process group, not the cgroup. So a deploy lands here, and the
+        # room has to hear about it before the process goes.
+        progress.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+        say(TURN_STOPPED_NOTE + quote_suffix(quoted))
+        os._exit(1)
+
+    signal.signal(signal.SIGTERM, on_sigterm)
+
+    def beat(elapsed: float) -> None:
+        # run_hermes narrows its wait slices near the cap, so the schedule lives here
+        # rather than in the caller's cadence.
+        if time.time() < beat_at[0]:
+            return
+        beat_at[1] = next_beat(beat_at[1])
+        beat_at[0] = time.time() + beat_at[1]
+        say(heartbeat_text(elapsed, request, progress))
+
+    try:
+        _, prompt, _ = build_turn(config, trigger)
+        answer = run_hermes(config, prompt, chat_id, request,
+                            timeout=TURN_HARD_CAP_SECONDS, progress_path=progress, on_wait=beat)
+    except subprocess.TimeoutExpired:
+        log(f"chat {chat_id}: 턴 하드캡 {int(TURN_HARD_CAP_SECONDS // 60)}분 초과")
+        say(TURN_TIMEOUT_NOTE + quote_suffix(quoted))
+        path.unlink(missing_ok=True)
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        # Truncated for the same reason the tick truncates: the command carries the
+        # prompt, so an untrimmed error spills the room's messages into the log.
+        log(f"chat {chat_id}: {str(exc)[:300]}")
+        say(TURN_FAILED_NOTE + quote_suffix(quoted))
+        path.unlink(missing_ok=True)
+        return 1
+    finally:
+        progress.unlink(missing_ok=True)
+
+    try:
+        outgoing = deliver_answer(config, chat_id, answer, quoted, thread_id=root)
+    except Exception as exc:  # noqa: BLE001
+        log(f"chat {chat_id}: 전송 실패 ({str(exc)[:200]})")
+        path.unlink(missing_ok=True)
+        return 1
+    # Not an unlink: the fingerprint has to reach the parent, which is the only
+    # process allowed to write state.json. reap_jobs turns this into pending_send so
+    # verify_pending_sends still auto-pauses a room whose sends are vanishing.
+    job["done"] = outgoing[:SEND_FINGERPRINT_CHARS]
+    save_json(path, job)
+    log(f"chat {chat_id}: 비동기 응답 전송 ({len(outgoing)}자, {time.time() - started:.0f}초)")
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -1314,7 +1700,8 @@ def build_turn(config: dict, trigger: dict) -> tuple[list[str], str, str]:
     return context_lines, build_prompt(mine, others, quoted, mention, chat_id), mention
 
 
-def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None:
+def tick(config: dict, state: dict, dry_run: bool = False, discord=None,
+         config_path: Path = DEFAULT_CONFIG_PATH) -> None:
     discord = build_discord(config) if discord is None else discord
     # Commands run before the gates, otherwise `AI대화 시작` could never reach us.
     process_discord_commands(config, state, discord)
@@ -1325,6 +1712,10 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
     state["last_tick_at"] = dt.datetime.now(UTC).isoformat()
 
     prune_media(config)
+    # Before fetch_new_rows, not after: tick returns early on an empty fetch, and a
+    # delivered answer's fingerprint has to reach state.json on the same tick that
+    # reads back the row it fingerprints.
+    reap_jobs(config, state)
     rows = fetch_new_rows(config, int(state.get("cursor_log_id") or 0))
     state["last_tick_at"] = dt.datetime.now(UTC).isoformat()
     if not rows:
@@ -1370,60 +1761,57 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
             highest = min(highest, int(trigger["log_id"]) - 1)
             break
 
+        job = load_json(job_path(chat_id), None)
+        if job_alive(job):
+            # One turn per room. Other rooms are untouched - that is the whole point
+            # of detaching - but two workers in one room would interleave two answers
+            # into the same thread and race the same context.
+            if not job.get("notified"):
+                job["notified"] = True
+                save_json(job_path(chat_id), job)
+                with contextlib.suppress(Exception):
+                    send_message(config, room, f"{config['bot_prefix']} {TURN_BUSY_NOTE}",
+                                 thread_id=thread_root(config, chat_id, trigger.get("log_id")))
+                    state["rate"] = recent + [time.time()]
+                log(f"chat {chat_id}: 앞 턴이 돌고 있어 이번 멘션은 넘긴다")
+            continue
+
         try:
-            _, prompt, mention = build_turn(config, trigger)
             if dry_run:
+                _, prompt, _ = build_turn(config, trigger)
                 log(f"--- dry-run prompt for chat {chat_id} ---\n{prompt}")
                 continue
-            turn_started = time.time()
-            answer = run_hermes(config, prompt, chat_id, mention)
-            turn_seconds = time.time() - turn_started
+            # The parent does no network work: build_turn belongs to the worker. Only
+            # the quotable text is lifted here, and that is pure string handling -
+            # the worker may die before build_turn returns and still has to name what
+            # it was asked.
+            raw = strip_bot_prefix(trigger.get("message") or "", config["bot_prefix"])
+            mention = mention_body(raw, config["mention"])
+            started = spawn_turn(config_path, trigger, raw.strip() if mention is None else mention)
         except Exception as exc:  # noqa: BLE001 - the cursor must still advance
-            # Truncated: TimeoutExpired stringifies the whole command, and the command
-            # carries the prompt, so an untrimmed timeout spills the room's messages
-            # into the journal.
+            # Truncated: the command and the job both carry the prompt, so an
+            # untrimmed error spills the room's messages into the journal.
             state["last_error"] = f"chat {chat_id}: {str(exc)[:300]}"
             log(state["last_error"])
-            # Silence is the one answer a chat bot must never give. The cursor moves on
-            # regardless, so without a word here the room waits for a reply that is
-            # never coming - which is what a timeout looked like from the inside.
-            note = (TURN_TIMEOUT_NOTE if isinstance(exc, subprocess.TimeoutExpired)
-                    else TURN_FAILED_NOTE)
+            started = False
+
+        if not started:
+            # Silence is the one answer a chat bot must never give, and a turn that
+            # never launched has no worker left to speak for it. Everything after the
+            # launch - timeouts included - is the worker's to announce.
             with contextlib.suppress(Exception):
-                send_message(config, room, f"{config['bot_prefix']} {note}")
+                send_message(config, room, f"{config['bot_prefix']} {TURN_FAILED_NOTE}",
+                             thread_id=thread_root(config, chat_id, trigger.get("log_id")))
                 state["rate"] = recent + [time.time()]
             continue
 
-        answer, images, files = extract_attachments(answer, config)
-        if (images or files) and not answer:
-            # Neither an image row nor a file row carries bot_prefix, so the caption
-            # beside it is the only thing that later marks the pair as ours. An
-            # attachment-only answer would otherwise go out unattributable.
-            answer = ", ".join(path.name for path in images + files)
-        short, full = split_reply(answer, int(config["reply_char_limit"]))
-        if full:
-            RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-            result_path = RESULTS_DIR / f"{dt.datetime.now(KST).strftime('%Y%m%d-%H%M%S')}-{chat_id}.md"
-            result_path.write_text(full, encoding="utf-8")
-            os.chmod(result_path, 0o600)
-            short = f"{short}\n\n... (전체: {result_path})"
-        outgoing = f"{config['bot_prefix']} {short}"
-
-        try:
-            send_message(config, room, outgoing, images, files)
-        except Exception as exc:  # noqa: BLE001
-            state["last_error"] = f"chat {chat_id}: {exc}"
-            log(state["last_error"])
-            continue
-
+        # Charged at launch, not at delivery: this is the only moment the parent knows
+        # about, and the limit exists to bound how often the bot speaks at all.
         state["rate"] = recent + [time.time()]
-        room_state["pending_send"] = {"fingerprint": outgoing[:SEND_FINGERPRINT_CHARS], "ticks": 0}
         state["last_error"] = ""
-        note = f" + 사진 {len(images)}장" if images else ""
-        # The tick is single-threaded, so this number is how long every other room
-        # waited. It is also the only way to see the budget being approached before
-        # HERMES_TIMEOUT_SECONDS starts cutting turns off.
-        log(f"chat {chat_id}: 응답 전송 ({len(outgoing)}자{note}, {turn_seconds:.0f}초)")
+        # pending_send is planted by reap_jobs from the worker's done record, not
+        # here: the answer does not exist yet and its fingerprint cannot either.
+        log(f"chat {chat_id}: 턴 시작 (워커에게 넘김)")
 
     if not dry_run:
         state["cursor_log_id"] = max(int(state.get("cursor_log_id") or 0), highest)
@@ -1525,6 +1913,8 @@ def poll_loop(config_path: Path) -> int:
 
     OUTBOX_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(OUTBOX_DIR, 0o700)
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(JOBS_DIR, 0o700)
     load_name_cache()
     known_names = len(IRIS_NAME_CACHE)
 
@@ -1533,7 +1923,7 @@ def poll_loop(config_path: Path) -> int:
         config = load_config(config_path)
         state = load_state()
         try:
-            tick(config, state)
+            tick(config, state, config_path=config_path)
         except Exception as exc:  # noqa: BLE001 - a loop must not die on one bad tick
             state["last_error"] = str(exc)
             log(f"tick failed: {exc}")
@@ -1561,6 +1951,11 @@ def check(config_path: Path) -> int:
         "hermes_bin": Path(str(config["hermes_bin"])).is_file(),
         "disabled": DISABLED_PATH.exists(),
         "backlog": len(_IRIS_INBOX),
+        # The hook is an operator paste into the shared config.yaml, so it is the one
+        # part of this daemon that --install cannot finish. Without it heartbeats
+        # still go out, they just cannot name a tool.
+        "progress_hook": HOOK_PATH.is_file(),
+        "turns_in_flight": sum(1 for path in JOBS_DIR.glob("*.json") if job_alive(load_json(path, None))),
     }
     if backend_name(config) == "iris":
         report["iris_reachable"] = iris_client(config).health()
@@ -1760,12 +2155,51 @@ def systemd_unit(python: Path, installed: Path, config_path: Path) -> str:
         f"WorkingDirectory={BASE_DIR}\n"
         f"ExecStart={python} {installed} --config {config_path} --poll-loop\n"
         "Restart=on-failure\n"
+        # No KillMode=process, deliberately. The default control-group kill means a
+        # `systemctl restart` takes every detached turn worker with it - start_new_session
+        # escapes the process group, not the cgroup - and the worker's SIGTERM handler
+        # is what tells the room so. KillMode=process would let workers keep talking
+        # after an operator ran `stop`, and stop has to mean stop.
         "RestartSec=5\n"
         "UMask=0077\n"
         "\n"
         "[Install]\n"
         "WantedBy=default.target\n"
     )
+
+
+PROGRESS_HOOK_SCRIPT = """#!/bin/sh
+# One line per tool call, for the KakaoTalk turn worker's heartbeat. `hermes -z`
+# prints only the final answer, so this is the only view into a running turn.
+#
+# sh and not python: this forks on EVERY tool call of EVERY hermes run on the host,
+# the Discord gateway included, and ~40ms of interpreter start would be a real tax
+# for a no-op. The env gate is the first line so an ungated run never reads stdin.
+#
+# grep -o and not sed: the payload is {hook_event_name, tool_name, tool_input, ...}
+# in that order, so the FIRST match is the real one - and a leading `.*` in sed is
+# greedy, which would silently pick a `"tool_name"` string sitting inside tool_input.
+[ -n "$KAKAO_PROGRESS_FILE" ] || exit 0
+grep -o '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' \\
+  | head -n 1 \\
+  | sed 's/.*"\\([^"]*\\)"$/\\1/' >> "$KAKAO_PROGRESS_FILE" 2>/dev/null
+exit 0
+"""
+
+HOOK_CONFIG_HINT = """paste into ~/.hermes/config.yaml (shared with the gateway, so by hand):
+
+hooks:
+  post_tool_call:
+    - command: "{path}"
+      timeout: 5
+"""
+
+
+def write_progress_hook() -> None:
+    """The tool-name feed the heartbeat folds. Optional: no hook, no tool counts."""
+    HOOK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    HOOK_PATH.write_text(PROGRESS_HOOK_SCRIPT, encoding="utf-8")
+    os.chmod(HOOK_PATH, 0o700)
 
 
 def install(config_path: Path) -> int:
@@ -1790,12 +2224,16 @@ def install(config_path: Path) -> int:
             os.chmod(BASE_DIR / "iris_client.py", 0o600)
 
     python = HOME / ".hermes" / "hermes-agent" / "venv" / "bin" / "python"
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(JOBS_DIR, 0o700)
+    write_progress_hook()
 
     if sys.platform != "darwin":
         SYSTEMD_UNIT_PATH.parent.mkdir(parents=True, exist_ok=True)
         SYSTEMD_UNIT_PATH.write_text(systemd_unit(python, installed, config_path), encoding="utf-8")
         print(json.dumps({"unit": str(SYSTEMD_UNIT_PATH), "installed": str(installed)}, indent=2))
         print(f"enable with: systemctl --user daemon-reload && systemctl --user enable --now {SYSTEMD_UNIT_NAME}")
+        print(HOOK_CONFIG_HINT.format(path=HOOK_PATH))
         return 0
 
     key = HOME / ".ssh" / "hermes_local_jarvis"
@@ -1824,6 +2262,7 @@ def install(config_path: Path) -> int:
     )
     print(json.dumps({"wrapper": str(WRAPPER_PATH), "plist": str(PLIST_PATH), "installed": str(installed)}, indent=2))
     print("load with: launchctl bootstrap gui/$(id -u) " + str(PLIST_PATH))
+    print(HOOK_CONFIG_HINT.format(path=HOOK_PATH))
     return 0
 
 
@@ -1842,18 +2281,10 @@ def send_once(config_path: Path, chat_id: int, text: str) -> int:
     if not body:
         log("보낼 본문이 비어 있다")
         return 1
-    # Same attachment contract as a tick reply, or a job that finished after its
-    # turn ended could only name its file in prose. The fence is `resolve_attachment`
-    # either way, so this widens nothing.
-    body, images, files = extract_attachments(body, config)
-    if not body:
-        body = ", ".join(path.name for path in images + files) or "(빈 메시지)"
-    prefix = config["bot_prefix"]
-    outgoing = body if body.startswith(prefix) else f"{prefix} {body}"
-    short, _ = split_reply(outgoing, int(config["reply_char_limit"]))
-    send_message(config, {"chat_id": chat_id}, short, images, files)
-    note = f" + 첨부 {len(images) + len(files)}개" if images or files else ""
-    log(f"chat {chat_id}: 예약 발신 ({len(short)}자{note})")
+    # Same path a detached turn takes, so the attachment fence, the bot prefix and
+    # the overflow file have one implementation rather than two that drift.
+    outgoing = deliver_answer(config, chat_id, body)
+    log(f"chat {chat_id}: 예약 발신 ({len(outgoing)}자)")
     return 0
 
 
@@ -1870,6 +2301,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--send-to", type=int, metavar="CHAT_ID",
                         help="Send one message to a room and exit (used by scheduled jobs)")
     parser.add_argument("--text", default="", help="Body for --send-to")
+    parser.add_argument("--run-turn", metavar="JOB", default="",
+                        help="Run one detached turn from a job file written by the daemon")
     return parser
 
 
@@ -1886,10 +2319,12 @@ def main(argv: list[str] | None = None) -> int:
         return install(config_path)
     if args.send_to:
         return send_once(config_path, int(args.send_to), args.text)
+    if args.run_turn:
+        return run_turn_job(config_path, Path(args.run_turn))
     if args.once:
         config = load_config(config_path)
         state = load_state()
-        tick(config, state, dry_run=args.dry_run)
+        tick(config, state, dry_run=args.dry_run, config_path=config_path)
         if not args.dry_run:
             save_json(STATE_PATH, state)
         return 0
