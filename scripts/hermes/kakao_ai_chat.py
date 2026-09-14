@@ -871,12 +871,13 @@ CIPHERTEXT = re.compile(r"^[A-Za-z0-9+/]{8,}={0,2}$")
 
 
 def plain_nickname(config: dict, raw, enc) -> str | None:
-    """A nickname in the clear. `/query` leaves this column encrypted.
+    """A nickname in the clear, for the rows the SELECT did not already unlock.
 
-    Only `message` and `attachment` are decrypted on the way out of `/query`, so a
-    nickname arrives as base64 and putting that straight into the prompt is worse
-    than the 알 수 없음 it replaced. Shape-test first: a Korean or punctuated name
-    cannot be base64, so most rows never touch the network.
+    `/query` decrypts this column when `user_id` and `enc` are both in the column
+    list, which the callers below do, so this is a fallback rather than the normal
+    path. It stays because base64 in the prompt is worse than the 알 수 없음 it
+    replaced. Shape-test first: a Korean or punctuated name cannot be base64, so a
+    decrypted row never touches the network.
     """
     if not isinstance(raw, str) or not raw.strip():
         return None
@@ -889,9 +890,10 @@ def plain_nickname(config: dict, raw, enc) -> str | None:
 def learn_room_names(config: dict, chat_id: int) -> None:
     """Pull whatever nicknames KakaoTalk has cached for this open chat.
 
-    `friends` lives in KakaoTalk2.db, which Iris does not attach, so a plain DB read
-    of a group room has no names at all. `open_chat_member` is in the database Iris
-    does attach and covers the rooms where the gap hurts most.
+    There is no `friends` table in any database on the device, so a plain DB read of
+    a DirectChat or MultiChat has no names at all and never will - those arrive on
+    the `/ws` feed alone. `open_chat_member` exists for open chats only, which is
+    where the gap hurts most anyway.
     """
     if backend_name(config) != "iris":
         return
@@ -908,6 +910,65 @@ def learn_room_names(config: dict, chat_id: int) -> None:
             name = plain_nickname(config, nickname, enc)
             if name:
                 IRIS_NAME_CACHE[str(user_id)] = name
+
+
+# KakaoTalk issues these itself, so they are not attacker-chosen the way a message
+# URL is - but pinning the host costs one tuple and keeps every download in the
+# daemon behind the same kind of gate.
+PROFILE_HOSTS = ("open.kakaocdn.net", "iopen.kakaocdn.net")
+
+
+def room_profiles(config: dict, chat_id: int, match: str = "", with_image: bool = False) -> list[dict]:
+    """Nickname and profile picture for the members of ONE OPEN CHAT.
+
+    Two limits, and both have to reach whoever reads the output:
+
+    `open_chat_member` is the only table on the device that maps a user id to a
+    name, and it holds nothing for DirectChat/MultiChat/PlusChat. A normal room
+    therefore answers empty, and that is the correct answer rather than a failure.
+
+    Even for an open chat it is a lazy cache that KakaoTalk fills as it renders a
+    member, so an 80-person room can hold five rows. Absent means uncached, never
+    "not in this room" - hence `cached_members` in the printed shape.
+    """
+    if backend_name(config) != "iris":
+        return []
+    columns = ("user_id", "enc", "nickname", "profile_image_url", "full_profile_image_url")
+    rows = backend_query(
+        config,
+        f"SELECT {', '.join(columns)} FROM open_chat_member "
+        f"WHERE involved_chat_id = {int(chat_id)}",
+        columns,
+    )
+    needle = match.strip().casefold()
+    members = []
+    for user_id, enc, nickname, small, large in rows:
+        name = plain_nickname(config, nickname, enc) or ""
+        if needle and needle not in name.casefold():
+            continue
+        url = large if isinstance(large, str) and large else small
+        member = {"user_id": str(user_id), "nickname": name or "알 수 없음",
+                  "profile_image_url": url if isinstance(url, str) and url else None}
+        if with_image and member["profile_image_url"]:
+            member["file"] = profile_picture(member["profile_image_url"], user_id)
+        members.append(member)
+    return members
+
+
+def profile_picture(url: str, user_id) -> str | None:
+    """The picture on disk inside the attachment fence, ready for `[[image: ...]]`.
+
+    The name carries the URL's own path, not just the user id: KakaoTalk issues a
+    fresh URL when someone changes their picture, and `download_media` returns any
+    file that already exists, so a name without it would pin the first picture ever
+    fetched for that person until media pruning happened to expire it.
+    """
+    if not media_host_allowed(url, list(PROFILE_HOSTS)):
+        log(f"프사 거부: 허용 호스트 밖이다 ({url[:60]})")
+        return None
+    token = re.sub(r"[^A-Za-z0-9]", "", urllib.parse.urlparse(url).path)[-24:]
+    saved = download_media(url, MEDIA_DIR / "profiles" / f"{user_id}-{token}.jpg")
+    return str(saved) if saved else None
 
 # Live rows arrive on the push feed, which hands over a whole decrypted row, so the
 # tick drains this instead of polling. It starts empty, which means a daemon that
@@ -1084,6 +1145,12 @@ PROMPT_TEMPLATE = """너는 카카오톡 방에서 나(운영자)를 돕는 어�
       python3 {send_bin} --send-to {chat_id} --text "<보낼 본문>"
   job 프롬프트는 그 자체로 완결돼야 한다 - 예약된 실행은 이 대화를 못 보고 되물을 수도 없다.
   만든 뒤에는 무엇을 언제로 잡았는지 한 줄로 알려라.
+- 이 방 사람의 **닉네임과 프사**는 아래 한 줄로 조회한다 (terminal 도구로 실행해라).
+      python3 {send_bin} --profiles {chat_id} [--match <이름 일부>] [--image]
+  `--image` 가 있으면 프사를 내려받아 `file` 경로를 준다. 그 경로는 울타리 안이라 `[[image: ]]` 에 그대로 넣으면 된다.
+  **오픈채팅에서만 나온다.** 일반 방은 카톡이 명단을 기기에 안 남겨서 빈 목록이 정상이다.
+  오픈채팅이어도 카톡이 렌더한 사람만 있는 **부분 캐시**라 `cached_members` 가 방 인원보다 작다.
+  없는 사람은 "그 방에 없다" 가 아니라 "내가 가진 목록에 없다" 고 말해라.
 - 주소·전화·영업시간·링크 같은 사실은 `web_search` 로 확인하고 써라. 확인이 안 되면 모른다고 말해라.
 - **좌표를 지어내지 마라.** 장소 지도는 좌표 링크 대신 검색 링크로 보낸다: `https://map.kakao.com/?q=<장소 이름>`
   MY_THREAD 에 이미 있는 지도 링크는 **그때 그 장소의 것**이다. 지금 묻는 장소가 다르면 그 링크를 다시 쓰지 마라.
@@ -2310,6 +2377,20 @@ def send_once(config_path: Path, chat_id: int, text: str) -> int:
     return 0
 
 
+def print_profiles(config_path: Path, chat_id: int, match: str, with_image: bool) -> int:
+    """The roster jarvis reads with its terminal tool during a turn.
+
+    `cached_members` is in the output on purpose: the count is the only thing that
+    tells a reader the list is partial, and without it the model reports five people
+    in an eighty-person room as if that were the room.
+    """
+    config = load_config(config_path)
+    members = room_profiles(config, chat_id, match, with_image)
+    print(json.dumps({"chat_id": chat_id, "cached_members": len(members), "members": members},
+                     ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="KakaoTalk AI chat daemon")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
@@ -2325,6 +2406,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--text", default="", help="Body for --send-to")
     parser.add_argument("--run-turn", metavar="JOB", default="",
                         help="Run one detached turn from a job file written by the daemon")
+    parser.add_argument("--profiles", type=int, metavar="CHAT_ID",
+                        help="Print nickname and profile picture for an open chat's members")
+    parser.add_argument("--match", default="", help="With --profiles, keep names containing this")
+    parser.add_argument("--image", action="store_true", help="With --profiles, download the pictures")
     return parser
 
 
@@ -2343,6 +2428,8 @@ def main(argv: list[str] | None = None) -> int:
         return send_once(config_path, int(args.send_to), args.text)
     if args.run_turn:
         return run_turn_job(config_path, Path(args.run_turn))
+    if args.profiles:
+        return print_profiles(config_path, int(args.profiles), args.match, args.image)
     if args.once:
         config = load_config(config_path)
         state = load_state()

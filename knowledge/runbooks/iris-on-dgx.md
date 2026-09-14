@@ -243,17 +243,63 @@ such a SELECT instead of returning it.
 this. It is also easy to misread: handing it an already-decrypted string answers
 `Illegal base64 character 3f`, which looks like a key problem and is not.
 
+## `/query` Sees Three Databases
+
+Measured 2026-09-14 with `SELECT name, file FROM pragma_database_list`:
+
+| schema | file | holds |
+| --- | --- | --- |
+| `db1` | KakaoTalk.db | `chat_logs`, `chat_rooms`, `chat_threads` |
+| `db2` | KakaoTalk2.db | `open_chat_member`, `open_profile`, `open_link`, `call_log` |
+| `db3` | multi_profile_database.db | `multi_profiles` (mine, with `statusMessage`) |
+
+Unqualified table names resolve across all three, so `FROM open_chat_member` works
+without a prefix. **`sqlite_master` does not**: it is per schema, and `main` holds
+nothing but `android_metadata`. A schema dump that forgets the prefix reads as an
+empty database - ask `db2.sqlite_master` instead.
+
+An earlier version of this runbook said KakaoTalk2.db was not attached and that
+`open_chat_member` lived in KakaoTalk.db. Both were wrong.
+
 ## Where Sender Names Come From
 
-They are not in reach of `/query`. `chat_rooms.members` holds numeric ids only,
-`private_meta` holds the *room* name, and the `friends` table that maps a user id
-to a display name lives in KakaoTalk2.db, which Iris does not attach.
-`open_chat_member.nickname` covers open chats alone.
+**There is no `friends` table in any database on the device** - all 14 files under
+`databases/` were checked, not just the attached three. `chat_rooms.members` holds
+numeric ids and `private_meta` holds the *room* name, so for a DirectChat,
+MultiChat or PlusChat there is no name to read at all, ever.
 
-Names arrive on the `/ws` push feed, which Iris resolves itself and which also
+Those names arrive on the `/ws` push feed, which Iris resolves itself and which also
 backs the `webServerEndpoint` webhook - `sharedFlow.collect { send(msg) }`, the
 same stream. A consumer that polls `/query` therefore needs the feed as a
 side-channel purely for names, and should tolerate a miss.
+
+## Member Profiles: Open Chats Only, And Partially
+
+`db2.open_chat_member` is the one table that maps a user id to a name and a picture,
+and it exists for open chats alone. Sixteen columns, of which five are useful:
+
+```sql
+SELECT user_id, enc, nickname, profile_image_url, full_profile_image_url
+  FROM open_chat_member WHERE involved_chat_id = <chat_id>
+```
+
+- `profile_image_url` is 110², `full_profile_image_url` 640², `original_profile_image_url`
+  the upload (916² in the row measured, EXIF intact). All three are plain
+  `open.kakaocdn.net` / `iopen.kakaocdn.net` URLs, fetchable from the host with `curl`.
+- **The decryption rule above applies with one column renamed.** The nickname and all
+  three URLs come back base64 unless `user_id` **and `enc`** are in the SELECT - `enc`
+  here, not `v`. `open_profile` is the same trap with `v` instead. `require_decryptable`
+  in `scripts/hermes/iris_client.py` refuses both shapes.
+- There is no status message, real name, birthday or friend flag. The remaining
+  columns (`type`, `profile_type`, `link_member_type`, `privilege`, `report`, `pf_id`,
+  `profile_link_id`) are undecoded numeric flags.
+- **It is a lazy cache.** KakaoTalk fills a row when it renders that member: measured
+  48 rows across 5 links, with 5 rows for an 80-member room and 18 for a 78-member one.
+  33 of the 48 carried a picture URL. An absent member means uncached, never absent
+  from the room, and no query can force the rest to materialise.
+
+`kakao_ai_chat.py --profiles <chat_id> [--match <name>] [--image]` wraps this; see
+[KakaoTalk AI Chat Daemon](kakao-ai-chat.md).
 
 ## Next: Porting The Policy Engine
 

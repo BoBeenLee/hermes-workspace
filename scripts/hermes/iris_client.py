@@ -21,11 +21,16 @@ salt. Leave either out and the column comes back as base64 ciphertext with no
 error and no warning, which reads exactly like working code. `require_columns`
 below turns that into a refusal.
 
-**`/query` reaches KakaoTalk.db only.** `chat_logs`, `chat_rooms` and
-`open_chat_member` are there; the `friends` table that maps a user id to a
-display name lives in KakaoTalk2.db, which Iris does not attach. Sender names
-therefore cannot be joined in SQL - they arrive on the `/ws` push feed, which
-Iris resolves itself.
+**`/query` reaches three databases, not one.** `pragma_database_list` answers
+`db1`=KakaoTalk.db (`chat_logs`, `chat_rooms`), `db2`=KakaoTalk2.db
+(`open_chat_member`, `open_profile`, `open_link`) and `db3`=multi_profile_database.db.
+Unqualified names resolve across all three, so `FROM open_chat_member` works, but
+`sqlite_master` does not: it is per schema, and `main` holds nothing but
+`android_metadata`. Ask `db2.sqlite_master` or the DB reads as empty.
+
+**No `friends` table exists in any of them**, so a display name for a member of a
+DirectChat or MultiChat cannot be read at all - those names arrive on the `/ws` push
+feed and nowhere else. Only open chats have a member table.
 
 **The push feed carries a whole decrypted row, not a notification.** Each frame is
 `{msg, room, sender, json: {...chat_logs row...}}` with `message` and `attachment`
@@ -197,30 +202,38 @@ class IrisClient:
                 time.sleep(5)
 
 
-DECRYPT_INPUTS = ("user_id", "v")
-ENCRYPTED_COLUMNS = ("message", "attachment")
+# (ciphertext columns, then one group per input the SELECT must also name).
+DECRYPT_RULES = (
+    (("message", "attachment"), ("user_id",), ("v",)),
+    # open_chat_member and open_profile hide a nickname and three picture URLs
+    # behind the same scheme, with the enc type in `enc` on the first table and
+    # `v` on the second. `profile_image_url` covers the `full_`/`original_`
+    # columns too, since it is a substring of both.
+    (("nickname", "profile_image_url"), ("user_id",), ("enc", "v")),
+)
 
 
 def require_decryptable(sql: str) -> None:
     """Refuse a SELECT that would silently hand back ciphertext.
 
-    Asking for `message` or `attachment` without `user_id` and `v` is not an
-    error to Iris - it just returns base64. Catching it here costs one check and
+    Asking for an encrypted column without the inputs Iris decrypts it with is not
+    an error to Iris - it just returns base64. Catching it here costs one check and
     saves a debugging session against data that looks corrupt rather than locked.
     """
     lowered = sql.lower()
     if not lowered.lstrip().startswith("select"):
         return
     body = lowered.split(" from ", 1)[0]
-    wanted = [c for c in ENCRYPTED_COLUMNS if c in body]
-    if not wanted:
-        return
-    missing = [c for c in DECRYPT_INPUTS if c not in body]
-    if missing:
-        raise IrisError(
-            f"select asks for {', '.join(wanted)} but omits {', '.join(missing)}; "
-            "Iris would return ciphertext. Add both user_id and v to the column list."
-        )
+    for columns, *groups in DECRYPT_RULES:
+        wanted = [c for c in columns if c in body]
+        if not wanted:
+            continue
+        missing = [" or ".join(group) for group in groups if not any(c in body for c in group)]
+        if missing:
+            raise IrisError(
+                f"select asks for {', '.join(wanted)} but omits {', '.join(missing)}; "
+                "Iris would return ciphertext, not an error."
+            )
 
 
 PUSH_ROW_KEYS = {
@@ -433,6 +446,19 @@ def demo() -> None:
             pass
         else:
             raise AssertionError(f"should have refused: {bad}")
+    # the same trap on the profile tables, where the enc type column is named `enc`
+    for bad in ("select user_id, nickname from open_chat_member",
+                "select nickname, enc from open_chat_member",
+                "select full_profile_image_url from open_chat_member"):
+        try:
+            require_decryptable(bad)
+        except IrisError:
+            pass
+        else:
+            raise AssertionError(f"should have refused: {bad}")
+    require_decryptable("select user_id, enc, nickname, profile_image_url from open_chat_member")
+    require_decryptable("select user_id, v, nickname from open_profile")
+
     # both present, and columns that carry no ciphertext, are fine
     require_decryptable("select id, user_id, type, message, attachment, v from chat_logs")
     require_decryptable("select id, chat_id from chat_rooms")
