@@ -131,7 +131,7 @@ DEFAULT_CONFIG: dict = {
     # likewise - it sits in agent.disabled_toolsets and is subtracted after enabling.
     # `kanban` is out: 14 of the 31 tools for a board a chat room never touches.
     "toolsets": ("terminal,file,vision,video,web,skills,"
-                 "cronjob,memory,session_search,computer_use"),
+                 "cronjob,memory,session_search,computer_use,image_gen"),
     # Blank = inherit the profile default, and its fallback chain with it. These used to
     # pin custom:altalt/gpt-5-nano because the profile default was a local MLX model that
     # needed minutes per turn. That stopped being true when the default became
@@ -1050,11 +1050,14 @@ PROMPT_TEMPLATE = """너는 카카오톡 방에서 나(운영자)를 돕는 어�
   사진은 `[[image: /절대/경로]]`, 그 밖의 파일은 `[[file: /절대/경로]]` 다.
   `[[image: ]]` 는 이미지 확장자만 받는다. PDF·문서·압축 파일은 `[[file: ]]` 로 보내라.
   보낼 수 있는 곳은 `~/.hermes/kakao-ai-chat/outbox` 와 `media` 뿐이다. 그 밖의 경로는 무시된다.
-  이건 **이미 있는 파일을 보내는** 수단이지 만드는 수단이 아니다.
   카카오톡이 파일에 14일 만료를 찍으므로 보관용이 아니라고 알려라.
-- 네가 못 하는 일: 그림·영상·음성을 **생성**하는 것. 도구가 없다.
+- 그림은 `image_generate` 로 **만들 수 있다.** 돌려주는 경로는 이미 울타리 안이라 그대로
+  `[[image: ]]` 에 넣으면 된다. 로컬 ComfyUI 라 무료다 - 아끼지 마라.
+  결과에 `"status": "queued"` 가 오면 **아직 그리는 중이고 사진은 다 되면 따로 이 방으로 간다.**
+  그때는 "만들고 있어" 한 줄만 답하고 끝내라. 기다리지도, 다시 부르지도 마라 - 두 장이 나간다.
+- 네가 못 하는 일: 영상·음성을 **생성**하는 것. 도구가 없다.
   시도하지 마라 - 없는 수단을 찾느라 몇 분을 태우는 동안 이 방의 다음 메시지도 같이 멈춘다.
-  한 줄로 못 한다고 말하고 대신 할 수 있는 걸 해라 (그림 요청이면 텍스트 다이어그램).
+  한 줄로 못 한다고 말하고 대신 할 수 있는 걸 해라.
 - 한 번에 답해라. 답이 길어질 것 같으면 요약으로 끊고, 더 필요하냐고 물어라.
 
 MY_THREAD:
@@ -1143,7 +1146,7 @@ def build_prompt(mine: list[str], others: list[str], quoted: str, mention: str,
     )
 
 
-def run_hermes(config: dict, prompt: str) -> str:
+def run_hermes(config: dict, prompt: str, chat_id: int = 0, request: str = "") -> str:
     with tempfile.NamedTemporaryFile(prefix="kakao-ai-chat-usage-", suffix=".json", delete=False) as handle:
         usage_path = Path(handle.name)
     command = [str(config["hermes_bin"]), "--profile", str(config["profile"]), "--ignore-rules"]
@@ -1157,6 +1160,19 @@ def run_hermes(config: dict, prompt: str) -> str:
     # has none, so listing `cronjob` in --toolsets alone silently yields nothing. This
     # daemon is a messaging gateway, which is exactly the case that flag names.
     env = {**os.environ, "HERMES_GATEWAY_SESSION": "1"}
+    # The ComfyUI image backend blocks for as long as a render takes. That is fine
+    # on the gateway and fatal here: the tick is single-threaded, so a slow render
+    # silences every other room, and 180s covers the LLM round-trips too. These
+    # three tell the provider to hand a slow job to a detached deliverer instead,
+    # which sends the photo back through `--send-to` when it is done.
+    if chat_id:
+        env |= {"COMFYUI_OUTBOX_DIR": str(OUTBOX_DIR),
+                "COMFYUI_CHAT_ID": str(chat_id),
+                "COMFYUI_SEND_BIN": str(SELF_PATH),
+                # What was asked, so a photo arriving minutes later can name it.
+                # The model's own prompt is an expanded English rewrite - useless
+                # to a reader scrolling back for their own request.
+                "COMFYUI_REQUEST": request}
     try:
         result = subprocess.run(
             command,
@@ -1253,7 +1269,7 @@ def verify_pending_sends(state: dict, rows: list[dict], config: dict, discord=No
                     discord.send(f"⚠️ {state['last_error']} (`{COMMAND_PREFIX} 방 재개` 로 푼다)")
 
 
-def build_turn(config: dict, trigger: dict) -> tuple[list[str], str]:
+def build_turn(config: dict, trigger: dict) -> tuple[list[str], str, str]:
     chat_id = trigger["chat_id"]
     learn_room_names(config, chat_id)
     rows = fetch_room_context(config, chat_id, trigger["log_id"], int(config["room_context_messages"]))
@@ -1294,7 +1310,7 @@ def build_turn(config: dict, trigger: dict) -> tuple[list[str], str]:
     # A reply-continuation turn carries no mention; keep its text whole.
     mention = mention_body(raw, config["mention"])
     mention = raw.strip() if mention is None else mention
-    return context_lines, build_prompt(mine, others, quoted, mention, chat_id)
+    return context_lines, build_prompt(mine, others, quoted, mention, chat_id), mention
 
 
 def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None:
@@ -1354,11 +1370,13 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
             break
 
         try:
-            _, prompt = build_turn(config, trigger)
+            _, prompt, mention = build_turn(config, trigger)
             if dry_run:
                 log(f"--- dry-run prompt for chat {chat_id} ---\n{prompt}")
                 continue
-            answer = run_hermes(config, prompt)
+            turn_started = time.time()
+            answer = run_hermes(config, prompt, chat_id, mention)
+            turn_seconds = time.time() - turn_started
         except Exception as exc:  # noqa: BLE001 - the cursor must still advance
             # Truncated: TimeoutExpired stringifies the whole command, and the command
             # carries the prompt, so an untrimmed timeout spills the room's messages
@@ -1401,7 +1419,10 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
         room_state["pending_send"] = {"fingerprint": outgoing[:SEND_FINGERPRINT_CHARS], "ticks": 0}
         state["last_error"] = ""
         note = f" + 사진 {len(images)}장" if images else ""
-        log(f"chat {chat_id}: 응답 전송 ({len(outgoing)}자{note})")
+        # The tick is single-threaded, so this number is how long every other room
+        # waited. It is also the only way to see the budget being approached before
+        # HERMES_TIMEOUT_SECONDS starts cutting turns off.
+        log(f"chat {chat_id}: 응답 전송 ({len(outgoing)}자{note}, {turn_seconds:.0f}초)")
 
     if not dry_run:
         state["cursor_log_id"] = max(int(state.get("cursor_log_id") or 0), highest)
@@ -1820,11 +1841,18 @@ def send_once(config_path: Path, chat_id: int, text: str) -> int:
     if not body:
         log("보낼 본문이 비어 있다")
         return 1
+    # Same attachment contract as a tick reply, or a job that finished after its
+    # turn ended could only name its file in prose. The fence is `resolve_attachment`
+    # either way, so this widens nothing.
+    body, images, files = extract_attachments(body, config)
+    if not body:
+        body = ", ".join(path.name for path in images + files) or "(빈 메시지)"
     prefix = config["bot_prefix"]
     outgoing = body if body.startswith(prefix) else f"{prefix} {body}"
     short, _ = split_reply(outgoing, int(config["reply_char_limit"]))
-    send_message(config, {"chat_id": chat_id}, short)
-    log(f"chat {chat_id}: 예약 발신 ({len(short)}자)")
+    send_message(config, {"chat_id": chat_id}, short, images, files)
+    note = f" + 첨부 {len(images) + len(files)}개" if images or files else ""
+    log(f"chat {chat_id}: 예약 발신 ({len(short)}자{note})")
     return 0
 
 
