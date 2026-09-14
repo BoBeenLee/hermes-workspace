@@ -180,6 +180,34 @@ CDN 호스트가 셋이다: `talk.kakaocdn.net`(https), `dn.talk.kakao.com`(http
 
 미디어는 `media_retention_days`(기본 7) 후 tick 시작 때 지운다.
 
+## Outgoing Attachments
+
+답 안의 한 줄짜리 울타리 두 개가 본문에서 빠지고 첨부로 나간다.
+
+| 울타리 | 전송 경로 | 방에 보이는 것 |
+| --- | --- | --- |
+| `[[image: /절대/경로]]` | Iris `/reply` `image` (base64) | 사진 (`chat_logs.type` 2) |
+| `[[file: /절대/경로]]` | 카톡 공유 인텐트 (`docker exec … am start`) | 파일 (`chat_logs.type` 18) |
+
+둘 다 `~/.hermes/kakao-ai-chat/outbox` 와 `media` 안으로 resolve 돼야 통과한다. **이 울타리가
+보안 경계다** — 방 텍스트가 컨텍스트로 모델에 들어가고, `all_rooms` 이후 그 텍스트를 모르는
+사람이 쓰기 때문이다. resolve 를 먼저 하고 담김 검사를 나중에 하는 순서가 심링크 탈출을 막는다.
+
+**파일은 Iris 를 안 거친다.** `/reply` 의 `ReplyType` 은 항목 셋짜리 enum 이라 `file` 이 아예
+역직렬화되지 않는다 — 어느 릴리스에서도 그랬다. 대신 카톡 자기 공유 인텐트로 나가고, 그래서
+`iris_container`(기본 `redroid-poc`) 설정 키가 필요하다. 자세한 건
+[Iris On DGX](iris-on-dgx.md) 의 파일 섹션. 함정 둘만 다시 적으면:
+
+- 보내는 mime 은 **`text/plain` 이면 안 된다.** 카톡이 텍스트 공유로 읽고 `EXTRA_TEXT` 를 찾아
+  파일을 조용히 버린다. 그래서 `send_file` 은 무조건 `application/octet-stream` 을 쓴다 —
+  확장자는 파일 이름이 나르므로 mime 을 추측할 이유가 없다.
+- 파일 이름은 `safe_device_name` 으로 정제된다. 한글은 남고 구분자와 `..` 는 `_` 가 된다.
+  이름이 argv 의 경로 조각으로 들어가므로, 이게 방 텍스트발 경로 조작을 막는 자리다.
+
+카톡이 파일에 **14일 만료**를 찍는다 (`attachment.expire`). 보관 경로가 아니다.
+
+두 울타리 다 크기 상한은 `attach_max_bytes` 하나를 같이 쓴다.
+
 ## Install
 
 ```bash
