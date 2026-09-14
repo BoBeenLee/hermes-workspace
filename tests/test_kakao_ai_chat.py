@@ -1020,7 +1020,7 @@ class JobReapTests(AsyncTurnBase):
         self.assertFalse(module.job_path(CHAT).exists())
         self.assertEqual(len(self.sent), 1)
         self.assertIn(module.TURN_LOST_NOTE, self.sent[0])
-        self.assertIn("고양이 그려줘", self.sent[0])
+        self.assertNotIn("고양이 그려줘", self.sent[0])  # the 댓글 carries it
 
     def test_a_recycled_pid_cannot_hold_a_room_forever(self):
         # os.kill(pid, 0) alone would call a reused pid "alive"; age is the tiebreak
@@ -1047,11 +1047,12 @@ class TurnWorkerTests(AsyncTurnBase):
             code = module.run_turn_job(Path("config.json"), path)
         return code, path
 
-    def test_an_answer_is_delivered_quoting_what_it_answers(self):
+    def test_an_answer_is_delivered_as_a_comment_on_the_question(self):
         code, path = self.run_worker(return_value="답이다")
         self.assertEqual(code, 0)
         self.assertIn("답이다", self.sent[0])
-        self.assertIn("고양이 그려줘", self.sent[0])
+        # the 댓글 shows the question above it, so repeating it here is noise
+        self.assertNotIn("고양이 그려줘", self.sent[0])
         # kept, not unlinked: the fingerprint is the parent's only way to verify it
         self.assertEqual(module.load_json(path, {})["done"][:9], "[jarvis] ")
 
@@ -1059,7 +1060,8 @@ class TurnWorkerTests(AsyncTurnBase):
         code, path = self.run_worker(side_effect=subprocess.TimeoutExpired("hermes", 1200))
         self.assertEqual(code, 1)
         self.assertIn(module.TURN_TIMEOUT_NOTE, self.sent[0])
-        self.assertIn("고양이 그려줘", self.sent[0])
+        # hangs off the question as a 댓글, which is what says who it is for
+        self.assertNotIn("고양이 그려줘", self.sent[0])
         self.assertFalse(path.exists())
 
     def test_any_other_failure_is_announced_too(self):
@@ -1088,8 +1090,10 @@ class TurnWorkerTests(AsyncTurnBase):
         self.assertIn("보고서.pdf", self.sent[0])
 
     def test_a_long_answer_keeps_its_quote_instead_of_truncating_it(self):
+        # only the no-trigger path still quotes, and that is where the budgeting
+        # matters: a quote appended after the split is what pushes it over the limit
         config = dict(self.config, reply_char_limit=80)
-        self.write_job()
+        self.write_job(trigger={})
         with mock.patch.multiple(
             module,
             load_config=mock.Mock(return_value=config),
@@ -1103,50 +1107,31 @@ class TurnWorkerTests(AsyncTurnBase):
 
 
 class ThreadRootTests(unittest.TestCase):
-    """Only an open chat has 댓글. Everywhere else a threadId is a lie in the row."""
+    """Every room gets a 댓글. The open-chat-only gate was wrong and is gone."""
 
     def setUp(self):
-        module._OPEN_CHAT_CACHE.clear()
         self.config = dict(CONFIG, backend="iris")
 
-    def root(self, link_id, log_id=999, calls=None):
-        rows = [[link_id]] if link_id is not None else [[None]]
-        query = mock.Mock(return_value=rows)
-        with mock.patch.object(module, "backend_query", query):
-            out = module.thread_root(self.config, CHAT, log_id)
-            if calls is not None:
-                for _ in range(calls - 1):
-                    module.thread_root(self.config, CHAT, log_id)
-        return out, query
-
-    def test_an_open_chat_threads(self):
-        out, _ = self.root(342982962)
-        self.assertEqual(out, 999)
-
-    def test_a_room_without_a_link_does_not(self):
-        out, _ = self.root(None)
-        self.assertIsNone(out)
-
-    def test_the_room_type_is_looked_up_once(self):
-        _, query = self.root(342982962, calls=3)
-        self.assertEqual(query.call_count, 1)
+    def test_every_room_threads_without_asking_the_db(self):
+        # a MemoChat (link_id null) renders a threadId as a real 댓글 - checked by eye
+        # on 2026-09-14. The row shape is identical to an open chat's, so no query
+        # could have told us, and the query itself is now gone.
+        with mock.patch.object(module, "backend_query") as query:
+            self.assertEqual(module.thread_root(self.config, CHAT, 999), 999)
+            query.assert_not_called()
 
     def test_no_trigger_means_no_thread(self):
         # a cron job reaching the room through --send-to has nothing to hang off
-        with mock.patch.object(module, "backend_query") as query:
-            self.assertIsNone(module.thread_root(self.config, CHAT, None))
-            query.assert_not_called()
+        self.assertIsNone(module.thread_root(self.config, CHAT, None))
 
-    def test_a_lookup_failure_costs_the_thread_not_the_answer(self):
-        with mock.patch.object(module, "backend_query", side_effect=RuntimeError("iris down")):
-            self.assertIsNone(module.thread_root(self.config, CHAT, 999))
+    def test_only_the_iris_backend_has_threads(self):
+        self.assertIsNone(module.thread_root(dict(CONFIG, backend="mac"), CHAT, 999))
 
 
 class ThreadedDeliveryTests(AsyncTurnBase):
-    """In an open chat the 댓글 says what it answers, so the quote would repeat it."""
+    """The 댓글 says what it answers, so the quote would repeat the line above it."""
 
-    def deliver(self, link_id):
-        module._OPEN_CHAT_CACHE.clear()
+    def deliver(self):
         self.write_job(trigger=row(log_id=3929360413260732419))
         captured = {}
 
@@ -1157,7 +1142,6 @@ class ThreadedDeliveryTests(AsyncTurnBase):
             module,
             load_config=mock.Mock(return_value=self.config),
             load_name_cache=mock.DEFAULT,
-            backend_query=mock.Mock(return_value=[[link_id]]),
             build_turn=mock.Mock(return_value=([], "prompt", "고양이 그려줘")),
             run_hermes=mock.Mock(return_value="답이다"),
             send_message=mock.Mock(side_effect=capture),
@@ -1165,16 +1149,21 @@ class ThreadedDeliveryTests(AsyncTurnBase):
             module.run_turn_job(Path("config.json"), module.job_path(CHAT))
         return captured["calls"][-1]
 
-    def test_an_open_chat_answer_hangs_off_the_mention(self):
-        text, thread_id = self.deliver(342982962)
+    def test_an_answer_hangs_off_the_mention(self):
+        text, thread_id = self.deliver()
         self.assertEqual(thread_id, 3929360413260732419)
         self.assertIn("답이다", text)
         self.assertNotIn("고양이 그려줘", text)  # the 댓글 already shows it
 
-    def test_elsewhere_the_quote_is_still_the_only_link_back(self):
-        text, thread_id = self.deliver(None)
-        self.assertIsNone(thread_id)
-        self.assertIn("고양이 그려줘", text)
+    def test_a_send_with_nothing_to_hang_off_still_quotes(self):
+        # --send-to: a photo or a cron result landing minutes later has no trigger
+        out = module.deliver_answer.__wrapped__ if hasattr(module.deliver_answer, "__wrapped__") \
+            else module.deliver_answer
+        with mock.patch.object(module, "send_message") as sent:
+            out(self.config, CHAT, "답이다", module.quote_request("고양이 그려줘"))
+        self.assertIn("고양이 그려줘", sent.call_args.args[2])
+        self.assertIsNone(sent.call_args.args[5] if len(sent.call_args.args) > 5
+                          else sent.call_args.kwargs.get("thread_id"))
 
 
 class HeartbeatTests(unittest.TestCase):

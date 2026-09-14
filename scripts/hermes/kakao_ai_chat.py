@@ -1289,30 +1289,24 @@ def kill_process_group(process: subprocess.Popen) -> None:
         process.kill()
 
 
-# chat_id -> is it an open chat. A room never changes type, so one query each.
-_OPEN_CHAT_CACHE: dict[int, bool] = {}
-
-
 def thread_root(config: dict, chat_id: int, log_id) -> int | None:
-    """The 댓글 root for a reply in this room, or None when the room has no 댓글.
+    """The 댓글 root for a reply, or None when there is nothing to hang it off.
 
-    Only an open chat has threads. `chat_rooms.link_id` is the test: it is the
-    open_link this room hangs off, and it is null for DirectChat/MemoChat/PlusChat.
-    Elsewhere a threadId is accepted and stored and then renders as an ordinary
-    line, which is worse than not sending one - the row claims a reply nobody sees.
+    Every room gets one. This used to ask `chat_rooms.link_id` first and send a
+    thread only for open chats, on the belief that 댓글 is an open-chat feature and
+    that a threadId elsewhere renders as an ordinary line. The belief was wrong:
+    a threadId sent into a MemoChat (나와의 채팅, link_id null) renders as a real
+    댓글 in the app - checked by eye on 2026-09-14, which is the only way to check
+    a rendering. The row shape is identical in both, so the DB could never have
+    told us. Dropping the query also drops a per-room round trip and the
+    "방 종류를 못 읽었다" path that silently cost the thread when Iris was down.
+
+    The value is `chat_logs.id`, not `_id` - an `_id` is accepted and stored
+    verbatim, producing a 댓글 rooted at a message that does not exist.
     """
     if not log_id or backend_name(config) != "iris":
         return None
-    chat_id = int(chat_id)
-    if chat_id not in _OPEN_CHAT_CACHE:
-        try:
-            rows = backend_query(config, f"SELECT link_id FROM chat_rooms WHERE id = {chat_id}",
-                                 ("link_id",))
-        except Exception as exc:  # noqa: BLE001 - a missing thread must not cost the answer
-            log(f"chat {chat_id}: 방 종류를 못 읽었다 ({str(exc)[:120]})")
-            return None
-        _OPEN_CHAT_CACHE[chat_id] = bool(rows and rows[0][0])
-    return int(log_id) if _OPEN_CHAT_CACHE[chat_id] else None
+    return int(log_id)
 
 
 def send_message(config: dict, room: dict, text: str, images: list[Path] | None = None,
@@ -1570,10 +1564,10 @@ def run_turn_job(config_path: Path, path: Path) -> int:
     chat_id = int(job["chat_id"])
     request = str(job.get("request") or "")
     trigger = job.get("trigger") or {}
-    # In an open chat the answer hangs off the mention as a 댓글, so the UI already
-    # says what it answers and the quote would just repeat the line above it. Every
-    # other room has no 댓글 form, and there the quote is the only thing tying a
-    # message that lands minutes later to its question.
+    # The answer hangs off the mention as a 댓글, so the UI already says what it
+    # answers and the quote would just repeat the line above it. The quote survives
+    # for the one path with nothing to hang off - `--send-to`, where a photo or a
+    # cron result lands minutes later with no trigger of its own.
     root = thread_root(config, chat_id, trigger.get("log_id"))
     quoted = "" if root else quote_request(request)
     load_name_cache()
