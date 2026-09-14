@@ -1146,7 +1146,7 @@ def build_prompt(mine: list[str], others: list[str], quoted: str, mention: str,
     )
 
 
-def run_hermes(config: dict, prompt: str, chat_id: int = 0) -> str:
+def run_hermes(config: dict, prompt: str, chat_id: int = 0, request: str = "") -> str:
     with tempfile.NamedTemporaryFile(prefix="kakao-ai-chat-usage-", suffix=".json", delete=False) as handle:
         usage_path = Path(handle.name)
     command = [str(config["hermes_bin"]), "--profile", str(config["profile"]), "--ignore-rules"]
@@ -1168,7 +1168,11 @@ def run_hermes(config: dict, prompt: str, chat_id: int = 0) -> str:
     if chat_id:
         env |= {"COMFYUI_OUTBOX_DIR": str(OUTBOX_DIR),
                 "COMFYUI_CHAT_ID": str(chat_id),
-                "COMFYUI_SEND_BIN": str(SELF_PATH)}
+                "COMFYUI_SEND_BIN": str(SELF_PATH),
+                # What was asked, so a photo arriving minutes later can name it.
+                # The model's own prompt is an expanded English rewrite - useless
+                # to a reader scrolling back for their own request.
+                "COMFYUI_REQUEST": request}
     try:
         result = subprocess.run(
             command,
@@ -1265,7 +1269,7 @@ def verify_pending_sends(state: dict, rows: list[dict], config: dict, discord=No
                     discord.send(f"⚠️ {state['last_error']} (`{COMMAND_PREFIX} 방 재개` 로 푼다)")
 
 
-def build_turn(config: dict, trigger: dict) -> tuple[list[str], str]:
+def build_turn(config: dict, trigger: dict) -> tuple[list[str], str, str]:
     chat_id = trigger["chat_id"]
     learn_room_names(config, chat_id)
     rows = fetch_room_context(config, chat_id, trigger["log_id"], int(config["room_context_messages"]))
@@ -1306,7 +1310,7 @@ def build_turn(config: dict, trigger: dict) -> tuple[list[str], str]:
     # A reply-continuation turn carries no mention; keep its text whole.
     mention = mention_body(raw, config["mention"])
     mention = raw.strip() if mention is None else mention
-    return context_lines, build_prompt(mine, others, quoted, mention, chat_id)
+    return context_lines, build_prompt(mine, others, quoted, mention, chat_id), mention
 
 
 def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None:
@@ -1366,11 +1370,13 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
             break
 
         try:
-            _, prompt = build_turn(config, trigger)
+            _, prompt, mention = build_turn(config, trigger)
             if dry_run:
                 log(f"--- dry-run prompt for chat {chat_id} ---\n{prompt}")
                 continue
-            answer = run_hermes(config, prompt, chat_id)
+            turn_started = time.time()
+            answer = run_hermes(config, prompt, chat_id, mention)
+            turn_seconds = time.time() - turn_started
         except Exception as exc:  # noqa: BLE001 - the cursor must still advance
             # Truncated: TimeoutExpired stringifies the whole command, and the command
             # carries the prompt, so an untrimmed timeout spills the room's messages
@@ -1413,7 +1419,10 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
         room_state["pending_send"] = {"fingerprint": outgoing[:SEND_FINGERPRINT_CHARS], "ticks": 0}
         state["last_error"] = ""
         note = f" + 사진 {len(images)}장" if images else ""
-        log(f"chat {chat_id}: 응답 전송 ({len(outgoing)}자{note})")
+        # The tick is single-threaded, so this number is how long every other room
+        # waited. It is also the only way to see the budget being approached before
+        # HERMES_TIMEOUT_SECONDS starts cutting turns off.
+        log(f"chat {chat_id}: 응답 전송 ({len(outgoing)}자{note}, {turn_seconds:.0f}초)")
 
     if not dry_run:
         state["cursor_log_id"] = max(int(state.get("cursor_log_id") or 0), highest)

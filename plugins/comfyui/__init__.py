@@ -58,11 +58,38 @@ LORAS = (
 POLL_TIMEOUT_S = 380.0  # Inside the 420s tool deadline, so we fail with a sentence.
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024  # KakaoTalk's attach_max_bytes; the tightest consumer.
 
-# How long the async path is willing to hold the turn open before handing the job
-# to a deliverer. Measured on this box: 9s resident, 21s cold (an 18.2 GB stack
-# load), so this covers both and only a genuine eviction escapes to the child.
-ASYNC_WINDOW_S = 25.0
+# How long the async path holds the turn open before handing the job to a deliverer.
+#
+# Zero, and that is not a placeholder. The intuition -- "wait a little so quick
+# renders finish in one turn" -- is wrong here, and measurably so. Same prompt,
+# same room, KakaoTalk's 180s budget:
+#
+#   wait for the render (it took 9s)   -> 196s total, over budget, turn killed
+#   hand it off immediately            ->  84s total
+#   no tool at all, just a refusal     ->  89s
+#
+# The render was never the cost. What costs is what the model does *after* the
+# tool returns: an image in hand means composing a real answer with the path and
+# the expiry caveat, ~110s of round-trips on this host's model. A "queued" result
+# means one short sentence. Waiting buys a marginally nicer turn and pays for it
+# with the whole budget.
+#
+# Raise it via COMFYUI_ASYNC_WINDOW_S on a host whose model is fast enough that
+# finishing in one turn is affordable.
+ASYNC_WINDOW_S = 0.0
 DELIVER_TIMEOUT_S = 900.0
+
+
+def _async_window() -> float:
+    """``COMFYUI_ASYNC_WINDOW_S`` overrides the window. The right value depends on
+    what the caller's LLM leaves over, not on the render, so it is tunable per host."""
+    try:
+        return float(os.environ.get("COMFYUI_ASYNC_WINDOW_S") or ASYNC_WINDOW_S)
+    except ValueError:
+        return ASYNC_WINDOW_S
+
+
+
 DELIVERER = Path(__file__).resolve().parent / "deliver.py"
 
 
@@ -120,7 +147,26 @@ def _async_target() -> Optional[tuple]:
         return None
 
 
-def _spawn_deliverer(prompt_id: str, target: tuple, client) -> bool:
+def _caption(prompt: str, limit: int = 60) -> str:
+    """Caption that names the request it answers.
+
+    A bare "다 됐어" arriving minutes later is orphaned -- by then the room has
+    moved on and nothing ties it to what was asked. KakaoTalk's own reply form
+    (a type=26 row carrying src_logId) would do this properly, but Iris cannot
+    send one: ReplyRequest is a fixed {type, room, data} and rejects the whole
+    body when any other field is present (probed against the running build).
+    Quoting the request in the caption is what is left, and it answers the same
+    question for a reader.
+    """
+    # The caller's own words when it passed them: what reaches this provider is
+    # the model's expanded English rewrite, which nobody asked for by that name.
+    text = " ".join((os.environ.get("COMFYUI_REQUEST") or prompt or "").split())
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "…"
+    return f'다 됐어 - "{text}"' if text else "다 됐어"
+
+
+def _spawn_deliverer(prompt_id: str, target: tuple, client, caption: str = "다 됐어") -> bool:
     """Detach a child to finish the job and send it. True when it started.
 
     ``start_new_session`` and closed stdio are the point: this must survive the
@@ -135,7 +181,8 @@ def _spawn_deliverer(prompt_id: str, target: tuple, client) -> bool:
              "--chat-id", str(chat_id), "--send-bin", send_bin,
              "--outbox", str(outbox), "--url", client.base_url,
              "--output-root", str(client.output_root),
-             "--max-bytes", str(_max_bytes()), "--timeout", str(DELIVER_TIMEOUT_S)],
+             "--max-bytes", str(_max_bytes()), "--timeout", str(DELIVER_TIMEOUT_S),
+             "--caption", caption],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True)
         return True
@@ -230,10 +277,10 @@ class ComfyUIImageGenProvider(ImageGenProvider):
         try:
             graph = comfy.patch(graph, patches)
             prompt_id = client.submit(graph)
-            window = ASYNC_WINDOW_S if target else POLL_TIMEOUT_S
+            window = _async_window() if target else POLL_TIMEOUT_S
             entry = client.poll(prompt_id, timeout=window)
             if entry is None:
-                if target and _spawn_deliverer(prompt_id, target, client):
+                if target and _spawn_deliverer(prompt_id, target, client, _caption(prompt)):
                     # Not an error: the job is running and a child owns delivering
                     # it. The turn ends here so the other rooms are not held.
                     return {

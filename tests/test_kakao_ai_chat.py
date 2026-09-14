@@ -844,7 +844,7 @@ class TurnFailureTests(unittest.TestCase):
             module,
             process_discord_commands=mock.DEFAULT,
             fetch_new_rows=mock.Mock(return_value=[trigger]),
-            build_turn=mock.Mock(return_value=([], "prompt")),
+            build_turn=mock.Mock(return_value=([], "prompt", "고양이 그려줘")),
             run_hermes=mock.Mock(**outcome),
             send_message=mock.Mock(side_effect=lambda c, r, text, *a: sent.append(text)),
         ):

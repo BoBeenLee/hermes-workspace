@@ -319,7 +319,7 @@ class AsyncTest(unittest.TestCase):
         with unittest.mock.patch.object(comfy, "requests", fake), \
              unittest.mock.patch.object(comfy, "mem_available_gb", return_value=90.0), \
              unittest.mock.patch.object(comfy.time, "sleep", lambda _s: None), \
-             unittest.mock.patch.object(plugin, "ASYNC_WINDOW_S", 0.05), \
+             unittest.mock.patch.dict("os.environ", {"COMFYUI_ASYNC_WINDOW_S": "0.05"}), \
              unittest.mock.patch.object(plugin.subprocess, "Popen", fake_popen), \
              unittest.mock.patch.dict("os.environ", env if env is not None else self.env):
             return provider.generate("a cat", "square"), spawned
@@ -339,12 +339,35 @@ class AsyncTest(unittest.TestCase):
         self.assertTrue(kwargs["start_new_session"])
         self.assertEqual(kwargs["stdout"], plugin.subprocess.DEVNULL)
 
+    def test_the_late_caption_names_the_request_it_answers(self):
+        """Minutes later a bare "다 됐어" is orphaned; KakaoTalk has no reply form here."""
+        _, spawned = self._run(FakeComfy(history=None))
+        caption = spawned[0][0][spawned[0][0].index("--caption") + 1]
+        self.assertIn("a cat", caption)
+
+    def test_a_long_request_is_trimmed_not_pasted_whole(self):
+        self.assertLessEqual(len(plugin._caption("가" * 400)), 80)
+        self.assertTrue(plugin._caption("가" * 400).endswith('"'))
+        self.assertEqual(plugin._caption(""), "다 됐어")
+        self.assertNotIn("\n", plugin._caption("두 줄\n짜리 요청"))
+
     def test_a_fast_job_still_answers_in_the_same_turn(self):
+        """Only when a host opts into waiting; the default window is 0 (see the constant)."""
         result, spawned = self._run(FakeComfy(history=done_entry()))
         self.assertTrue(result["success"])
         self.assertNotIn("status", result)
         self.assertEqual(Path(result["image"]).parent, self.outbox)
         self.assertEqual(spawned, [])
+
+    def test_the_default_window_does_not_wait(self):
+        """Waiting is what blew KakaoTalk's budget: 196s waiting vs 84s handing off."""
+        self.assertEqual(plugin.ASYNC_WINDOW_S, 0.0)
+        with unittest.mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(plugin._async_window(), 0.0)
+        with unittest.mock.patch.dict("os.environ", {"COMFYUI_ASYNC_WINDOW_S": "12"}):
+            self.assertEqual(plugin._async_window(), 12.0)
+        with unittest.mock.patch.dict("os.environ", {"COMFYUI_ASYNC_WINDOW_S": "junk"}):
+            self.assertEqual(plugin._async_window(), 0.0)
 
     def test_gateway_has_no_async_env_and_waits(self):
         """Without the daemon's three variables this must stay synchronous."""
