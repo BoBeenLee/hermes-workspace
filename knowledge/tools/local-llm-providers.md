@@ -238,6 +238,94 @@ Do not put Google, OpenRouter, or Groq keys in YAML or git. They remain in the
 remote Hermes `.env`. Enabling the Groq vision model is an external
 organization-policy change and requires separate operator review.
 
+## DGX fallback chain (2026-09-14, measured)
+
+The Altalt Routing section below is the **Mac era** (`custom:mlx-qwen` primary). It no
+longer describes any live host. The DGX chain as of 2026-09-14, every rung confirmed with
+a real request carrying the live KakaoTalk prompt and the daemon's 19 tool schemas:
+
+| | provider / model | measured |
+|---|---|---|
+| primary | `zai` / `glm-4.7-flash` | 113-130s per call on the kakao prompt; `1305` overload 429 on back-to-back calls; no quota cap |
+| 1 | `openrouter` / `nex-agi/nex-n2.5-mini:free` | 7.4s, 4 parallel tool calls; **50 requests/day**, 20/min |
+| 2 | `opencode-free` / `nemotron-3-ultra-free` | 40-74s per call, but takes the full payload; keyless, separate quota |
+| 3 | `custom:llama-local` / `Qwen3.8-27B-UD-Q6_K_XL.gguf` | 8.57 tok/s -> 8-14 min per step. Floor only |
+| delegation | `opencode-free` / `nemotron-3-ultra-free` | the only config that has finished the "25 Seoul districts" turn (339s, 25/25 rows) |
+
+`llama-local` sits **last** on purpose. It used to be rung 1, which meant every burst 429
+on the primary dropped the turn onto the slowest model on the host - the room saw
+"slower", never "failed over".
+
+### groq is unusable for a kakao turn, and not for the reason it looks
+
+`groq` / `openai/gpt-oss-120b` answers a bare prompt in 0.69s, so a smoke test passes and
+tempts you to promote it. The real turn always fails:
+
+```
+tools: 19, schema bytes 42,613  +  prompt 9,223  =  body 58,304 bytes
+HTTP 413 in 0.2s
+"Request too large ... service tier `on_demand` on tokens per minute (TPM):
+ Limit 8000, Requested 11687"  ->  "type":"tokens","code":"rate_limit_exceeded"
+```
+
+It is a **TPM cap, not a context limit**: the 19 tool schemas alone are ~8.8k tokens, so
+the request is over the 8,000 limit even with an empty conversation. `model.context_length`
+cannot help. Groq Dev Tier would; until then keep it out of both chains.
+
+### A 413 does not fall back (hermes v0.21.2)
+
+`agent/error_classifier.py:396` maps HTTP 413 to
+`_v(_R.payload_too_large, should_compress=True)` - **`should_fallback` is absent**. Hermes
+reads every 413 as "too big for this model, compress and retry on the same model", and
+when compression is exhausted it ends the turn at `agent/turn_overflow.py:271`
+("Request payload too large (413). Cannot compress further."), which is what the room
+sees. The fallback chain is never consulted.
+
+Groq's 413 is really a rate limit (its own body says `rate_limit_exceeded`); had it
+answered 429 the chain would have worked, because `_V_RATE_LIMIT` does set
+`should_fallback`. **Local defence: never put a provider that expresses rate limits as
+413 in `fallback_providers`.** One status code silently disables failover for that rung.
+
+### opencode-free: keyless, separate quota
+
+Hermes ships three OpenCode providers (`hermes_cli/auth.py:229-237`):
+
+```
+opencode-zen    https://opencode.ai/zen/v1      OPENCODE_ZEN_API_KEY
+opencode-go     https://opencode.ai/zen/go/v1   OPENCODE_GO_API_KEY
+opencode-free   https://opencode.ai/zen/v1      keyless
+```
+
+`opencode-free` needs **no key** and its quota is independent of OpenRouter's 50/day, which
+is why it carries delegation here. Auth shape is `Authorization: ""` plus attribution
+headers (`hermes_cli/models.py` `opencode_zen_free_headers`) - a bearer placeholder 401s.
+The relay also wants `x-opencode-session`; hermes adds it (`agent/opencode_affinity.py`)
+and it is **cache affinity, not a quota key**, so subagents with their own session ids
+spread across backends rather than contending.
+
+Of the 7 advertised free models only `nemotron-3-ultra-free` survives a real turn:
+`mimo-v2.5-free` and `deepseek-v4-flash-free` 413 on the payload, the two `muse-spark`
+entries 500, `deepseek-v4-flash-free` also reports "Model is unavailable". Load is not the
+constraint - 4 concurrent and 8 sequential requests all returned 200 with no throttling -
+**queue latency is**: 40-74s even for "1+1?".
+
+### Measuring a provider: do not use bare `python-urllib`
+
+Its default User-Agent trips Cloudflare's bot filter and returns `403 error code 1010` on
+api.groq.com, api.altalt.io and opencode.ai. That looks exactly like "the provider is
+blocked from this host" and is not - curl, or urllib with any normal UA, gets through.
+This cost two wrong conclusions in one session, including removing two live rungs from the
+chain. Confirm a provider is dead with curl before believing it.
+
+### Delegation config traps
+
+- `delegation.model` / `delegation.provider` must be explicit strings. The literal `auto`
+  kills every subagent with `401 Model auto is not supported` (upstream #84007); empty
+  string is the "inherit parent" value.
+- `delegation` has no fallback chain of its own unless you set
+  `delegation.fallback_providers` (upstream #94629 still open). Without it a single 429
+  ends the child.
+
 ## Altalt Routing
 
 Since 2026-08-21 `altalt` is the first fallback of the `default` and `jarvis`
