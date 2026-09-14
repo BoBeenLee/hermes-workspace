@@ -1424,8 +1424,10 @@ class RoomLogTests(unittest.TestCase):
         with mock.patch.object(module, "fetch_room_context", return_value=[old]), \
              mock.patch.object(module, "learn_room_names"), \
              mock.patch.object(module, "load_name_cache"):
-            lines = module.room_log(config, 123, 60)
+            lines, nameless = module.room_log(config, 123, 60)
         self.assertEqual(len(lines), 1)
+        self.assertEqual(nameless, 0)  # the row is mine
+
         self.assertIn("작년 공지", lines[0])
 
     def test_attachments_are_labelled_and_never_downloaded(self):
@@ -1437,8 +1439,54 @@ class RoomLogTests(unittest.TestCase):
              mock.patch.object(module, "load_name_cache"), \
              mock.patch.object(module, "download_media",
                                side_effect=AssertionError("must not download")):
-            lines = module.room_log(config, 123, 60)
+            lines, _ = module.room_log(config, 123, 60)
         self.assertIn("[사진", lines[0])
+
+
+class RoomNameGapTests(unittest.TestCase):
+    """The two gaps the directory has to be honest about: a 1:1 partner and a channel."""
+
+    DM = ["73884586856723", "DirectChat", None, "2", "0", "1789000000", "[]", None, "[29669137]"]
+    CHANNEL = ["4853921574722662", "PlusChat", None, "2", "0", "1788000000", None, None, "[123]"]
+
+    def _directory(self, rows, cache=None):
+        module.IRIS_NAME_CACHE.clear()
+        module.IRIS_NAME_CACHE.update(cache or {})
+        with mock.patch.object(module, "backend_query", side_effect=[[], rows]):
+            return module.room_directory({"backend": "iris"})
+
+    def test_a_silent_partner_leaves_the_id_instead_of_a_name(self):
+        room = self._directory([self.DM])[0]
+        self.assertIsNone(room["name"])
+        self.assertEqual(room["member_ids"], [29669137])
+
+    def test_a_partner_who_has_spoken_gets_their_feed_name(self):
+        room = self._directory([self.DM], {"29669137": "김보연"})[0]
+        self.assertEqual(room["name"], "김보연")
+        self.assertNotIn("member_ids", room)  # named rooms stay small
+
+    def test_a_channel_is_never_named_by_the_cache(self):
+        room = self._directory([self.CHANNEL], {"123": "누군가"})[0]
+        self.assertIsNone(room["name"])
+        self.assertEqual(room["member_ids"], [123])
+
+    def test_broken_members_json_is_an_empty_list(self):
+        self.assertEqual(module.room_member_ids("{nope"), [])
+        self.assertEqual(module.room_member_ids(None), [])
+
+    def test_nameless_speakers_counts_authors_not_lines(self):
+        config = {**module.DEFAULT_CONFIG, "backend": "iris", "my_user_id": ME}
+        rows = [row(log_id=1, author_id=7, message="a"),
+                row(log_id=2, author_id=7, message="b"),
+                row(log_id=3, author_id=8, message="c"),
+                row(log_id=4, author_id=ME, message="d")]
+        module.IRIS_NAME_CACHE.clear()
+        with mock.patch.object(module, "fetch_room_context", return_value=rows), \
+             mock.patch.object(module, "learn_room_names"), \
+             mock.patch.object(module, "load_name_cache"):
+            lines, nameless = module.room_log(config, 123, 60)
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(nameless, 2)  # authors 7 and 8, not the three lines they wrote
 
 
 if __name__ == "__main__":
