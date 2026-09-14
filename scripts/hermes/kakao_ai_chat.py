@@ -1510,7 +1510,11 @@ def deliver_answer(config: dict, chat_id: int, answer: str, quote: str = "",
         result_path = RESULTS_DIR / f"{dt.datetime.now(KST).strftime('%Y%m%d-%H%M%S')}-{chat_id}.md"
         result_path.write_text(full, encoding="utf-8")
         os.chmod(result_path, 0o600)
-        short = f"{short}\n\n... (전체: {result_path})"
+        # The path used to be printed, which is unreadable from the phone the answer
+        # is read on. Send the file itself instead; naming it in the caption is what
+        # ties the two rows together, since a file row carries no bot_prefix.
+        files = files + [result_path]
+        short = f"{short}\n\n... (나머지는 파일로: {result_path.name})"
     prefix = config["bot_prefix"]
     outgoing = (short if short.startswith(prefix) else f"{prefix} {short}") + suffix
     send_message(config, {"chat_id": chat_id}, outgoing, images, files, thread_id)

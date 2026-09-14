@@ -672,7 +672,8 @@ class SendOnceAttachmentTests(unittest.TestCase):
         self.outbox = root / "outbox"
         self.outbox.mkdir()
         (root / "media").mkdir()
-        patcher = mock.patch.multiple(module, OUTBOX_DIR=self.outbox, MEDIA_DIR=root / "media")
+        patcher = mock.patch.multiple(module, OUTBOX_DIR=self.outbox,
+                                      MEDIA_DIR=root / "media", RESULTS_DIR=root / "results")
         patcher.start()
         self.addCleanup(patcher.stop)
         self.config = dict(CONFIG, backend="iris", attach_max_bytes=10_000)
@@ -705,6 +706,22 @@ class SendOnceAttachmentTests(unittest.TestCase):
         self.assertEqual(sent["images"], [self.photo])
         self.assertIn("shot.png", sent["body"])
         self.assertTrue(sent["body"].startswith(self.config["bot_prefix"]))
+
+    def test_an_overflowing_answer_leaves_as_a_file_not_as_a_path(self):
+        # 800 chars is our own cap, not KakaoTalk's, so the tail has to arrive some
+        # other way. A /home/... path printed in the room is unreadable on a phone.
+        long_answer = "가" * 2000
+        _, sent = self._send(long_answer)
+        self.assertEqual(len(sent["files"]), 1)
+        overflow = sent["files"][0]
+        self.assertEqual(overflow.read_text(encoding="utf-8"), long_answer)
+        self.assertIn(overflow.name, sent["body"])
+        self.assertNotIn(str(overflow.parent), sent["body"])
+        self.assertLessEqual(len(sent["body"]), self.config["reply_char_limit"] + 120)
+
+    def test_a_short_answer_attaches_nothing(self):
+        _, sent = self._send("짧다")
+        self.assertEqual(sent["files"], [])
 
     def test_the_fence_still_applies_to_outside_callers(self):
         outside = Path(self.tmp.name).resolve() / "secret.png"
