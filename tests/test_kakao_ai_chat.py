@@ -526,13 +526,14 @@ class AttachmentTests(unittest.TestCase):
 
     def test_an_outbox_image_is_split_off_the_caption(self):
         path = self.image()
-        text, images = module.extract_attachments(f"여기 있어\n[[image: {path}]]\n확인해", self.config)
+        text, images, files = module.extract_attachments(
+            f"여기 있어\n[[image: {path}]]\n확인해", self.config)
         self.assertEqual(text, "여기 있어\n확인해")
-        self.assertEqual(images, [path])
+        self.assertEqual((images, files), ([path], []))
 
     def test_a_path_outside_the_outbox_is_refused(self):
-        text, images = module.extract_attachments(f"[[image: {self.secret}]]", self.config)
-        self.assertEqual((text, images), ("", []))
+        text, images, files = module.extract_attachments(f"[[image: {self.secret}]]", self.config)
+        self.assertEqual((text, images, files), ("", [], []))
 
     def test_a_symlink_out_of_the_outbox_is_refused(self):
         link = self.outbox / "escape.png"
@@ -550,14 +551,42 @@ class AttachmentTests(unittest.TestCase):
 
     def test_a_bare_path_in_prose_is_not_an_attachment(self):
         path = self.image()
-        text, images = module.extract_attachments(f"파일은 {path} 에 있다", self.config)
+        text, images, _ = module.extract_attachments(f"파일은 {path} 에 있다", self.config)
         self.assertEqual(images, [])
         self.assertIn(str(path), text)
 
     def test_the_same_image_twice_is_sent_once(self):
         path = self.image()
-        _, images = module.extract_attachments(f"[[image: {path}]]\n[[image: {path}]]", self.config)
+        _, images, _ = module.extract_attachments(
+            f"[[image: {path}]]\n[[image: {path}]]", self.config)
         self.assertEqual(images, [path])
+
+    def test_a_file_fence_takes_what_the_image_fence_refuses(self):
+        """The suffix gate is the whole difference between the two kinds."""
+        doc = self.outbox / "notes.pdf"
+        doc.write_bytes(b"%PDF")
+        text, images, files = module.extract_attachments(
+            f"보고서야\n[[file: {doc}]]", self.config)
+        self.assertEqual(text, "보고서야")
+        self.assertEqual((images, files), ([], [doc]))
+
+    def test_the_outbox_fence_still_holds_for_files(self):
+        outside = self.secret.parent / "escape.pdf"
+        outside.write_bytes(b"%PDF")
+        self.assertEqual(module.extract_attachments(f"[[file: {outside}]]", self.config)[2], [])
+
+    def test_an_oversized_file_is_refused(self):
+        big = self.outbox / "big.pdf"
+        big.write_bytes(b"%PDF" + b"0" * 1001)
+        self.assertEqual(module.extract_attachments(f"[[file: {big}]]", self.config)[2], [])
+
+    def test_both_kinds_in_one_answer_keep_their_lanes(self):
+        shot, doc = self.image(), self.outbox / "notes.pdf"
+        doc.write_bytes(b"%PDF")
+        text, images, files = module.extract_attachments(
+            f"둘 다\n[[image: {shot}]]\n[[file: {doc}]]", self.config)
+        self.assertEqual(text, "둘 다")
+        self.assertEqual((images, files), ([shot], [doc]))
 
 
 class StartupClampTests(unittest.TestCase):
@@ -782,6 +811,16 @@ class TurnFailureTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertNotIn(module.TURN_FAILED_NOTE, sent[0])
         self.assertIn("답이다", sent[0])
+
+    def test_an_attachment_only_answer_still_gets_a_caption(self):
+        """A file row carries no bot_prefix, so an empty caption is unattributable."""
+        outbox = Path(tempfile.mkdtemp())
+        doc = outbox / "보고서.pdf"
+        doc.write_bytes(b"%PDF")
+        with mock.patch.multiple(module, OUTBOX_DIR=outbox, MEDIA_DIR=outbox / "none"):
+            sent = self.run_tick({"return_value": f"[[file: {doc}]]"})
+        self.assertEqual(len(sent), 1)
+        self.assertIn("보고서.pdf", sent[0])
 
 
 class SingleInstanceTests(unittest.TestCase):

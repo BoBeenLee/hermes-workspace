@@ -165,6 +165,10 @@ DEFAULT_CONFIG: dict = {
     # Base64 inflates by a third on the wire and KakaoTalk refuses the huge ones, so
     # this sits well under media_max_bytes rather than reusing it.
     "attach_max_bytes": 10 * 1024 * 1024,
+    # `[[file: ...]]` is fired with `am` inside the Android container, so the send
+    # path needs its name. Files skip the base64 hop but reuse attach_max_bytes -
+    # one knob is enough until a real file turns out to need a different ceiling.
+    "iris_container": "redroid-poc",
     "reply_char_limit": 800,
     "global_reply_limit": 20,
     "global_reply_window_seconds": 600,
@@ -407,6 +411,13 @@ def iris_client(config: dict):
     from iris_client import IrisClient
 
     return IrisClient(str(config.get("iris_base_url") or DEFAULT_CONFIG["iris_base_url"]))
+
+
+def iris_send_file(chat_id, path: Path, container: str):
+    """File transport, which is `docker exec` rather than HTTP - see iris_client.send_file."""
+    from iris_client import send_file
+
+    return send_file(chat_id, path, container)
 
 
 def backend_query(config: dict, sql: str, columns: tuple[str, ...]) -> list[list]:
@@ -1035,10 +1046,13 @@ PROMPT_TEMPLATE = """너는 카카오톡 방에서 나(운영자)를 돕는 어�
 - **좌표를 지어내지 마라.** 장소 지도는 좌표 링크 대신 검색 링크로 보낸다: `https://map.kakao.com/?q=<장소 이름>`
   MY_THREAD 에 이미 있는 지도 링크는 **그때 그 장소의 것**이다. 지금 묻는 장소가 다르면 그 링크를 다시 쓰지 마라.
 - 답은 카카오톡 메시지 한 개로 간다. 짧고 실용적으로, 머리말 없이 본론부터.
-- 사진을 보내려면 `[[image: /절대/경로]]` 를 **한 줄로** 넣어라. 그 줄은 본문에서 빠지고 사진으로 나간다.
+- 첨부는 **한 줄로** 넣어라. 그 줄은 본문에서 빠지고 첨부로 나간다.
+  사진은 `[[image: /절대/경로]]`, 그 밖의 파일은 `[[file: /절대/경로]]` 다.
+  `[[image: ]]` 는 이미지 확장자만 받는다. PDF·문서·압축 파일은 `[[file: ]]` 로 보내라.
   보낼 수 있는 곳은 `~/.hermes/kakao-ai-chat/outbox` 와 `media` 뿐이다. 그 밖의 경로는 무시된다.
   이건 **이미 있는 파일을 보내는** 수단이지 만드는 수단이 아니다.
-- 네가 못 하는 일: 그림·영상·음성을 **생성**하는 것, 이미지가 아닌 파일을 보내는 것. 도구가 없다.
+  카카오톡이 파일에 14일 만료를 찍으므로 보관용이 아니라고 알려라.
+- 네가 못 하는 일: 그림·영상·음성을 **생성**하는 것. 도구가 없다.
   시도하지 마라 - 없는 수단을 찾느라 몇 분을 태우는 동안 이 방의 다음 메시지도 같이 멈춘다.
   한 줄로 못 한다고 말하고 대신 할 수 있는 걸 해라 (그림 요청이면 텍스트 다이어그램).
 - 한 번에 답해라. 답이 길어질 것 같으면 요약으로 끊고, 더 필요하냐고 물어라.
@@ -1059,12 +1073,14 @@ MENTION:
 
 # The line terminator is part of the match: dropping only the text would leave a
 # blank line in the middle of the message.
-ATTACH_LINE = re.compile(r"^[ \t]*\[\[image:[ \t]*(?P<path>[^\]]+?)[ \t]*\]\][ \t]*(?:\r?\n|$)",
-                         re.MULTILINE | re.IGNORECASE)
+ATTACH_LINE = re.compile(
+    r"^[ \t]*\[\[(?P<kind>image|file):[ \t]*(?P<path>[^\]]+?)[ \t]*\]\][ \t]*(?:\r?\n|$)",
+    re.MULTILINE | re.IGNORECASE,
+)
 SENDABLE_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 
-def resolve_attachment(raw: str, config: dict) -> Path | None:
+def resolve_attachment(raw: str, config: dict, kind: str = "image") -> Path | None:
     """A path jarvis is allowed to send, or None with the refusal logged.
 
     The allowlist is the point, not paperwork. Room text reaches the model as context
@@ -1084,12 +1100,11 @@ def resolve_attachment(raw: str, config: dict) -> Path | None:
     if not path.is_file():
         log(f"첨부 거부: 파일이 아니다 ({path})")
         return None
-    if path.suffix.lower() not in SENDABLE_IMAGE_SUFFIXES:
-        # Iris /reply takes text and images only. `file` and `link` are rejected by
-        # its own ReplyRequest model - probed against the running build, not guessed.
-        # Non-images can still be sent, but only off this path (ACTION_SEND intent);
-        # see knowledge/runbooks/iris-on-dgx.md.
-        log(f"첨부 거부: 이미지가 아니다 ({path.name})")
+    if kind == "image" and path.suffix.lower() not in SENDABLE_IMAGE_SUFFIXES:
+        # Iris /reply takes text and images only, so a non-image cannot ride this
+        # path - `[[file: ...]]` exists for those and leaves through the share
+        # intent instead. See knowledge/runbooks/iris-on-dgx.md.
+        log(f"첨부 거부: 이미지가 아니다 ({path.name}) - 파일이면 [[file: ...]] 로 보내라")
         return None
     size = path.stat().st_size
     if size > int(config["attach_max_bytes"]):
@@ -1098,14 +1113,22 @@ def resolve_attachment(raw: str, config: dict) -> Path | None:
     return path
 
 
-def extract_attachments(answer: str, config: dict) -> tuple[str, list[Path]]:
-    """Pull the `[[image: ...]]` lines out; whatever is left is the caption."""
-    paths: list[Path] = []
+def extract_attachments(answer: str, config: dict) -> tuple[str, list[Path], list[Path]]:
+    """Pull the `[[image: ...]]` and `[[file: ...]]` lines out; the rest is the caption.
+
+    The two kinds leave by different transports - images through Iris `/reply`,
+    files through KakaoTalk's share intent - so they are kept apart here rather
+    than at the send site.
+    """
+    images: list[Path] = []
+    files: list[Path] = []
     for match in ATTACH_LINE.finditer(answer or ""):
-        path = resolve_attachment(match.group("path"), config)
-        if path is not None and path not in paths:
-            paths.append(path)
-    return ATTACH_LINE.sub("", answer or "").strip(), paths
+        kind = match.group("kind").lower()
+        bucket = images if kind == "image" else files
+        path = resolve_attachment(match.group("path"), config, kind)
+        if path is not None and path not in bucket:
+            bucket.append(path)
+    return ATTACH_LINE.sub("", answer or "").strip(), images, files
 
 
 def build_prompt(mine: list[str], others: list[str], quoted: str, mention: str,
@@ -1156,8 +1179,10 @@ def run_hermes(config: dict, prompt: str) -> str:
     return answer
 
 
-def send_message(config: dict, room: dict, text: str, images: list[Path] | None = None) -> None:
+def send_message(config: dict, room: dict, text: str, images: list[Path] | None = None,
+                 files: list[Path] | None = None) -> None:
     images = list(images or [])
+    files = list(files or [])
     if backend_name(config) == "iris":
         # chat_id is the same key on both sides, so the mac side's separate
         # kmsg_chat_id has no counterpart here and needs no resolving step.
@@ -1172,9 +1197,17 @@ def send_message(config: dict, room: dict, text: str, images: list[Path] | None 
                 room["chat_id"],
                 [base64.b64encode(path.read_bytes()).decode("ascii") for path in images],
             )
+        for path in files:
+            # Not Iris: `/reply` has no file type and never had one. This leaves
+            # through KakaoTalk's share intent, so one failure must not swallow the
+            # answer that was already sent above.
+            try:
+                iris_send_file(room["chat_id"], path, str(config["iris_container"]))
+            except Exception as error:
+                log(f"chat {room.get('chat_id')}: 파일 전송 실패 ({path.name}): {error}")
         return
-    if images:
-        log(f"chat {room.get('chat_id')}: kmsg 백엔드는 이미지 전송이 없어 본문만 보낸다")
+    if images or files:
+        log(f"chat {room.get('chat_id')}: kmsg 백엔드는 첨부 전송이 없어 본문만 보낸다")
     command = [str(config["kmsg_bin"]), "send", "--chat-id", str(room["kmsg_chat_id"]), text]
     result = subprocess.run(
         command,
@@ -1342,9 +1375,12 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
                 state["rate"] = recent + [time.time()]
             continue
 
-        answer, images = extract_attachments(answer, config)
-        if images and not answer:
-            answer = ", ".join(path.name for path in images)
+        answer, images, files = extract_attachments(answer, config)
+        if (images or files) and not answer:
+            # Neither an image row nor a file row carries bot_prefix, so the caption
+            # beside it is the only thing that later marks the pair as ours. An
+            # attachment-only answer would otherwise go out unattributable.
+            answer = ", ".join(path.name for path in images + files)
         short, full = split_reply(answer, int(config["reply_char_limit"]))
         if full:
             RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1355,7 +1391,7 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None) -> None
         outgoing = f"{config['bot_prefix']} {short}"
 
         try:
-            send_message(config, room, outgoing, images)
+            send_message(config, room, outgoing, images, files)
         except Exception as exc:  # noqa: BLE001
             state["last_error"] = f"chat {chat_id}: {exc}"
             log(state["last_error"])

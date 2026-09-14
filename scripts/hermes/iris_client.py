@@ -36,10 +36,13 @@ leaves `/query` for history lookups by id.
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 DEFAULT_BASE_URL = "http://172.17.0.2:3000"
 DEFAULT_TIMEOUT_SECONDS = 20.0
@@ -262,6 +265,84 @@ def record_names(cache: dict, raw) -> None:
     cache[str(user_id)] = sender.strip()
 
 
+# --------------------------------------------------------------------------
+# files: not Iris at all
+# --------------------------------------------------------------------------
+
+# Where the staged file has to sit. The share Uri is a bare `file://`, so
+# KakaoTalk reads it as itself and only its own external dir is readable.
+KAKAO_FILES_DIR = "/sdcard/Android/data/com.kakao.talk/files"
+DEFAULT_CONTAINER = "redroid-poc"
+SHARE_ACTIVITY = "com.kakao.talk/.activity.RecentExcludeIntentFilterActivity"
+# NEW_TASK | CLEAR_TOP, copied from Replier.sendMultiplePhotosInternal.
+SHARE_FLAGS = "335544320"
+DOCKER_TIMEOUT_SECONDS = 120.0
+
+
+def safe_device_name(name: str) -> str:
+    """A file name that is safe as an argv path segment and still readable in the room.
+
+    KakaoTalk shows this name and takes the extension from it, so it is worth
+    keeping rather than replacing with a uuid. Hangul stays; `..` and separators
+    do not, which is what keeps a crafted name inside KAKAO_FILES_DIR.
+    """
+    cleaned = re.sub(r"[^0-9A-Za-z\uac00-\ud7a3._-]", "_", name).lstrip(".-")
+    return cleaned[:80] or "file"
+
+
+def send_file(chat_id, path: Path, container: str = DEFAULT_CONTAINER) -> str:
+    """Put one arbitrary file in a room. Returns the name KakaoTalk will show.
+
+    This does not go through Iris. `/reply`'s ReplyType is a three-entry enum, so
+    `file` fails to deserialize - and always did, in every release. KakaoTalk's own
+    share intent takes the file instead, and `am` may fire it because Iris's own
+    hidden-API caller name falls back to "com.android.shell" anyway.
+
+    **The mime must not be `text/*`.** KakaoTalk reads that as a text share, looks
+    for EXTRA_TEXT, and drops a file handed over as EXTRA_STREAM with no error, no
+    picker and no logcat line. `application/octet-stream` is used unconditionally:
+    the name carries the extension, so guessing a real type buys nothing and only
+    reopens that trap. Photos keep their own path (`reply_images`), which is what
+    makes them arrive as photos rather than as attachments.
+
+    Queued is not delivered, same as `/reply`: `am` prints its intent either way.
+    Read `chat_logs` back - a delivered file is `type = 18`.
+    """
+    name = safe_device_name(path.name)
+    target = f"{KAKAO_FILES_DIR}/{name}"
+    # argv all the way down, never `sh -c`: the name reaches the device unquoted.
+    _docker(["cp", str(path), f"{container}:/data/local/tmp/{name}"])
+    _docker(["exec", container, "/system/bin/mv", f"/data/local/tmp/{name}", target])
+    _docker(["exec", container, "/system/bin/chmod", "644", target])
+    _docker(["exec", container, "/system/bin/am", "start",
+             "-a", "android.intent.action.SEND",
+             "-t", "application/octet-stream",
+             "--eu", "android.intent.extra.STREAM", f"file://{target}",
+             "--el", "key_id", str(chat_id),
+             "--ei", "key_type", "1",
+             "--ez", "key_from_direct_share", "true",
+             "-f", SHARE_FLAGS,
+             "-n", SHARE_ACTIVITY])
+    # ponytail: the staged copy is left behind, exactly as Iris leaves its photos
+    # there. Deleting it would race KakaoTalk's upload, which is asynchronous.
+    return name
+
+
+def _docker(args: list[str]) -> None:
+    result = subprocess.run(
+        ["docker", *args],
+        text=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=DOCKER_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise IrisError(f"docker {args[0]} failed ({result.returncode}): "
+                        f"{(result.stderr or result.stdout).strip()[:300]}")
+
+
 def demo() -> None:
     """Self-check for the parts that do not need a live Iris."""
     cache: dict = {}
@@ -331,6 +412,16 @@ def demo() -> None:
         pass
     else:
         raise AssertionError("where-clause user_id must not satisfy the guard")
+
+    # file names: hangul survives, traversal and separators do not
+    assert safe_device_name("보고서 2026.pdf") == "보고서_2026.pdf"
+    # traversal dies on the separator, not on the dots: what matters is that no
+    # name can ever address a second path segment.
+    assert safe_device_name("../../etc/passwd") == "_.._etc_passwd"
+    assert safe_device_name("a b; rm -rf /.txt") == "a_b__rm_-rf__.txt"
+    assert safe_device_name("...") == "file"
+    assert safe_device_name("") == "file"
+    assert "/" not in safe_device_name("x/y/z") and ".." not in safe_device_name("..a")
 
     print("iris_client demo ok")
 
