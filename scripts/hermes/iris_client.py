@@ -386,38 +386,34 @@ def send_file(chat_id, path: Path, container: str = DEFAULT_CONTAINER) -> str:
     return name
 
 
-# Where the LSPosed hook looks for the "which thread does the next media send belong
-# to" hint. Inside the container this dir is world-traversable (771) and the file is
-# 644, so com.kakao.talk (uid 10087) can read it by its exact path. See
-# knowledge/runbooks/iris-on-dgx.md.
-HINT_DIR = "/data/local/tmp"
+# Where the in-app Frida hook looks for the "which thread does the next media send
+# belong to" hint (see frida/iris_thread.js). Single file, consume-once by mtime on the
+# hook side: the hook runs as the kakao uid and cannot delete a root-owned file here, so
+# it remembers the last mtime it used instead. dir is 771 and root writes the file
+# world-readable, so the kakao uid can read it. See knowledge/runbooks/iris-on-dgx.md.
+HINT_FILE = "/data/local/tmp/iris_thread_pending"
 
 
 def write_thread_hint(chat_id, thread_id, container: str = DEFAULT_CONTAINER) -> None:
-    """Tell the in-app LSPosed hook which thread a media send belongs to, or clear it.
+    """Signal the in-app hook which thread the next media send belongs to.
 
-    Photo and file rows cannot carry a threadId through Iris - KakaoTalk builds the
-    share as ChatSendingLog.b(..., threadId=null) and drops anything we pass. The hook
-    reads this file, keyed by chat_id, and injects the threadId into the media send
-    instead. A None thread_id removes the file so a later non-thread send (a cron
-    result) is not wrongly threaded by a stale hint; the hook also ignores a hint
-    older than its TTL, so this is belt-and-suspenders.
+    Photo and file rows cannot carry a threadId through Iris - KakaoTalk builds the share
+    as ChatSendingLog.b(..., threadId=null) and drops anything we pass. The Frida hook
+    fills those two args on the next media build after this file is refreshed. Written
+    only when there IS a thread to hang off; a None thread_id writes nothing, so a later
+    non-thread send (a cron result) inherits no fresh hint - the hook ignores a hint it
+    has already consumed or one older than its TTL.
 
-    Staged via a temp file and docker cp rather than a shell redirect - same argv-only
-    discipline as send_file, so nothing interpolates into a shell.
+    docker exec + printf, not docker cp: cp fails on this container's read-only /dev
+    binds, and the sole interpolated value is int(thread_id), so the one sh -c that the
+    redirect needs has no injection surface. chat_id is kept for the call site and logs;
+    the hint is a single file, not keyed by room (Frida marshals the long chat_id
+    lossily, and the bot serialises media sends), so it is deliberately unused here.
     """
-    target = f"{HINT_DIR}/iris_thread_{int(chat_id)}"
     if thread_id is None:
-        _docker(["exec", container, "/system/bin/rm", "-f", target])
         return
-    with tempfile.NamedTemporaryFile("w", suffix=".hint", delete=False) as handle:
-        handle.write(str(int(thread_id)))
-        staged = handle.name
-    try:
-        _docker(["cp", staged, f"{container}:{target}"])
-        _docker(["exec", container, "/system/bin/chmod", "644", target])
-    finally:
-        pathlib.Path(staged).unlink(missing_ok=True)
+    _docker(["exec", container, "/system/bin/sh", "-c",
+             "printf %s " + str(int(thread_id)) + " > " + HINT_FILE + "; /system/bin/chmod 644 " + HINT_FILE])
 
 
 def _docker(args: list[str]) -> None:
@@ -535,23 +531,19 @@ def demo() -> None:
     assert share_mime(Path("noext")) == "application/octet-stream"
     assert not any(m.startswith("text/") for m in SHARE_MIMES.values())
 
-    # the thread hint: a set docker-cp's an int-only file to the int-only path; clear rm -f's it.
+    # the thread hint: a set writes the int to the single pending file via one sh -c;
+    # a None thread_id touches docker not at all (no stale hint for a non-thread send).
     global _docker
-    real_docker, calls, staged_body = _docker, [], []
-    def fake_docker(args):
-        if args and args[0] == "cp":
-            staged_body.append(pathlib.Path(args[1]).read_text())
-        calls.append(args)
-    _docker = fake_docker
+    real_docker, calls = _docker, []
+    _docker = lambda args: calls.append(args)
     try:
         write_thread_hint(128426307555607, 3929500590731, container="c")
-        tgt = "/data/local/tmp/iris_thread_128426307555607"
-        assert calls[0][0] == "cp" and calls[0][2] == f"c:{tgt}", calls
-        assert staged_body == ["3929500590731"], staged_body
-        assert calls[1] == ["exec", "c", "/system/bin/chmod", "644", tgt], calls
+        assert len(calls) == 1 and calls[0][:4] == ["exec", "c", "/system/bin/sh", "-c"], calls
+        assert "3929500590731" in calls[0][4], calls
+        assert "/data/local/tmp/iris_thread_pending" in calls[0][4], calls
         calls.clear()
-        write_thread_hint("128426307555607", None, container="c")
-        assert calls == [["exec", "c", "/system/bin/rm", "-f", tgt]], calls
+        write_thread_hint(128426307555607, None, container="c")
+        assert calls == [], calls   # None writes nothing
     finally:
         _docker = real_docker
 

@@ -1346,6 +1346,12 @@ class SendMessageThreadHintTests(unittest.TestCase):
         hints, _ = self._send(files=[self.photo], thread_id=42)
         self.assertEqual(hints, [(CHAT, 42, "c-test")])
 
+    def test_each_file_gets_its_own_hint_refresh(self):
+        # the hook consumes a hint once, so N files need N writes or only the first threads
+        f2 = Path(self.tmp.name) / "b.pdf"; f2.write_bytes(b"%PDF-1.4")
+        hints, _ = self._send(files=[self.photo, f2], thread_id=42)
+        self.assertEqual(hints, [(CHAT, 42, "c-test"), (CHAT, 42, "c-test")])
+
     def test_a_non_thread_media_send_clears_the_hint(self):
         # a cron result carries no root; the None clear stops a stale hint threading it
         hints, _ = self._send(images=[self.photo], thread_id=None)

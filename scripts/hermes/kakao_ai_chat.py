@@ -1408,19 +1408,24 @@ def send_message(config: dict, room: dict, text: str, images: list[Path] | None 
         # Caption first: an image row carries no bot_prefix, so the text beside it is
         # the only thing that later marks the pair as ours.
         client.reply(room["chat_id"], text, thread_id)
-        if images or files:
-            # Photo/file rows drop threadId on KakaoTalk's share path, so the caption
-            # above threads but the media would not. Hand the root to the in-app hook
-            # out of band; a failure here just costs the thread, never the send.
+        # Photo/file rows drop threadId on KakaoTalk's share path, so the caption above
+        # threads but the media would not. Refresh the out-of-band hint the in-app hook
+        # reads right before EACH media dispatch (all share this turn's root): the hook
+        # consumes a hint once, so one write per send is what threads every file, not just
+        # the first. A failure here costs the thread, never the send. (A multi-image
+        # reply_images is a single call -> only its first photo threads; our sends are
+        # one image, and files go one per iris_send_file below.)
+        if images:
             with contextlib.suppress(Exception):
                 iris_write_thread_hint(room["chat_id"], thread_id, str(config["iris_container"]))
-        if images:
             client.reply_images(
                 room["chat_id"],
                 [base64.b64encode(path.read_bytes()).decode("ascii") for path in images],
                 thread_id,
             )
         for path in files:
+            with contextlib.suppress(Exception):
+                iris_write_thread_hint(room["chat_id"], thread_id, str(config["iris_container"]))
             # Not Iris: `/reply` has no file type and never had one. This leaves
             # through KakaoTalk's share intent, so one failure must not swallow the
             # answer that was already sent above.
