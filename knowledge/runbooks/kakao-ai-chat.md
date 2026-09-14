@@ -499,12 +499,15 @@ WHERE chat_id = <방> ORDER BY _id DESC LIMIT 5
   그러면 `run_hermes` 가 `--provider`/`-m` 을 아예 안 붙인다 (`6d6554a`). 위 문단은 Mac 시절
   기록이다 — 당시엔 프로필 기본이 로컬 MLX Qwen3.8-27B 라 `custom:altalt`/`gpt-5-nano` 를 핀으로
   박아 뒀는데, 그 핀이 정확도를 깎았다(nano 가 "방금 말한 식당 지도 링크"를 이틀 전 다른 좌표로
-  답했다). DGX 기본은 `zai/glm-4.7-flash` 이고 fallback 체인은
-  `knowledge/tools/local-llm-providers.md` 의 "DGX fallback chain" 절이 소유한다.
+  답했다). DGX 기본은 `custom:kilo` / `nex-agi/nex-n2.5-pro:free` 이고(2026-09-14 교체,
+  그 전엔 `zai/glm-4.7-flash`), 부모·자식 두 체인은 모두
+  `knowledge/tools/local-llm-providers.md` 의 "DGX parent and child chains" 절이 소유한다.
 - **어려운 턴은 `delegate_task` 로 넘긴다.** toolsets 에 `delegation` 이 들어 있고
   (`delegate_task` 하나가 늘어난다), 자식은 `delegation.model` 이 가리키는 더 큰 모델에서 돈다.
   N개를 도는 일은 `tasks` 배열로 쪼개 병렬로 던지게 프롬프트가 지시한다 — 자식 하나에 25개를
-  주면 캡을 넘긴다.
+  주면 캡을 넘긴다. 자식 병렬은 3, 자식 반복은 20 이다 — Kilo 는 6병렬까지 견디고
+  12병렬에서 3/12 로 무너지며, 200 req/시간이 **IP 당** 이라 부모와 자식이 같은 지갑을 쓴다.
+  무거운 팬아웃 턴 하나가 약 70 요청이다.
 
 ## Known Gotchas
 
@@ -521,8 +524,10 @@ WHERE chat_id = <방> ORDER BY _id DESC LIMIT 5
   `ignoring unknown --toolsets entries` 경고와 함께 조용히 버려진다. 음성 메시지 전사는
   지금 이 경로로는 안 된다.
 - **모델 선택이 응답 시간을 좌우한다.** 위 수치(MLX 7분 vs nano 17초)는 Mac 시절 것이다.
-  DGX 실측(2026-09-14): 짧은 질문 25~30초, 방 컨텍스트가 길면 43~170초,
-  `glm-4.7-flash` 한 콜이 이 프롬프트에서 113~130초다.
+  DGX 실측(2026-09-14): 짧은 질문 25~30초, 방 컨텍스트가 길면 43~170초.
+  부모 모델 한 콜이 `glm-4.7-flash` 에서는 113~130초였고, `nex-n2.5-pro:free` 로 바꾼 뒤
+  11k 토큰 요청 기준 3.0초다. 같은 날 20분 하드캡 2회와 409초/15자 턴은 모델이 느려서가
+  아니라 zai 무료 티어가 요청의 5/6 을 `429 1305` 로 거절했기 때문이다.
 - **fallback 이 조용히 안 도는 경우가 있다.** 프로바이더가 rate limit 을 **HTTP 413** 으로
   표현하면 hermes 는 그걸 "압축해서 같은 모델로 재시도" 로만 읽고 체인을 건너뛴 채 턴을 끝낸다
   (방에는 `Request payload too large (413). Cannot compress further.` 만 남는다).

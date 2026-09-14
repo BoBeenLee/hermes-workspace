@@ -238,23 +238,106 @@ Do not put Google, OpenRouter, or Groq keys in YAML or git. They remain in the
 remote Hermes `.env`. Enabling the Groq vision model is an external
 organization-policy change and requires separate operator review.
 
-## DGX fallback chain (2026-09-14, measured)
+## DGX parent and child chains (2026-09-14, measured)
 
 The Altalt Routing section below is the **Mac era** (`custom:mlx-qwen` primary). It no
-longer describes any live host. The DGX chain as of 2026-09-14, every rung confirmed with
-a real request carrying the live KakaoTalk prompt and the daemon's 19 tool schemas:
+longer describes any live host.
 
-| | provider / model | measured |
-|---|---|---|
-| primary | `zai` / `glm-4.7-flash` | 113-130s per call on the kakao prompt; `1305` overload 429 on back-to-back calls; no quota cap |
-| 1 | `openrouter` / `nex-agi/nex-n2.5-mini:free` | 7.4s, 4 parallel tool calls; **50 requests/day**, 20/min |
-| 2 | `opencode-free` / `nemotron-3-ultra-free` | 40-74s per call, but takes the full payload; keyless, separate quota |
-| 3 | `custom:llama-local` / `Qwen3.8-27B-UD-Q6_K_XL.gguf` | 8.57 tok/s -> 8-14 min per step. Floor only |
-| delegation | `opencode-free` / `nemotron-3-ultra-free` | the only config that has finished the "25 Seoul districts" turn (339s, 25/25 rows) |
+The two roles want different things, and measuring both is what reordered this chain. A
+parent turn needs low latency and has to survive several rooms firing at once; a child
+fan-out needs throughput. Every number below is a real request carrying ~11k tokens, the
+size of the daemon's 19 tool schemas plus room context.
 
-`llama-local` sits **last** on purpose. It used to be rung 1, which meant every burst 429
-on the primary dropped the turn onto the slowest model on the host - the room saw
-"slower", never "failed over".
+| provider / model | serial | 6 parallel | sustained | binding limit |
+|---|---|---|---|---|
+| `custom:kilo` / `nex-agi/nex-n2.5-pro:free` | 3.0s | 6/6 in 4.3s | 745,919 tok/min | none observed |
+| `custom:kilo` / `nvidia/nemotron-3-ultra-550b-a55b:free` | 3.4-19.7s | 6/6 in 19.7s | 201,701 tok/min | upstream 502 |
+| `custom:kilo` / `nvidia/nemotron-3.5-lightning:free` | 30.6s | 6/6 in 51.4s | 77,777 tok/min | queueing |
+| `opencode-free` / `nemotron-3-ultra-free` | 66.3s | 6/6 in 85.3s | 46,655 tok/min | queue latency |
+| `zai` / `glm-4.7-flash` | **1 of 6 answered** | 2/6 | - | free tier overloaded |
+| `custom:llama-local` / `Qwen3.8-27B-UD-Q6_K_XL.gguf` | 8.57 tok/s | n/a, `--parallel 1` | - | one slot |
+
+Parent chain: `custom:kilo`/`nex-n2.5-pro:free` -> `opencode-free` -> `zai` -> `openrouter`
+-> `custom:llama-local`.
+Child chain (`delegation.*`): `custom:kilo`/`nemotron-3-ultra:free` ->
+`custom:kilo`/`nex-n2.5-pro:free` -> `opencode-free` -> `openrouter` -> `zai`.
+
+The demand side is what sizes this. `max_concurrent_children` 3 x `max_iterations` 20 is up
+to 60 requests of ~11k tokens inside `child_timeout_seconds` 600, i.e. **132k tok/min**.
+Only the Kilo rungs clear that. `max_iterations` came down from 40 because the old value
+was chosen when the child model cost 24s per call; at 3s the extra iterations only spend
+the hourly request budget.
+
+### zai glm-4.7-flash free is overloaded, and it is not a TPM problem
+
+It answered **1 of 6** serial requests spaced 10 seconds apart, and 2 of 6 in parallel,
+always `429 {"code":1305,"message":"The service may be temporarily overloaded"}` or
+`1302 Rate limit reached for requests`. The successes carried 15,413 prompt tokens without
+complaint, so tokens are not the axis - **requests** are. This is why it stopped being the
+parent: two 20-minute hard caps and a 409s turn that produced 15 characters, all on
+2026-09-14, are this 429 burning through fallback rungs.
+
+### Kilo gateway: keyless, no token ceiling found
+
+`https://api.kilo.ai/api/gateway/v1` serves every `:free` slug with **no API key** -
+`200 requests/hour per IP`, no account. Paid slugs answer `401 PAID_MODEL_AUTH_REQUIRED`.
+22 free slugs as of 2026-09-14, including nemotron ultra/super/lightning, `nex-n2.5-pro`
+and `-mini`, `ling-3.0-flash-vl` (vision), `north-mini-code`, `step-3.7-flash`.
+
+Measured ceilings: a single 110,023-token request went through in 9.3s, so there is no
+input cap to design around. 6 parallel 11k requests all returned; 12 parallel returned
+3 of 12. **Six concurrent is the safe working point**, which is what
+`max_concurrent_children` 3 plus a parent sits inside.
+
+Upstream failures come back as **HTTP 200 with `{"error":{"code":502,"message":"Upstream
+error from Nvidia: Service temporarily overloaded"}}`**. `agent/error_classifier.py` keys
+off the HTTP status and cannot see it; the turn lands in
+`agent/turn_response_check.py:258` instead ("Empty/malformed response - switching to
+fallback"). That path is correct but spends a rung, which is why the child chain keeps a
+second Kilo model directly behind the first.
+
+### Use `providers.kilo`, not the built-in `kilocode` provider
+
+Hermes ships a `kilocode` provider (`hermes_cli/auth.py`, `https://api.kilo.ai/api/gateway`)
+and it **hangs**: a turn produced no output in 280s and the pooled credential still read
+`request_count: 0`, so hermes never issued the HTTP call. The same prompt through a custom
+provider answers. Declare it under `providers:` like `altalt` and `llama-local`:
+
+```yaml
+  kilo:
+    api: https://api.kilo.ai/api/gateway/v1
+    name: kilo
+    models:
+      nex-agi/nex-n2.5-pro:free: {context_length: 262144}
+      nvidia/nemotron-3-ultra-550b-a55b:free: {context_length: 262144}
+    default_model: nex-agi/nex-n2.5-pro:free
+    extra_headers:
+      Authorization: ''
+    transport: chat_completions
+```
+
+`Authorization: ''` is the keyless shape, same as `altalt`. A bogus bearer
+(`Authorization: Bearer keyless`) also works, but the empty header is the documented
+anonymous path.
+
+### Never put `llama-local` in the child chain
+
+`llama-server` runs `--parallel 1` and `/slots` reports one slot. Three children would
+serialize on it at 8.57 tok/s, each burning toward `child_timeout_seconds`, and the
+parent's own local rung would queue behind them. It stays last in the **parent** chain
+only.
+
+### Two traps when repointing the parent
+
+- `hermes config set model <x>` prints "Redirecting bare 'model' to 'model.default'
+  (preserving N existing model sub-key(s))" and **keeps the old provider's `base_url`,
+  `api_mode` and `context_length`**. After switching provider the requests still go to the
+  previous host until `model.base_url` is rewritten. Same for `delegation.base_url`.
+- `hermes auth remove <provider> <id>` answers "Suppressed env:NAME - it will not be
+  re-seeded even if the variable is re-exported later." That is a one-way door for that
+  env var on that host.
+- A hermes CLI turn on this host takes **75-150s before it prints anything**, answer
+  included. A 90s timeout looks exactly like a hang. Give it 250s before concluding.
 
 ### groq is unusable for a kakao turn, and not for the reason it looks
 
