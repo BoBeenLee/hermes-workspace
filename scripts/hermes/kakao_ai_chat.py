@@ -163,8 +163,12 @@ DEFAULT_CONFIG: dict = {
     # `computer_use`, not a toolset, and naming it adds nothing. `antigravity-worker`
     # likewise - it sits in agent.disabled_toolsets and is subtracted after enabling.
     # `kanban` is out: 14 of the 31 tools for a board a chat room never touches.
+    # `delegation` adds exactly one tool, delegate_task (measured: 17 -> 18). It is the
+    # only way this host has to answer above its own model: the child runs on whatever
+    # delegation.model names, which is a stronger model than the turn's own. It was not
+    # affordable under the old 180s cap; the detached worker's 20 minutes made it so.
     "toolsets": ("terminal,file,vision,video,web,skills,"
-                 "cronjob,memory,session_search,computer_use,image_gen"),
+                 "cronjob,memory,session_search,computer_use,image_gen,delegation"),
     # Blank = inherit the profile default, and its fallback chain with it. These used to
     # pin custom:altalt/gpt-5-nano because the profile default was a local MLX model that
     # needed minutes per turn. That stopped being true when the default became
@@ -1094,6 +1098,19 @@ PROMPT_TEMPLATE = """너는 카카오톡 방에서 나(운영자)를 돕는 어�
   한 줄로 못 한다고 말하고 대신 할 수 있는 걸 해라.
 - **시간은 최대 20분이고, 오래 걸리는 일을 해도 된다.** 진행 상황은 호출자가 따로 알린다 -
   "지금 찾는 중" 같은 중간 보고를 네가 쓰지 마라. 20분을 넘기면 잘리니 그 안에 끝낼 범위로 잡아라.
+- **네 능력 밖이거나 품이 많이 드는 일은 `delegate_task` 로 넘겨라.** 자식은 **너보다 큰 모델**에서 돌고 끝나면 결과만 돌아온다.
+  다음 중 하나라도 걸리면 넘긴다: 단계가 여럿인 분석·비교, 로그나 코드를 읽어 원인을 찾는 일,
+  여러 곳에서 자료를 모아 종합하는 일, 한 번에 답하면 분명히 부실해질 일, 네 첫 답이 스스로 미덥지 않을 때.
+  **목록을 도는 일(N개 지역·N개 항목)은 자식 하나에 통째로 주지 마라.** `tasks` 배열에 세 덩이로 쪼개
+  **한 번에** 던져라. 25개를 한 자식에게 주면 시간 안에 못 끝낸다 - 실제로 그렇게 실패했다.
+  순서대로 여러 번 부르지도 마라. 병렬이 아니면 쪼갠 값이 없다.
+  쪼갤 때는 각 task 에 `output_schema` 를 줘서 정해진 모양으로 받아라. 그래야 네가 할 일이
+  다시 쓰는 게 아니라 이어붙이는 것이 된다.
+  `goal` 과 `context` 는 **그 자체로 완결**돼야 한다 - 자식은 이 대화를 전혀 못 보고 되물을 수도 없다.
+  필요한 배경은 자식마다 복사해 넣어라.
+  돌아온 내용을 **요약하지 마라.** 줄이거나 바꾸지 말고 카톡 길이에만 맞춰 그대로 실어라.
+- 인사·일정·날씨 한 줄·짧은 사실 확인, MY_THREAD 에 이미 답이 있는 것은 **직접 답해라.**
+  위임은 몇 분이 걸리고 그동안 이 방은 다음 질문을 못 받는다.
 - 답은 카카오톡 메시지 한 개다. 길어질 것 같으면 요약으로 끊고, 더 필요하냐고 물어라.
 
 MY_THREAD:
@@ -1272,30 +1289,24 @@ def kill_process_group(process: subprocess.Popen) -> None:
         process.kill()
 
 
-# chat_id -> is it an open chat. A room never changes type, so one query each.
-_OPEN_CHAT_CACHE: dict[int, bool] = {}
-
-
 def thread_root(config: dict, chat_id: int, log_id) -> int | None:
-    """The 댓글 root for a reply in this room, or None when the room has no 댓글.
+    """The 댓글 root for a reply, or None when there is nothing to hang it off.
 
-    Only an open chat has threads. `chat_rooms.link_id` is the test: it is the
-    open_link this room hangs off, and it is null for DirectChat/MemoChat/PlusChat.
-    Elsewhere a threadId is accepted and stored and then renders as an ordinary
-    line, which is worse than not sending one - the row claims a reply nobody sees.
+    Every room gets one. This used to ask `chat_rooms.link_id` first and send a
+    thread only for open chats, on the belief that 댓글 is an open-chat feature and
+    that a threadId elsewhere renders as an ordinary line. The belief was wrong:
+    a threadId sent into a MemoChat (나와의 채팅, link_id null) renders as a real
+    댓글 in the app - checked by eye on 2026-09-14, which is the only way to check
+    a rendering. The row shape is identical in both, so the DB could never have
+    told us. Dropping the query also drops a per-room round trip and the
+    "방 종류를 못 읽었다" path that silently cost the thread when Iris was down.
+
+    The value is `chat_logs.id`, not `_id` - an `_id` is accepted and stored
+    verbatim, producing a 댓글 rooted at a message that does not exist.
     """
     if not log_id or backend_name(config) != "iris":
         return None
-    chat_id = int(chat_id)
-    if chat_id not in _OPEN_CHAT_CACHE:
-        try:
-            rows = backend_query(config, f"SELECT link_id FROM chat_rooms WHERE id = {chat_id}",
-                                 ("link_id",))
-        except Exception as exc:  # noqa: BLE001 - a missing thread must not cost the answer
-            log(f"chat {chat_id}: 방 종류를 못 읽었다 ({str(exc)[:120]})")
-            return None
-        _OPEN_CHAT_CACHE[chat_id] = bool(rows and rows[0][0])
-    return int(log_id) if _OPEN_CHAT_CACHE[chat_id] else None
+    return int(log_id)
 
 
 def send_message(config: dict, room: dict, text: str, images: list[Path] | None = None,
@@ -1553,10 +1564,10 @@ def run_turn_job(config_path: Path, path: Path) -> int:
     chat_id = int(job["chat_id"])
     request = str(job.get("request") or "")
     trigger = job.get("trigger") or {}
-    # In an open chat the answer hangs off the mention as a 댓글, so the UI already
-    # says what it answers and the quote would just repeat the line above it. Every
-    # other room has no 댓글 form, and there the quote is the only thing tying a
-    # message that lands minutes later to its question.
+    # The answer hangs off the mention as a 댓글, so the UI already says what it
+    # answers and the quote would just repeat the line above it. The quote survives
+    # for the one path with nothing to hang off - `--send-to`, where a photo or a
+    # cron result lands minutes later with no trigger of its own.
     root = thread_root(config, chat_id, trigger.get("log_id"))
     quoted = "" if root else quote_request(request)
     load_name_cache()
