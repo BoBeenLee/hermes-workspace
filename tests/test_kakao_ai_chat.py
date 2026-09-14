@@ -672,8 +672,9 @@ class SendOnceAttachmentTests(unittest.TestCase):
     def _send(self, text):
         sent = {}
 
-        def capture(config, room, body, images=None, files=None):
-            sent.update(room=room, body=body, images=list(images or []), files=list(files or []))
+        def capture(config, room, body, images=None, files=None, thread_id=None):
+            sent.update(room=room, body=body, images=list(images or []),
+                        files=list(files or []), thread_id=thread_id)
 
         with mock.patch.object(module, "load_config", return_value=self.config), \
              mock.patch.object(module, "send_message", capture):
@@ -903,7 +904,7 @@ class AsyncTurnBase(unittest.TestCase):
             process_discord_commands=mock.DEFAULT,
             fetch_new_rows=mock.Mock(return_value=rows),
             spawn_turn=spawn_turn,
-            send_message=mock.Mock(side_effect=lambda c, r, text, *a: self.sent.append(text)),
+            send_message=mock.Mock(side_effect=lambda c, r, text, *a, **k: self.sent.append(text)),
         ):
             module.tick(config or self.config, self.state, discord=FakeDiscord())
         return spawn_turn
@@ -1004,7 +1005,7 @@ class JobReapTests(AsyncTurnBase):
     def test_a_worker_that_died_without_a_word_gets_one(self):
         self.write_job(pid=999999)
         with mock.patch.object(module, "send_message",
-                               side_effect=lambda c, r, text, *a: self.sent.append(text)):
+                               side_effect=lambda c, r, text, *a, **k: self.sent.append(text)):
             module.reap_jobs(self.config, self.state)
         self.assertFalse(module.job_path(CHAT).exists())
         self.assertEqual(len(self.sent), 1)
@@ -1031,7 +1032,7 @@ class TurnWorkerTests(AsyncTurnBase):
             load_name_cache=mock.DEFAULT,
             build_turn=mock.Mock(return_value=([], "prompt", "고양이 그려줘")),
             run_hermes=mock.Mock(**outcome),
-            send_message=mock.Mock(side_effect=lambda c, r, text, *a: self.sent.append(text)),
+            send_message=mock.Mock(side_effect=lambda c, r, text, *a, **k: self.sent.append(text)),
         ):
             code = module.run_turn_job(Path("config.json"), path)
         return code, path
@@ -1085,10 +1086,85 @@ class TurnWorkerTests(AsyncTurnBase):
             load_name_cache=mock.DEFAULT,
             build_turn=mock.Mock(return_value=([], "prompt", "고양이 그려줘")),
             run_hermes=mock.Mock(return_value="가" * 500),
-            send_message=mock.Mock(side_effect=lambda c, r, text, *a: self.sent.append(text)),
+            send_message=mock.Mock(side_effect=lambda c, r, text, *a, **k: self.sent.append(text)),
         ):
             module.run_turn_job(Path("config.json"), module.job_path(CHAT))
         self.assertTrue(self.sent[0].endswith('- "고양이 그려줘"'))
+
+
+class ThreadRootTests(unittest.TestCase):
+    """Only an open chat has 댓글. Everywhere else a threadId is a lie in the row."""
+
+    def setUp(self):
+        module._OPEN_CHAT_CACHE.clear()
+        self.config = dict(CONFIG, backend="iris")
+
+    def root(self, link_id, log_id=999, calls=None):
+        rows = [[link_id]] if link_id is not None else [[None]]
+        query = mock.Mock(return_value=rows)
+        with mock.patch.object(module, "backend_query", query):
+            out = module.thread_root(self.config, CHAT, log_id)
+            if calls is not None:
+                for _ in range(calls - 1):
+                    module.thread_root(self.config, CHAT, log_id)
+        return out, query
+
+    def test_an_open_chat_threads(self):
+        out, _ = self.root(342982962)
+        self.assertEqual(out, 999)
+
+    def test_a_room_without_a_link_does_not(self):
+        out, _ = self.root(None)
+        self.assertIsNone(out)
+
+    def test_the_room_type_is_looked_up_once(self):
+        _, query = self.root(342982962, calls=3)
+        self.assertEqual(query.call_count, 1)
+
+    def test_no_trigger_means_no_thread(self):
+        # a cron job reaching the room through --send-to has nothing to hang off
+        with mock.patch.object(module, "backend_query") as query:
+            self.assertIsNone(module.thread_root(self.config, CHAT, None))
+            query.assert_not_called()
+
+    def test_a_lookup_failure_costs_the_thread_not_the_answer(self):
+        with mock.patch.object(module, "backend_query", side_effect=RuntimeError("iris down")):
+            self.assertIsNone(module.thread_root(self.config, CHAT, 999))
+
+
+class ThreadedDeliveryTests(AsyncTurnBase):
+    """In an open chat the 댓글 says what it answers, so the quote would repeat it."""
+
+    def deliver(self, link_id):
+        module._OPEN_CHAT_CACHE.clear()
+        self.write_job(trigger=row(log_id=3929360413260732419))
+        captured = {}
+
+        def capture(config, room, text, images=None, files=None, thread_id=None):
+            captured.setdefault("calls", []).append((text, thread_id))
+
+        with mock.patch.multiple(
+            module,
+            load_config=mock.Mock(return_value=self.config),
+            load_name_cache=mock.DEFAULT,
+            backend_query=mock.Mock(return_value=[[link_id]]),
+            build_turn=mock.Mock(return_value=([], "prompt", "고양이 그려줘")),
+            run_hermes=mock.Mock(return_value="답이다"),
+            send_message=mock.Mock(side_effect=capture),
+        ):
+            module.run_turn_job(Path("config.json"), module.job_path(CHAT))
+        return captured["calls"][-1]
+
+    def test_an_open_chat_answer_hangs_off_the_mention(self):
+        text, thread_id = self.deliver(342982962)
+        self.assertEqual(thread_id, 3929360413260732419)
+        self.assertIn("답이다", text)
+        self.assertNotIn("고양이 그려줘", text)  # the 댓글 already shows it
+
+    def test_elsewhere_the_quote_is_still_the_only_link_back(self):
+        text, thread_id = self.deliver(None)
+        self.assertIsNone(thread_id)
+        self.assertIn("고양이 그려줘", text)
 
 
 class HeartbeatTests(unittest.TestCase):

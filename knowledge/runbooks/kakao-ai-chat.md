@@ -376,6 +376,36 @@ hooks:
 - `sed` 가 아니라 `grep -o | head -1`: 선행 `.*` 가 greedy 라 `tool_input` 안의
   `"tool_name"` 문자열을 집는다. 페이로드 순서상 **첫 매치**가 진짜다.
 
+### 오픈채팅에서는 답이 댓글로 달린다 (2026-09-14)
+
+`chat_rooms.link_id` 가 있는 방(= 오픈채팅)이면 `[jarvis]` 답·하트비트·실패 공지가 전부
+**그 턴을 부른 멘션에 달린 댓글**로 나간다. UI 가 무엇의 답인지 보여주므로 그 방에서는
+`- "원 요청"` 인용을 뺀다. 그 밖의 방은 그대로 인용만 붙는다.
+
+**이게 Iris 가 보낼 수 있는 유일한 답장 형태다.** 카카오톡의 보통 답장은 `type=26` 행에
+`attachment` 로 `src_logId` 를 실은 것인데, `Replier.sendMessageInternal` 이 쏘는
+`NotificationActionService` REPLY_MESSAGE 인텐트에 첨부를 실을 자리가 없어서 못 만든다.
+`/reply` 본문에 `src_logId` 를 얹으면 kotlinx 가 **unknown key 로 요청 전체를 먼저** 거절해서
+본문 모양 문제처럼 보이는데, 그게 진짜 천장이 아니다.
+
+오픈채팅 댓글은 다른 메커니즘이다 — `chat_logs.thread_id` 열이고 `attachment` 가 아니다.
+`POST /reply` 의 `threadId` 가 그 열에 **그대로** 박힌다 (2026-09-14 평일04 에서 실측).
+
+**값은 `chat_logs.id` 지 `_id` 가 아니다.** `_id`(예: 454)를 넣어도 `success:true` 가 오고
+그대로 저장된다 — 존재하지 않는 메시지에 뿌리를 둔 댓글이 된다. 실수해도 에러가 없다.
+
+확인법: 그 방의 사람이 직접 단 댓글 행과 `thread_id` 모양을 비교한다.
+
+```sql
+SELECT _id, id, type, thread_id, message, user_id, v FROM chat_logs
+WHERE chat_id = <방> ORDER BY _id DESC LIMIT 5
+```
+
+(`user_id` 와 `v` 가 둘 다 없으면 `message` 가 base64 로 나온다. 에러는 안 난다.)
+
+방 종류는 `thread_root()` 가 `chat_rooms.link_id` 로 한 번만 조회하고 캐시한다. 조회가
+실패하면 댓글만 포기하고 답은 그대로 나간다.
+
 ## Operations
 
 | 할 일 | 명령 |

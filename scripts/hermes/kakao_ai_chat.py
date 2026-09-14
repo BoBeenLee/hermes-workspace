@@ -1272,8 +1272,34 @@ def kill_process_group(process: subprocess.Popen) -> None:
         process.kill()
 
 
+# chat_id -> is it an open chat. A room never changes type, so one query each.
+_OPEN_CHAT_CACHE: dict[int, bool] = {}
+
+
+def thread_root(config: dict, chat_id: int, log_id) -> int | None:
+    """The 댓글 root for a reply in this room, or None when the room has no 댓글.
+
+    Only an open chat has threads. `chat_rooms.link_id` is the test: it is the
+    open_link this room hangs off, and it is null for DirectChat/MemoChat/PlusChat.
+    Elsewhere a threadId is accepted and stored and then renders as an ordinary
+    line, which is worse than not sending one - the row claims a reply nobody sees.
+    """
+    if not log_id or backend_name(config) != "iris":
+        return None
+    chat_id = int(chat_id)
+    if chat_id not in _OPEN_CHAT_CACHE:
+        try:
+            rows = backend_query(config, f"SELECT link_id FROM chat_rooms WHERE id = {chat_id}",
+                                 ("link_id",))
+        except Exception as exc:  # noqa: BLE001 - a missing thread must not cost the answer
+            log(f"chat {chat_id}: 방 종류를 못 읽었다 ({str(exc)[:120]})")
+            return None
+        _OPEN_CHAT_CACHE[chat_id] = bool(rows and rows[0][0])
+    return int(log_id) if _OPEN_CHAT_CACHE[chat_id] else None
+
+
 def send_message(config: dict, room: dict, text: str, images: list[Path] | None = None,
-                 files: list[Path] | None = None) -> None:
+                 files: list[Path] | None = None, thread_id=None) -> None:
     images = list(images or [])
     files = list(files or [])
     if backend_name(config) == "iris":
@@ -1284,11 +1310,12 @@ def send_message(config: dict, room: dict, text: str, images: list[Path] | None 
         client = iris_client(config)
         # Caption first: an image row carries no bot_prefix, so the text beside it is
         # the only thing that later marks the pair as ours.
-        client.reply(room["chat_id"], text)
+        client.reply(room["chat_id"], text, thread_id)
         if images:
             client.reply_images(
                 room["chat_id"],
                 [base64.b64encode(path.read_bytes()).decode("ascii") for path in images],
+                thread_id,
             )
         for path in files:
             # Not Iris: `/reply` has no file type and never had one. This leaves
@@ -1384,11 +1411,13 @@ def reap_jobs(config: dict, state: dict, now: float | None = None) -> None:
             # The worker is gone and never spoke - SIGKILL, OOM, a reboot. Silence is
             # the one answer a chat bot must never give, and there is nobody else left
             # to notice.
-            quoted = quote_request(str(job.get("request") or ""))
+            root = thread_root(config, chat_id, (job.get("trigger") or {}).get("log_id"))
+            quoted = "" if root else quote_request(str(job.get("request") or ""))
             log(f"chat {chat_id}: 턴 워커가 말없이 사라졌다")
             with contextlib.suppress(Exception):
                 send_message(config, {"chat_id": chat_id},
-                             f"{config['bot_prefix']} {TURN_LOST_NOTE}" + quote_suffix(quoted))
+                             f"{config['bot_prefix']} {TURN_LOST_NOTE}" + quote_suffix(quoted),
+                             thread_id=root)
         path.unlink(missing_ok=True)
 
 
@@ -1443,7 +1472,8 @@ def next_beat(previous: float) -> float:
     return previous * 1.6
 
 
-def deliver_answer(config: dict, chat_id: int, answer: str, quote: str = "") -> str:
+def deliver_answer(config: dict, chat_id: int, answer: str, quote: str = "",
+                   thread_id=None) -> str:
     """Turn a finished answer into one room message. The only place answers go out.
 
     Shared with `--send-to` so the attachment fence, the bot prefix, the overflow
@@ -1467,7 +1497,7 @@ def deliver_answer(config: dict, chat_id: int, answer: str, quote: str = "") -> 
         short = f"{short}\n\n... (전체: {result_path})"
     prefix = config["bot_prefix"]
     outgoing = (short if short.startswith(prefix) else f"{prefix} {short}") + suffix
-    send_message(config, {"chat_id": chat_id}, outgoing, images, files)
+    send_message(config, {"chat_id": chat_id}, outgoing, images, files, thread_id)
     return outgoing
 
 
@@ -1522,7 +1552,13 @@ def run_turn_job(config_path: Path, path: Path) -> int:
     config = load_config(config_path)
     chat_id = int(job["chat_id"])
     request = str(job.get("request") or "")
-    quoted = quote_request(request)
+    trigger = job.get("trigger") or {}
+    # In an open chat the answer hangs off the mention as a 댓글, so the UI already
+    # says what it answers and the quote would just repeat the line above it. Every
+    # other room has no 댓글 form, and there the quote is the only thing tying a
+    # message that lands minutes later to its question.
+    root = thread_root(config, chat_id, trigger.get("log_id"))
+    quoted = "" if root else quote_request(request)
     load_name_cache()
     PROGRESS_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(PROGRESS_DIR, 0o700)
@@ -1532,7 +1568,8 @@ def run_turn_job(config_path: Path, path: Path) -> int:
 
     def say(text: str) -> None:
         with contextlib.suppress(Exception):
-            send_message(config, {"chat_id": chat_id}, f"{config['bot_prefix']} {text}")
+            send_message(config, {"chat_id": chat_id}, f"{config['bot_prefix']} {text}",
+                         thread_id=root)
 
     def on_sigterm(_signum, _frame):
         # systemd kills the whole cgroup on restart, `start_new_session` or not: that
@@ -1555,7 +1592,7 @@ def run_turn_job(config_path: Path, path: Path) -> int:
         say(heartbeat_text(elapsed, request, progress))
 
     try:
-        _, prompt, _ = build_turn(config, job.get("trigger") or {})
+        _, prompt, _ = build_turn(config, trigger)
         answer = run_hermes(config, prompt, chat_id, request,
                             timeout=TURN_HARD_CAP_SECONDS, progress_path=progress, on_wait=beat)
     except subprocess.TimeoutExpired:
@@ -1574,7 +1611,7 @@ def run_turn_job(config_path: Path, path: Path) -> int:
         progress.unlink(missing_ok=True)
 
     try:
-        outgoing = deliver_answer(config, chat_id, answer, quoted)
+        outgoing = deliver_answer(config, chat_id, answer, quoted, thread_id=root)
     except Exception as exc:  # noqa: BLE001
         log(f"chat {chat_id}: 전송 실패 ({str(exc)[:200]})")
         path.unlink(missing_ok=True)
@@ -1733,7 +1770,8 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None,
                 job["notified"] = True
                 save_json(job_path(chat_id), job)
                 with contextlib.suppress(Exception):
-                    send_message(config, room, f"{config['bot_prefix']} {TURN_BUSY_NOTE}")
+                    send_message(config, room, f"{config['bot_prefix']} {TURN_BUSY_NOTE}",
+                                 thread_id=thread_root(config, chat_id, trigger.get("log_id")))
                     state["rate"] = recent + [time.time()]
                 log(f"chat {chat_id}: 앞 턴이 돌고 있어 이번 멘션은 넘긴다")
             continue
@@ -1762,7 +1800,8 @@ def tick(config: dict, state: dict, dry_run: bool = False, discord=None,
             # never launched has no worker left to speak for it. Everything after the
             # launch - timeouts included - is the worker's to announce.
             with contextlib.suppress(Exception):
-                send_message(config, room, f"{config['bot_prefix']} {TURN_FAILED_NOTE}")
+                send_message(config, room, f"{config['bot_prefix']} {TURN_FAILED_NOTE}",
+                             thread_id=thread_root(config, chat_id, trigger.get("log_id")))
                 state["rate"] = recent + [time.time()]
             continue
 
