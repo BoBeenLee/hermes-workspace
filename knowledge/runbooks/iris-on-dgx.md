@@ -213,6 +213,42 @@ Adopting it means building an APK from an unmerged third-party branch and replac
 on the device that holds the companion slot. The `am` path costs no build and is already
 verified, so the trade only becomes worth it once #129 is merged and released.
 
+## `@멘션`: An Attachment, Not Text
+
+Typing `@이보빈` into the message body sends the three characters and nothing else - no
+highlight, no mention notification. The mention lives in `chat_logs.attachment` on an
+ordinary `type = 1` row:
+
+```json
+{"mentions":[{"at":[1],"user_id":135397747,"len":3}]}
+```
+
+`/reply` has no slot for it: `ReplyType` carries a bare `data` string (same three-entry enum as
+above; `strings` on Iris's dex finds no `mention` at all), and the text leaves as a
+NotificationActionService REPLY_MESSAGE intent, which has nowhere to put an attachment. So this
+is the Frida hook's job, exactly like media threading - see `frida/README.md`.
+
+**`at` is the 1-based ordinal of the `@` CHARACTER, counting every `@` in the message.** Not a
+character offset, not a word index. Measured 2026-09-15: `"x@y @이보빈 A"` needs `at=[2]`,
+because the `@` in `x@y` takes ordinal 1. This is worth getting right because a wrong `at` is
+not a no-op - the renderer takes the `@` you pointed at, eats `len` characters after it and
+paints the resolved nickname over them, so the same message with `at=[1]` rendered as
+`x@이보빈이보빈 A1`.
+
+**`len` is the character count of the nickname**, which is how a nickname with a space works
+(`@노래하는 춘식이`, `len` 8): the renderer consumes `len` chars, it never tokenises.
+
+`scripts/hermes/iris_client.py:mentions_for` builds the list from a nickname → user_id map and
+`write_mention_hint` hands it to the hook. Verified in 평일04 (`18415707579364567`), both as a
+plain room message and inside a 댓글 - `threadId` and mentions are independent, one rides
+`/reply`, the other the hook, and a single send carries both.
+
+**Open chats only.** `user_id` here is an `open_chat_member.user_id`, and no table maps a name
+to an id in a DirectChat or MultiChat - see "Where Sender Names Come From" below. The map itself
+is the harder half: `open_chat_member` is a partial cache (평일04's link had zero rows in it),
+so a room's roster may have to come off the `/ws` feed instead. `db2.open_profile` covers our
+own per-link nickname, which is what the 평일04 test used.
+
 ## Not Verified
 
 - **Long-run stability**, reconnect behaviour, and whether an injected or stale referer survives KakaoTalk rewriting `shared_prefs`. Since the referer is issued per notification handling, expect it to rotate and plan an Iris restart around that.

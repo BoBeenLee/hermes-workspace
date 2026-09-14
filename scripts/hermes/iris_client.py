@@ -416,19 +416,94 @@ def write_thread_hint(chat_id, thread_id, container: str = DEFAULT_CONTAINER) ->
              "printf %s " + str(int(thread_id)) + " > " + HINT_FILE + "; /system/bin/chmod 644 " + HINT_FILE])
 
 
+# Where the hook looks for the mentions attachment of the next text send. Same
+# consume-once-by-mtime protocol as HINT_FILE, separate file: a send can carry a thread,
+# mentions, both or neither, and one file per concern keeps a stale one from riding along.
+MENTION_HINT_FILE = "/data/local/tmp/iris_mentions_pending"
+
+
+def write_mention_hint(mentions: list[dict], container: str = DEFAULT_CONTAINER) -> None:
+    """Signal the in-app hook which @mentions the next text send carries.
+
+    Iris cannot send a mention. It is not a message property but `chat_logs.attachment`
+    on an ordinary type=1 row, and `/reply` has nowhere to put one: ReplyType is
+    TEXT/IMAGE/IMAGE_MULTIPLE over a bare `data` string, and the text leaves as a
+    NotificationActionService REPLY_MESSAGE intent with no attachment slot. The Frida hook
+    calls `ChatSendingLog$b.c(JSONObject)` on the next text build instead - see
+    frida/iris_thread.js.
+
+    Empty `mentions` writes nothing, so a later plain send inherits no stale hint.
+
+    `docker exec -i` with the JSON on stdin, not an interpolated `sh -c`: the payload is
+    full of quotes and braces and would need shell quoting it does not survive.
+    """
+    if not mentions:
+        return
+    payload = json.dumps({"mentions": mentions}, separators=(",", ":"), ensure_ascii=False)
+    _docker_stdin(
+        ["exec", "-i", container, "/system/bin/sh", "-c",
+         f"cat > {MENTION_HINT_FILE}; /system/bin/chmod 644 {MENTION_HINT_FILE}"],
+        payload.encode("utf-8"),
+    )
+
+
+def mentions_for(text: str, members: dict) -> list[dict]:
+    """The `mentions` attachment for `text`, given a nickname -> user_id map.
+
+    `at` is **not** a character offset and **not** a word index: it is the 1-based ordinal
+    of the `@` CHARACTER among every `@` in the message. Measured against the live app - a
+    mention written `@이보빈` in "x@y @이보빈 A" needs `at=[2]`, because the `@` in "x@y"
+    takes ordinal 1. Getting it wrong is not a no-op: with `at=[1]` KakaoTalk highlighted
+    the first `@`, ate the `len` characters after it and painted the nickname over them, so
+    "x@y @이보빈 A1" rendered as "x@이보빈이보빈 A1".
+
+    `len` is the character count of the nickname after the `@`, which is why a nickname may
+    contain spaces (`@노래하는 춘식이`, len 8) - the renderer takes `len` chars, it does not
+    tokenise. One entry per user, with every ordinal they appear at.
+
+    Longest nickname first, so `@김서현` does not shadow `@김서현/98/ESFP`. After a match the
+    scan resumes past the nickname, matching the renderer, which consumes its `len` chars
+    before looking for the next `@`.
+
+    Only open chats can use this: `user_id` here is an `open_chat_member.user_id`, and no
+    table maps a name to an id in a DirectChat or MultiChat.
+    """
+    by_length = sorted(((n, u) for n, u in members.items() if n), key=lambda kv: -len(kv[0]))
+    found: dict[int, dict] = {}
+    ordinal = 0
+    index = text.find("@")
+    while index >= 0:
+        ordinal += 1
+        rest = text[index + 1:]
+        step = 1
+        for nickname, user_id in by_length:
+            if rest.startswith(nickname):
+                entry = found.setdefault(
+                    int(user_id), {"at": [], "user_id": int(user_id), "len": len(nickname)})
+                entry["at"].append(ordinal)
+                step = 1 + len(nickname)
+                break
+        index = text.find("@", index + step)
+    return list(found.values())
+
+
 def _docker(args: list[str]) -> None:
+    _docker_stdin(args, None)
+
+
+def _docker_stdin(args: list[str], payload: bytes | None) -> None:
     result = subprocess.run(
         ["docker", *args],
-        text=True,
-        stdin=subprocess.DEVNULL,
+        input=payload,
+        stdin=subprocess.DEVNULL if payload is None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=DOCKER_TIMEOUT_SECONDS,
         check=False,
     )
     if result.returncode != 0:
-        raise IrisError(f"docker {args[0]} failed ({result.returncode}): "
-                        f"{(result.stderr or result.stdout).strip()[:300]}")
+        detail = (result.stderr or result.stdout or b"").decode("utf-8", "replace")
+        raise IrisError(f"docker {args[0]} failed ({result.returncode}): {detail.strip()[:300]}")
 
 
 def demo() -> None:
@@ -546,6 +621,48 @@ def demo() -> None:
         assert calls == [], calls   # None writes nothing
     finally:
         _docker = real_docker
+
+    # mentions: `at` counts EVERY @ in the text, 1-based, not words and not offsets.
+    people = {"이보빈": 135397747, "노래하는 춘식이": 6383868466542844073,
+              "김서현": 111, "김서현/98/ESFP": 222}
+    assert mentions_for("@이보빈 안녕", people) == [
+        {"at": [1], "user_id": 135397747, "len": 3}]
+    # a bare @ ahead of the mention takes ordinal 1 - the case that rendered wrong live
+    assert mentions_for("x@y @이보빈 A", people) == [
+        {"at": [2], "user_id": 135397747, "len": 3}]
+    # a nickname with a space is one mention of len 8, not two words
+    assert mentions_for("@노래하는 춘식이 님", people) == [
+        {"at": [1], "user_id": 6383868466542844073, "len": 8}]
+    # longest nickname wins, so the short one does not shadow it
+    assert mentions_for("@김서현/98/ESFP 님", people) == [
+        {"at": [1], "user_id": 222, "len": 11}]
+    assert mentions_for("@김서현 님", people) == [{"at": [1], "user_id": 111, "len": 3}]
+    # one entry per user, every ordinal they sit at; unknown @handles still consume one
+    assert mentions_for("@이보빈 @nobody @이보빈", people) == [
+        {"at": [1, 3], "user_id": 135397747, "len": 3}]
+    # the scan resumes past a matched nickname, so an @ inside one is not counted
+    assert mentions_for("@이보빈 x @이보빈", {"이보빈 x": 9, "이보빈": 8}) == [
+        {"at": [1], "user_id": 9, "len": 5}, {"at": [2], "user_id": 8, "len": 3}]
+    assert mentions_for("아무도 없다", people) == []
+    assert mentions_for("@", people) == [] and mentions_for("", people) == []
+
+    # the hint: a set writes the JSON on stdin; an empty list touches docker not at all
+    global _docker_stdin
+    real_stdin, stdin_calls = _docker_stdin, []
+    _docker_stdin = lambda args, payload: stdin_calls.append((args, payload))
+    try:
+        write_mention_hint([{"at": [1], "user_id": 135397747, "len": 3}], container="c")
+        assert len(stdin_calls) == 1, stdin_calls
+        args, payload = stdin_calls[0]
+        assert args[:2] == ["exec", "-i"] and args[2] == "c", args
+        assert MENTION_HINT_FILE in args[-1], args
+        assert json.loads(payload.decode()) == {
+            "mentions": [{"at": [1], "user_id": 135397747, "len": 3}]}, payload
+        stdin_calls.clear()
+        write_mention_hint([], container="c")
+        assert stdin_calls == [], stdin_calls
+    finally:
+        _docker_stdin = real_stdin
 
     print("iris_client demo ok")
 
