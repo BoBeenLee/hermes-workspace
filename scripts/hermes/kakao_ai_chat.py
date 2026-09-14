@@ -111,6 +111,11 @@ TURN_FAILED_NOTE = "지금은 답을 만들지 못했어요. 잠시 뒤에 다�
 # trigger, so nothing is holding it. Queueing it would need a second cursor per room,
 # and a re-ask is cheap now that the room can see the first turn is still alive.
 TURN_BUSY_NOTE = "앞 질문 아직 하는 중이에요. 그거 끝나고 다시 불러 주세요."
+# Said before build_turn, which itself reaches the network (room context, and up to
+# media_per_turn x 30s of downloads). The first heartbeat is 90s away and an ordinary
+# answer is 43-170s, so without this the room has no way to tell "working" from
+# "ignored" for the first minute and a half - which is most turns.
+TURN_START_NOTE = "받았어요, 지금 시작합니다."
 # systemd restarts the daemon by killing its whole cgroup, workers included.
 TURN_STOPPED_NOTE = "데몬이 다시 뜨느라 이 답은 중단됐어요. 다시 불러 주세요."
 # The reaper speaking for a worker that died without a word (SIGKILL, OOM, reboot).
@@ -1592,6 +1597,8 @@ def run_turn_job(config_path: Path, path: Path) -> int:
         os._exit(1)
 
     signal.signal(signal.SIGTERM, on_sigterm)
+    # Before build_turn, not after: that call is the slow part of a quiet turn.
+    say(TURN_START_NOTE)
 
     def beat(elapsed: float) -> None:
         # run_hermes narrows its wait slices near the cap, so the schedule lives here

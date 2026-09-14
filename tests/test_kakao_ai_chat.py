@@ -1047,27 +1047,33 @@ class TurnWorkerTests(AsyncTurnBase):
             code = module.run_turn_job(Path("config.json"), path)
         return code, path
 
+    def test_the_room_hears_that_the_turn_started(self):
+        # build_turn reaches the network and the first heartbeat is 90s out, so
+        # without this line a working turn and an ignored mention look identical
+        self.run_worker(return_value="답이다")
+        self.assertIn(module.TURN_START_NOTE, self.sent[0])
+
     def test_an_answer_is_delivered_as_a_comment_on_the_question(self):
         code, path = self.run_worker(return_value="답이다")
         self.assertEqual(code, 0)
-        self.assertIn("답이다", self.sent[0])
+        self.assertIn("답이다", self.sent[-1])
         # the 댓글 shows the question above it, so repeating it here is noise
-        self.assertNotIn("고양이 그려줘", self.sent[0])
+        self.assertNotIn("고양이 그려줘", self.sent[-1])
         # kept, not unlinked: the fingerprint is the parent's only way to verify it
         self.assertEqual(module.load_json(path, {})["done"][:9], "[jarvis] ")
 
     def test_the_hard_cap_is_announced(self):
         code, path = self.run_worker(side_effect=subprocess.TimeoutExpired("hermes", 1200))
         self.assertEqual(code, 1)
-        self.assertIn(module.TURN_TIMEOUT_NOTE, self.sent[0])
+        self.assertIn(module.TURN_TIMEOUT_NOTE, self.sent[-1])
         # hangs off the question as a 댓글, which is what says who it is for
-        self.assertNotIn("고양이 그려줘", self.sent[0])
+        self.assertNotIn("고양이 그려줘", self.sent[-1])
         self.assertFalse(path.exists())
 
     def test_any_other_failure_is_announced_too(self):
         code, path = self.run_worker(side_effect=RuntimeError("hermes failed (1): boom"))
         self.assertEqual(code, 1)
-        self.assertIn(module.TURN_FAILED_NOTE, self.sent[0])
+        self.assertIn(module.TURN_FAILED_NOTE, self.sent[-1])
         self.assertFalse(path.exists())
 
     def test_the_room_text_does_not_leak_into_the_worker_log(self):
@@ -1086,8 +1092,8 @@ class TurnWorkerTests(AsyncTurnBase):
         doc.write_bytes(b"%PDF")
         with mock.patch.multiple(module, OUTBOX_DIR=outbox, MEDIA_DIR=outbox / "none"):
             self.run_worker(return_value=f"[[file: {doc}]]")
-        self.assertEqual(len(self.sent), 1)
-        self.assertIn("보고서.pdf", self.sent[0])
+        self.assertEqual(len(self.sent), 2)  # start notice, then the one answer
+        self.assertIn("보고서.pdf", self.sent[-1])
 
     def test_a_long_answer_keeps_its_quote_instead_of_truncating_it(self):
         # only the no-trigger path still quotes, and that is where the budgeting
@@ -1103,7 +1109,7 @@ class TurnWorkerTests(AsyncTurnBase):
             send_message=mock.Mock(side_effect=lambda c, r, text, *a, **k: self.sent.append(text)),
         ):
             module.run_turn_job(Path("config.json"), module.job_path(CHAT))
-        self.assertTrue(self.sent[0].endswith('- "고양이 그려줘"'))
+        self.assertTrue(self.sent[-1].endswith('- "고양이 그려줘"'))
 
 
 class ThreadRootTests(unittest.TestCase):
