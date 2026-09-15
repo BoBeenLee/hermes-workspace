@@ -1,0 +1,5 @@
+name: korea_search
+version: 1.0.0
+description: "Korean search backends: Kakao places (real place_url + phone), Naver 지역/블로그, Google Places opening hours, and Daum as the web_search backend for Hangul queries."
+author: bobeenlee
+kind: backend

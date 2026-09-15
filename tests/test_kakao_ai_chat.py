@@ -306,9 +306,19 @@ class PromptTests(unittest.TestCase):
         # the bug: a map URL jarvis sent for another place two days earlier was reused
         # verbatim, and MY_THREAD reading as one conversation makes that more tempting
         prompt = module.build_prompt([], [], "(없음)", "지도 링크도 공유해줘")
-        self.assertIn("좌표를 지어내지 마라", prompt)
-        self.assertIn("map.kakao.com/?q=", prompt)
+        self.assertIn("링크를 직접 만들지 마라", prompt)
+        # the fix for the same bug: kakao_place_search hands over a real place_url,
+        # so there is nothing left to fabricate a link from
+        self.assertIn("kakao_place_search", prompt)
+        self.assertIn("map_url", prompt)
         self.assertIn("그때 그 장소의 것", prompt)
+
+    def test_prompt_names_the_only_tool_that_knows_opening_hours(self):
+        # neither Korean place API carries hours, and the model used to do weekday
+        # arithmetic on a blog snippet instead
+        prompt = module.build_prompt([], [], "(없음)", "지금 문 열었어?")
+        self.assertIn("place_hours", prompt)
+        self.assertIn("open_now", prompt)
 
     def test_the_agent_is_told_what_it_cannot_do(self):
         # a "draw me a diagram" turn once ran 9m33s hunting for a generator that did not
@@ -336,13 +346,16 @@ class PromptTests(unittest.TestCase):
         # the budget WAS the time every other room waited. Turns are detached now, so
         # the cap is only about the asker's patience - and the coupling is what the
         # AsyncSpawnTests below actually pin.
-        self.assertEqual(module.TURN_HARD_CAP_SECONDS, 1200)
+        self.assertEqual(module.TURN_HARD_CAP_SECONDS, 3600)
         self.assertFalse(hasattr(module, "HERMES_TIMEOUT_SECONDS"))
 
     def test_the_agent_is_told_the_new_ceiling(self):
         # "한 번에 답해라" implied be quick; scoping to 20 minutes is the honest rule
         prompt = module.build_prompt([], [], "(없음)", "x")
-        self.assertIn("20분", prompt)
+        self.assertIn("60분", prompt)
+        # the note the room gets on a cut-off turn must quote the same number the
+        # prompt promised, so it is derived from the constant rather than retyped
+        self.assertIn("60분", module.TURN_TIMEOUT_NOTE)
         self.assertNotIn("이 방의 다음 메시지도 같이 멈춘다", prompt)
 
     def test_facts_have_to_be_looked_up(self):
