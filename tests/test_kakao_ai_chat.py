@@ -346,13 +346,16 @@ class PromptTests(unittest.TestCase):
         # the budget WAS the time every other room waited. Turns are detached now, so
         # the cap is only about the asker's patience - and the coupling is what the
         # AsyncSpawnTests below actually pin.
-        self.assertEqual(module.TURN_HARD_CAP_SECONDS, 1200)
+        self.assertEqual(module.TURN_HARD_CAP_SECONDS, 3600)
         self.assertFalse(hasattr(module, "HERMES_TIMEOUT_SECONDS"))
 
     def test_the_agent_is_told_the_new_ceiling(self):
         # "한 번에 답해라" implied be quick; scoping to 20 minutes is the honest rule
         prompt = module.build_prompt([], [], "(없음)", "x")
-        self.assertIn("20분", prompt)
+        self.assertIn("60분", prompt)
+        # the note the room gets on a cut-off turn must quote the same number the
+        # prompt promised, so it is derived from the constant rather than retyped
+        self.assertIn("60분", module.TURN_TIMEOUT_NOTE)
         self.assertNotIn("이 방의 다음 메시지도 같이 멈춘다", prompt)
 
     def test_facts_have_to_be_looked_up(self):

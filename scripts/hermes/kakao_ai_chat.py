@@ -86,7 +86,14 @@ DETECT_LIMIT = 50
 # number is now only about the asker's patience and about not leaking wedged agents.
 # Measured on the live DGX before this change: ordinary answers 43-170s, and the turns
 # this cap exists for were the ones dying at 180s several times a day.
-TURN_HARD_CAP_SECONDS = 1200
+#
+# Raised 1200 -> 3600 after a measured 19m turn came within a minute of the cap: the
+# model spent eight of those minutes on tool_search before the first real call, which
+# is what a question needing three place tools costs on this host's free-tier model.
+# The cost of the raise is the room lock -- jobs/<chat_id>.json holds one room for the
+# whole turn and everything else there gets TURN_BUSY_NOTE -- so an hour-long wedge now
+# silences that room for an hour. Acceptable because the lock is per room, not global.
+TURN_HARD_CAP_SECONDS = 3600
 # First heartbeat. It backs off from here (next_beat), because flat 90s would be
 # thirteen notifications inside the cap, and one line per tool call would be worse:
 # "search 25 boroughs" is 25 tool calls.
@@ -105,7 +112,8 @@ STARTUP_REPLAY_SECONDS = 600
 # Said in the room when a turn produces nothing, so a failure reads as a failure
 # rather than as the bot ignoring you. Every branch of the worker says one of these
 # or the answer - a room that was told nothing is the one failure mode that matters.
-TURN_TIMEOUT_NOTE = "답이 20분 넘게 걸려서 중단했어요. 범위를 좁혀서 다시 불러 주세요."
+TURN_TIMEOUT_NOTE = (f"답이 {int(TURN_HARD_CAP_SECONDS // 60)}분 넘게 걸려서 중단했어요. "
+                    "범위를 좁혀서 다시 불러 주세요.")
 TURN_FAILED_NOTE = "지금은 답을 만들지 못했어요. 잠시 뒤에 다시 불러 주세요."
 # Deliberately does not promise to come back to it: the cursor advances past this
 # trigger, so nothing is holding it. Queueing it would need a second cursor per room,
@@ -1328,8 +1336,8 @@ PROMPT_TEMPLATE = """너는 카카오톡 방에서 나(운영자)를 돕는 어�
 - 네가 못 하는 일: 영상·음성을 **생성**하는 것. 도구가 없다.
   시도하지 마라 - 없는 수단을 찾는 동안 묻는 사람은 진행 표시만 보고 기다린다.
   한 줄로 못 한다고 말하고 대신 할 수 있는 걸 해라.
-- **시간은 최대 20분이고, 오래 걸리는 일을 해도 된다.** 진행 상황은 호출자가 따로 알린다 -
-  "지금 찾는 중" 같은 중간 보고를 네가 쓰지 마라. 20분을 넘기면 잘리니 그 안에 끝낼 범위로 잡아라.
+- **시간은 최대 {cap_minutes}분이고, 오래 걸리는 일을 해도 된다.** 진행 상황은 호출자가 따로 알린다 -
+  "지금 찾는 중" 같은 중간 보고를 네가 쓰지 마라. {cap_minutes}분을 넘기면 잘리니 그 안에 끝낼 범위로 잡아라.
 - **네 능력 밖이거나 품이 많이 드는 일은 `delegate_task` 로 넘겨라.** 자식은 **너보다 큰 모델**에서 돌고 끝나면 결과만 돌아온다.
   다음 중 하나라도 걸리면 넘긴다: 단계가 여럿인 분석·비교, 로그나 코드를 읽어 원인을 찾는 일,
   여러 곳에서 자료를 모아 종합하는 일, 한 번에 답하면 분명히 부실해질 일, 네 첫 답이 스스로 미덥지 않을 때.
@@ -1427,6 +1435,7 @@ def build_prompt(mine: list[str], others: list[str], quoted: str, mention: str,
         quoted=quoted or "(없음)",
         mention=mention or "(본문 없이 멘션만 보냈다. 방 문맥을 보고 지금 가장 도움이 될 일을 해라.)",
         chat_id=chat_id,
+        cap_minutes=int(TURN_HARD_CAP_SECONDS // 60),
         send_bin=SELF_PATH,
     )
 
