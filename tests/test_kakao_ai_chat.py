@@ -306,9 +306,19 @@ class PromptTests(unittest.TestCase):
         # the bug: a map URL jarvis sent for another place two days earlier was reused
         # verbatim, and MY_THREAD reading as one conversation makes that more tempting
         prompt = module.build_prompt([], [], "(없음)", "지도 링크도 공유해줘")
-        self.assertIn("좌표를 지어내지 마라", prompt)
-        self.assertIn("map.kakao.com/?q=", prompt)
+        self.assertIn("링크를 직접 만들지 마라", prompt)
+        # the fix for the same bug: kakao_place_search hands over a real place_url,
+        # so there is nothing left to fabricate a link from
+        self.assertIn("kakao_place_search", prompt)
+        self.assertIn("map_url", prompt)
         self.assertIn("그때 그 장소의 것", prompt)
+
+    def test_prompt_names_the_only_tool_that_knows_opening_hours(self):
+        # neither Korean place API carries hours, and the model used to do weekday
+        # arithmetic on a blog snippet instead
+        prompt = module.build_prompt([], [], "(없음)", "지금 문 열었어?")
+        self.assertIn("place_hours", prompt)
+        self.assertIn("open_now", prompt)
 
     def test_the_agent_is_told_what_it_cannot_do(self):
         # a "draw me a diagram" turn once ran 9m33s hunting for a generator that did not
