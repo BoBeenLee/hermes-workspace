@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.video_gen_provider import (
@@ -58,6 +61,22 @@ DELIVERY_NOTE = (
     "영상 파일은 위 video 경로에 있다. 사용자에게 보이려면 그 절대경로를 현재 플랫폼의 파일 전달 "
     "방식으로 첨부해라 (카카오톡이면 `[[file: 경로]]` 한 줄). 경로만 글로 적으면 전달되지 않는다.")
 
+# Where a finished clip is handed over.
+#
+# The KakaoTalk daemon attaches only paths inside its own fenced outbox --
+# `resolve_attachment()` rejects everything else and logs `첨부 거부`. Measured: a
+# clip left in the hermes cache was generated, referenced by the model, and then
+# silently dropped, costing a turn and a slice of the daily GPU allowance for
+# nothing. The daemon injects this variable on every turn (it is named for the
+# image plugin that needed it first), so its presence is also how we learn the
+# caller is KakaoTalk.
+OUTBOX_ENV = "COMFYUI_OUTBOX_DIR"
+
+# No size guard here on purpose. KakaoTalk drops an oversized attachment without a
+# word, but 10 seconds -- the advertised maximum -- is well under 5 MB at these
+# resolutions, so the guard would be a branch that never fires. Add one if a
+# higher-resolution Space is ever put in the ring.
+
 
 def _token() -> str:
     """Config-aware ``HF_TOKEN`` lookup.
@@ -76,6 +95,33 @@ def _token() -> str:
     if val is None:
         val = os.getenv(TOKEN_ENV, "")
     return (val or "").strip()
+
+
+def _prune(directory: Path, days: int = 7) -> None:
+    """Drop handed-over clips older than ``days``; nothing ever reads them back."""
+    cutoff = time.time() - days * 86400
+    try:
+        for path in directory.glob("hfspace_*"):
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _hand_over(saved: Path) -> Path:
+    """Move the clip into the caller's fenced outbox when there is one."""
+    outbox = os.environ.get(OUTBOX_ENV)
+    if not outbox:
+        return saved
+    dest_dir = Path(outbox).expanduser()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / saved.name
+    shutil.move(str(saved), str(dest))
+    # save_url_video writes 0600. The send path is not guaranteed to run as this
+    # uid, and every file already in that outbox is 0644.
+    dest.chmod(0o644)
+    _prune(dest_dir)
+    return dest
 
 
 class HFSpaceVideoGenProvider(VideoGenProvider):
@@ -190,7 +236,7 @@ class HFSpaceVideoGenProvider(VideoGenProvider):
             try:
                 # The Space's url expires, so there is nothing to fall back to
                 # once the download fails -- this is a hard error, not a retry.
-                saved = save_url_video(url, prefix="hfspace")
+                saved = _hand_over(save_url_video(url, prefix="hfspace"))
             except Exception as exc:  # noqa: BLE001
                 logger.debug("hf_video download failed", exc_info=True)
                 return fail(f"영상은 만들어졌는데 받아오지 못했다: {exc}", "api_error", item.model_id)

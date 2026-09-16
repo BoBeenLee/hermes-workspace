@@ -8,7 +8,10 @@ through a scripted fake -- no network, no token, no GPU quota spent.
 
 import json
 import os
+import stat
 import sys
+import tempfile
+import time
 import types
 import unittest
 import unittest.mock
@@ -354,6 +357,79 @@ class GenerateTest(unittest.TestCase):
         self.assertEqual(result["error_type"], "api_error")
         # The Space url expires, so there is nothing left to retry against.
         self.assertEqual(len(fake.posts), 1)
+
+
+class HandOverTest(unittest.TestCase):
+    """Where the finished clip lands.
+
+    The KakaoTalk daemon attaches only paths inside its own outbox. Before this
+    existed, a real turn generated a clip, referenced it, and the daemon logged
+    `첨부 거부: 허용 폴더 밖이다` -- a spent GPU allowance and no video.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cache = Path(self.tmp.name) / "cache" / "videos"
+        self.cache.mkdir(parents=True)
+        self.outbox = Path(self.tmp.name) / "outbox"
+
+    def _saver(self):
+        """A save_url_video stand-in that writes a real file, so move/chmod run."""
+        def save(url, **kw):
+            dest = self.cache / "hfspace_20260916_000000_deadbeef.mp4"
+            dest.write_bytes(b"\x00" * 64)
+            dest.chmod(0o600)  # what the real helper writes
+            return dest
+        return save
+
+    def _generate(self, env):
+        fake = _FakeHTTP(_accepted(), _completed(LTX23_URL))
+        with unittest.mock.patch.object(space, "requests", fake), \
+             unittest.mock.patch.object(plugin, "_token", lambda: ""), \
+             unittest.mock.patch.object(plugin, "save_url_video", self._saver()), \
+             unittest.mock.patch.dict(os.environ, env, clear=False):
+            return plugin.HFSpaceVideoGenProvider().generate(PROMPT)
+
+    def test_outbox_env_moves_the_clip_into_the_fence(self):
+        result = self._generate({plugin.OUTBOX_ENV: str(self.outbox)})
+
+        self.assertTrue(result["success"])
+        self.assertEqual(Path(result["video"]).parent, self.outbox)
+        self.assertTrue(Path(result["video"]).is_file())
+        # Nothing left behind in the cache to prune later.
+        self.assertEqual(list(self.cache.iterdir()), [])
+
+    def test_handed_over_clip_is_group_and_world_readable(self):
+        # save_url_video writes 0600 and the send path is not guaranteed to be
+        # this uid; every file already in that outbox is 0644.
+        result = self._generate({plugin.OUTBOX_ENV: str(self.outbox)})
+        mode = stat.S_IMODE(Path(result["video"]).stat().st_mode)
+        self.assertEqual(mode, 0o644)
+
+    def test_without_the_env_the_clip_stays_in_the_cache(self):
+        os.environ.pop(plugin.OUTBOX_ENV, None)
+        result = self._generate({})
+
+        self.assertEqual(Path(result["video"]).parent, self.cache)
+
+    def test_prune_only_touches_old_clips_with_our_prefix(self):
+        self.outbox.mkdir(parents=True)
+        old = self.outbox / "hfspace_old.mp4"
+        fresh = self.outbox / "hfspace_fresh.mp4"
+        other = self.outbox / "comfyui_old.png"
+        for path in (old, fresh, other):
+            path.write_bytes(b"x")
+        stale = time.time() - 8 * 86400
+        os.utime(old, (stale, stale))
+        os.utime(other, (stale, stale))
+
+        plugin._prune(self.outbox)
+
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.exists())
+        # Another plugin's handed-over files are not ours to delete.
+        self.assertTrue(other.exists())
 
 
 class CapabilitiesTest(unittest.TestCase):
