@@ -175,6 +175,10 @@ DGX 에서는 그게 GPU 를 쥔다.
    `run_hermes` 가 `convo_thread_id`(= 원본 `trigger.thread_id`)를 따로 받는다.
    기존 `thread_id` 인자는 답장 앵커라 세션 키로 쓰면 안 된다.
    `reset_sessions(chat_id)` 는 그 방의 스레드 파일까지 같이 지운다
+8. `TURN_START_NOTE`("받았어요, 지금 시작합니다.") **제거** (요청, 2026-09-16).
+   한 턴에 두 줄은 사람도 읽는 방에서 시끄럽고, 12초짜리 턴은 알림 직후 바로 답했다.
+   대가는 실재한다 — 느린 턴은 **90초 하트비트까지 무음**이다. 되돌리지 말고
+   `HEARTBEAT_SECONDS` 를 조이는 쪽으로 갈 것. 확인: 11:39 턴이 `넷` 만 보냈다(5초)
 
 ### TTL 이 막는 것은 성장이 아니다 (2026-09-16 조사)
 
@@ -239,6 +243,19 @@ TTL 을 대체하지 않고 보완한다.
 
 파일 모양: `sessions/128426307555607.json` (방) 과
 `sessions/128426307555607-3930806010517870593.json` (댓글 루트).
+
+### 압축은 아직 한 번도 안 돌았다 — `input_tokens` 를 컨텍스트 크기로 읽지 마라
+
+세션 `20260916_095336_d2dcf7` 가 `sessions.input_tokens = 133218` 이라 압축 임계 131,072 을
+넘긴 줄 알았으나 **틀렸다.** `messages` 26행 전부 `active=1`, `compacted` 합계 **0**.
+
+`input_tokens` 는 그 세션의 **API 호출 전체 누적 합**이다 (이 세션은 `api_call_count = 10`,
+평균 13.3k/콜). 단일 호출 입력이 131,072 근처에 간 적이 없다. 압축이 돌았는지 보려면
+누적 토큰이 아니라 `messages` 의 `compacted` / `active` 를 봐라:
+
+```bash
+sqlite3 ~/.hermes/state.db "select count(*) total, sum(compacted) compacted_rows, sum(active) active_rows from messages where session_id='<id>';"
+```
 
 ## 검증 명령
 
