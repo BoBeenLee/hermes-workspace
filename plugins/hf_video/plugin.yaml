@@ -1,0 +1,5 @@
+name: hf_video
+version: 1.0.0
+description: "Free text-to-video via Hugging Face ZeroGPU Spaces (LTX-2.3, LTX-Video distilled). No paid API; the daily GPU allowance is the whole budget. HF_TOKEN is optional but raises it from 2 to 5 minutes a day."
+author: bobeenlee
+kind: backend
