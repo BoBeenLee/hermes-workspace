@@ -1,5 +1,5 @@
 name: comfyui
 version: 1.0.0
-description: "Local ComfyUI image generation (Krea 2 Turbo). Renders on the same host and hands the file over from $HERMES_HOME/cache/images/, or COMFYUI_OUTBOX_DIR when set."
+description: "Local ComfyUI image generation (Krea 2 Turbo) and song generation (MiniMax Music 3). Renders on the same host and hands the file over from $HERMES_HOME/cache/images/, or COMFYUI_OUTBOX_DIR when set."
 author: bobeenlee
 kind: backend

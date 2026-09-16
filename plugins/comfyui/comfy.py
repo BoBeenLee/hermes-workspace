@@ -8,14 +8,19 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import random
 import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_URL = "http://127.0.0.1:8188"
 DEFAULT_OUTPUT_ROOT = "~/src/ComfyUI/output"
@@ -129,9 +134,11 @@ class ComfyUI:
         ComfyUI files every saved artifact under ``images`` -- stills and core
         ``SaveVideo`` mp4s alike, the latter flagged by a sibling ``animated``.
         ``gifs`` is only ever VideoHelperSuite, which no workflow here saves with.
+        ``audio`` is the one exception: ``SaveAudio*`` files under its own key.
         """
         out = (entry.get("outputs") or {}).get(node_id) or {}
-        items = out.get("images") or out.get("gifs") or out.get("video") or []
+        items = (out.get("images") or out.get("gifs") or out.get("video")
+                 or out.get("audio") or [])
         if not items:
             raise ComfyError(
                 f"node {node_id} produced nothing; nodes with output: "
@@ -218,3 +225,95 @@ def prune(directory: Path, days: int = 7) -> None:
                 path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+# -- handing a slow job to a detached child --------------------------------
+#
+# Shared by both tools and shaped by KakaoTalk: its tick is single-threaded, so a
+# turn that waits on a render silences every other room. The gateway and the CLI
+# set none of these variables and keep the synchronous path.
+
+DELIVERER = Path(__file__).resolve().parent / "deliver.py"
+DEFAULT_MAX_BYTES = 10 * 1024 * 1024  # KakaoTalk's attach_max_bytes; the tightest consumer.
+
+
+def destination_dir(kind: str = "images") -> Path:
+    """Where the finished file is handed over.
+
+    ``COMFYUI_OUTBOX_DIR`` exists for the KakaoTalk daemon, whose send path only
+    accepts paths inside its own fenced outbox. Unset (gateway, CLI) lands in the
+    hermes cache, which the media-delivery policy trusts unconditionally.
+    """
+    outbox = os.environ.get("COMFYUI_OUTBOX_DIR")
+    if outbox:
+        return Path(os.path.expanduser(outbox))
+    from agent import provider_media
+
+    return provider_media.cache_dir(kind)
+
+
+def max_bytes() -> int:
+    try:
+        return int(os.environ.get("COMFYUI_MAX_BYTES") or DEFAULT_MAX_BYTES)
+    except ValueError:
+        return DEFAULT_MAX_BYTES
+
+
+def async_target() -> Optional[tuple]:
+    """(outbox, chat_id, send_bin) when this turn must not block, else None."""
+    outbox = os.environ.get("COMFYUI_OUTBOX_DIR")
+    chat_id = os.environ.get("COMFYUI_CHAT_ID")
+    send_bin = os.environ.get("COMFYUI_SEND_BIN")
+    if not (outbox and chat_id and send_bin):
+        return None
+    try:
+        return Path(os.path.expanduser(outbox)), int(chat_id), send_bin
+    except ValueError:
+        return None
+
+
+def caption_for(prompt: str, limit: int = 60) -> str:
+    """Caption that names the request it answers, unless the result is a 댓글.
+
+    A bare "다 됐어" arriving minutes later is orphaned -- by then the room has
+    moved on and nothing ties it to what was asked. When the daemon threads the
+    delivery (KAKAO_THREAD_ID), KakaoTalk already draws the question above the
+    answer and the quote just repeats the line the reader is looking at. Without
+    a thread, quoting is the only tie left: KakaoTalk's own reply form (a type=26
+    row carrying src_logId) is unreachable through Iris.
+    """
+    if os.environ.get("KAKAO_THREAD_ID"):
+        return "다 됐어"
+    # The caller's own words when it passed them: what reaches the tool is the
+    # model's expanded English rewrite, which nobody asked for by that name.
+    text = " ".join((os.environ.get("COMFYUI_REQUEST") or prompt or "").split())
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "…"
+    return f'다 됐어 - "{text}"' if text else "다 됐어"
+
+
+def spawn_deliverer(prompt_id: str, target: tuple, client: "ComfyUI", *, node: str,
+                    caption: str = "다 됐어", fence: str = "image", noun: str = "그림",
+                    timeout: float = 900.0) -> bool:
+    """Detach a child to finish the job and send it. True when it started.
+
+    ``start_new_session`` and closed stdio are the point: this must survive the
+    hermes process exiting at the end of the turn. One child per submit, and
+    prompt_ids are unique per submit, so no de-dup key is needed.
+    """
+    outbox, chat_id, send_bin = target
+    try:
+        subprocess.Popen(  # noqa: S603 - argv only, every value is ours
+            [sys.executable, str(DELIVERER),
+             "--prompt-id", prompt_id, "--node", node,
+             "--chat-id", str(chat_id), "--send-bin", send_bin,
+             "--outbox", str(outbox), "--url", client.base_url,
+             "--output-root", str(client.output_root),
+             "--max-bytes", str(max_bytes()), "--timeout", str(timeout),
+             "--fence", fence, "--noun", noun, "--caption", caption],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("comfyui: could not spawn the deliverer (%s)", exc)
+        return False
