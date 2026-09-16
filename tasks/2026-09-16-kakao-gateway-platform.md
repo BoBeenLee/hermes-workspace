@@ -25,7 +25,7 @@
 | 방별 규칙 | `MessageEvent.channel_prompt` — 턴 한정, transcript 에 안 남는다 |
 | `jobs/<chat_id>.json` 방 락 | `gateway/turn_lease.py` — resolved session_id 단위 직렬화, 대기 fail-closed(기본 5초) |
 | `reap_jobs` / `pending_send` | `gateway/delivery_ledger.py` (`delivery_obligations` 테이블) |
-| `post_tool_call` 셸 훅 | `_run_agent_notify_long_running` (`gateway/run_turn.py:3868-3900`, 180초). **`~/.hermes/config.yaml` 의 손붙임 훅 블록이 통째로 사라진다** |
+| `post_tool_call` 셸 훅 | `_run_agent_notify_long_running` (`gateway/run_turn.py:3868-3900`, **180초**). **`~/.hermes/config.yaml` 의 손붙임 훅 블록이 통째로 사라진다.** 단 180초는 지금 데몬의 60초보다 **느리다** — 아래 참조 |
 | 12툴셋 하드코딩 문자열 | `config.yaml` 의 `platform_toolsets.kakao` |
 | 멘션/방 allowlist | Discord env 세트와 동형 (아래 표) |
 | ComfyUI outbox env 해킹 | `cron_deliver_env_var` + `standalone_sender_fn` → `--deliver kakao:<chat_id>`. **프롬프트의 `python3 {send_bin} --send-to` 줄도 같이 사라진다** (방 텍스트에서 도달 가능한 자기호출 프리미티브였다) |
@@ -165,17 +165,129 @@ DGX 에서는 그게 GPU 를 쥔다.
 `~/.hermes/kakao-ai-chat/kakao_ai_chat.py` 에만 적용. 백업:
 `kakao_ai_chat.py.bak-20260916-094954`(--resume 전), `...-20260916-103132`(TTL 전).
 
-1. `SESSIONS_DIR` 상수 + `SESSION_TTL_SECONDS = 6*3600`
+1. `SESSIONS_DIR` 상수 + `SESSION_TTL_SECONDS = 12*3600`
 2. `session_path` / `load_session_id` / `save_session_id` / `reset_sessions`
 3. `run_hermes` 가 저장된 id 로 `--resume` 를 붙인다
 4. `finally` 가 `--usage-file` 의 `session_id` 를 **지우기 전에** 회수한다 (원래는 읽지도 않고 삭제)
 5. `--resume` 실패 시 저장된 id 폐기 (stale/압축 대상 자가 치유)
 6. TTL 초과 세션은 `load_session_id` 가 폐기, Discord 제어 채널에 `세션 초기화` 명령 추가
+7. 세션 스코프가 방/스레드 하이브리드 — `session_path(chat_id, thread_id)`.
+   `run_hermes` 가 `convo_thread_id`(= 원본 `trigger.thread_id`)를 따로 받는다.
+   기존 `thread_id` 인자는 답장 앵커라 세션 키로 쓰면 안 된다.
+   `reset_sessions(chat_id)` 는 그 방의 스레드 파일까지 같이 지운다
+8. `TURN_START_NOTE`("받았어요, 지금 시작합니다.") **제거** (요청, 2026-09-16).
+   한 턴에 두 줄은 사람도 읽는 방에서 시끄럽고, 12초짜리 턴은 알림 직후 바로 답했다.
+   대가는 실재한다 — 느린 턴은 **90초 하트비트까지 무음**이다. 되돌리지 말고
+   `HEARTBEAT_SECONDS` 를 조이는 쪽으로 갈 것. 확인: 11:39 턴이 `넷` 만 보냈다(5초)
+9. `HEARTBEAT_SECONDS` **90 → 60** (요청, 2026-09-16). 8번으로 이것이 방이 받는 첫
+   반응이 됐고 측정 턴이 12/97/171초라 90초는 느린 둘을 대부분 침묵시켰다.
+   1.6배 백오프는 그대로 — 캡 안에서 1.0 / 2.6 / 5.2 / 9.3 / 15.8 / 26.3 / 43.1분,
+   알림 한 번 늘어난다(7 vs 6). 검증: `tests/check_kakao_heartbeat.py`
+
+### TTL 이 막는 것은 성장이 아니다 (2026-09-16 조사)
+
+"TTL 말고 압축 명령이 낫지 않나" 를 검토했고 **지금 구조에선 못 만든다**:
+
+- **외부에서 압축을 부를 방법이 없다.** `hermes sessions` 서브커맨드 16개
+  (`list/export/delete/prune/archive/optimize/clean-markers/optimize-storage/repair/
+  repair-routing/recover/stats/rename/pin/unpin/pinned/retitle-skills/browse/import`)에
+  compact 가 없다. 압축은 에이전트 내부 함수(`agent/turn_context_compaction.py:128`
+  `run_turn_start_compaction`)이고, `/compact` 는 살아있는 게이트웨이 에이전트 안의 슬래시 명령이다.
+- **`compression.idle_compact_after_seconds` 는 `-z` 경로에서 죽어 있다.**
+  `_idle_compaction`(`:143`)이 재는 `_idle_gap = time.time() - agent._last_activity_ts` 인데,
+  `_last_activity_ts` 는 `agent/agent_init.py:559` 에서 **프로세스마다 `time.time()` 으로 다시 찍히고**
+  `sessions.last_activity_at` 로는 **쓰기만** 한다(`run_agent.py:844`). 되읽는 경로가 없다.
+  `hermes -z` 는 턴마다 새 프로세스라 gap 이 항상 0 → 절대 안 터진다.
+  **게이트웨이로 옮기면 에이전트가 살아 있어 이 노브가 비로소 동작한다** — TO-BE 의 숨은 이득 하나.
+  (바닥은 `threshold_tokens × summary_target_ratio` = 131072 × 0.2 = **26,214** 토큰이라
+  작은 세션은 건드리지 않는다.)
+
+그리고 **압축은 이미 자동으로 돈다** — 유휴와 무관하게 매 턴 시작 preflight 가 131k 를 넘으면 압축한다.
+즉 세션을 오래 둬도 터지지 않는다. TTL 의 실제 역할은 (a) 사흘 전 대화가 답 중간에 되살아나는 것을
+막고 (b) 프리티어 메인 모델이 맡는 131k 요약 호출을 아예 안 만나는 것이다. 12시간이 그 절충이다.
+`세션 초기화` 는 실제로 동작하는 유일한 수동 탈출구라 남긴다.
 
 자가 검증: `tests/check_kakao_sessions.py` (배포본 대상, DGX 에서 실행).
 
 ⚠️ **레포본이 배포본보다 뒤져 있다** — `scripts/hermes/kakao_ai_chat.py` 2472줄 vs 배포본 2706줄.
 위 변경을 레포에 반영하려면 **먼저 234줄치 드리프트를 동기화**해야 한다. 별도 작업으로 남긴다.
+
+### 세션 사이클을 스레드 단위로? — 하이브리드가 맞고, 그게 네이티브다
+
+"카톡은 스레드 단위로 답하니 세션도 스레드로" 를 검토했다. **순수 스레드 키잉은 손해다.**
+
+실측 (최근 내 발화 351건 표본): `@jarvis` 멘션 **80건 중 댓글 안에서 친 것 5건(6%)**,
+최상위 **75건(94%)**. `thread_root()` 가 `trigger.thread_id or trigger.log_id` 라 최상위 멘션은
+매번 자기 자신이 루트다 → 순수 스레드 키잉이면 **94% 가 1턴짜리 세션**이 되어 이 패치가 없애려던
+무연속 동작으로 되돌아간다.
+
+**게이트웨이의 네이티브 동작이 하이브리드다** — `build_session_key` 는 `thread_id` 가 **있을 때만**
+키에 붙인다 (`<ns>:<platform>:<chat_type>[:chat_id][:thread_id][:user]`).
+
+| 트리거 | 세션 키 | 성질 |
+| --- | --- | --- |
+| 최상위 멘션 (94%) | `<chat_id>` | 방 단위로 이어짐, TTL 적용 |
+| 댓글 안 멘션 (6%) | `<chat_id>-<thread_id>` | 격리 |
+
+"이 얘기는 따로 가고 싶다" 를 사용자가 **댓글을 열어서** 표현하고, 평소엔 방 단위로 이어진다.
+TTL 을 대체하지 않고 보완한다.
+
+⚠️ **구현 함정**: `run_hermes` 에 이미 넘어가는 `thread_id` 는 **답장 앵커**(`thread_root`,
+최상위면 멘션 자기 id)다. 세션 키로 쓰면 최상위 멘션마다 새 세션이 되어 순수 스레드 키잉과 같아진다.
+원본 `trigger.get("thread_id")` 를 별도 인자로 넘길 것.
+
+**배포·검증 완료 (2026-09-16 11:28~11:35).** 나와의 채팅에서 3턴으로 확인:
+
+| 확인한 것 | 결과 |
+| --- | --- |
+| 방/스레드가 다른 세션인가 | 방 `20260916_113003_e2b016` vs 스레드 `20260916_113033_2ef243` — 별개 |
+| 스레드 턴이 방 세션을 오염시키나 | 아니오. T2(댓글 안) 뒤에도 방 파일 `updated_at` 그대로 |
+| 최상위 T3 가 방 세션을 잇나 | 예. `e2b016` 이 mc 2→4, api 1→2. **새 세션 행이 안 생겼다** |
+| 스레드 세션이 T3 에 끌려가나 | 아니오. `2ef243` mc 2 유지 |
+
+파일 모양: `sessions/128426307555607.json` (방) 과
+`sessions/128426307555607-3930806010517870593.json` (댓글 루트).
+
+### 압축은 아직 한 번도 안 돌았다 — `input_tokens` 를 컨텍스트 크기로 읽지 마라
+
+세션 `20260916_095336_d2dcf7` 가 `sessions.input_tokens = 133218` 이라 압축 임계 131,072 을
+넘긴 줄 알았으나 **틀렸다.** `messages` 26행 전부 `active=1`, `compacted` 합계 **0**.
+
+`input_tokens` 는 그 세션의 **API 호출 전체 누적 합**이다 (이 세션은 `api_call_count = 10`,
+평균 13.3k/콜). 단일 호출 입력이 131,072 근처에 간 적이 없다. 압축이 돌았는지 보려면
+누적 토큰이 아니라 `messages` 의 `compacted` / `active` 를 봐라:
+
+```bash
+sqlite3 ~/.hermes/state.db "select count(*) total, sum(compacted) compacted_rows, sum(active) active_rows from messages where session_id='<id>';"
+```
+
+### 하트비트: `-z` 의 침묵은 의도다, 그리고 게이트웨이 기본값은 더 느리다
+
+hermes 에 하트비트는 **두 층으로 있고 둘 다 `hermes -z` 에서는 닿지 않는다.**
+
+| 층 | 어디 | `-z` 에서 |
+| --- | --- | --- |
+| 게이트웨이 180초 알림 | `gateway/run_turn.py:3868` `_run_agent_notify_long_running`, `:3995` 에서 spawn | **없다** — 게이트웨이 턴 러너 코드다 |
+| 에이전트 `_emit_status` | `agent/status_output.py:63-76` → `_vprint` + `status_callback` | **둘 다 막혀 있다** |
+
+`-z` 가 조용한 것은 버그가 아니라 **명시적 설계**다. `hermes_cli/oneshot.py:497-500`:
+
+```python
+# Belt-and-braces: no streaming display callbacks may bypass our stdout capture.
+agent.suppress_status_output = True
+agent.stream_delta_callback = None
+agent.tool_gen_callback = None
+```
+
+`suppress_status_output` 는 `_vprint` 첫 줄에서 `force=True` 보다도 먼저 이긴다
+(`agent/status_output.py:30-31`). `AIAgent` 가 `status_callback` 인자를 받긴 하지만
+(`run_agent.py:255`) oneshot 은 넘기지 않는다. stdout 이 곧 답이어야 하니 당연하다.
+**그래서 데몬의 `post_tool_call` 셸 훅 + 자체 하트비트는 우회가 아니라 유일한 길이었다** —
+그 콜백들은 in-process 파이썬 콜러블이고 데몬은 서브프로세스를 띄운다.
+
+⚠️ **마이그레이션 함정**: 게이트웨이 기본 알림 주기는 **180초**로, 데몬의 **60초**보다 느리다.
+그대로 옮기면 첫 반응이 지금보다 늦어진다. `agent.gateway_notify_interval` /
+`HERMES_AGENT_NOTIFY_INTERVAL` 로 낮출 것.
 
 ## 검증 명령
 
