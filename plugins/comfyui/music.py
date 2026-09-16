@@ -5,11 +5,13 @@ no music one -- so this registers plain tools instead. They go into the ``web``
 toolset because that is the one the KakaoTalk daemon's fixed ``--toolsets`` string
 already carries; a new toolset name is dropped with a one-line warning.
 
-**A song is not a render.** Measured on this box: 846s for a 3-minute song and
-1159s for a 4:11 one (music repo, ``runs/2026-08-29-minimax-music3-ai-future.md``).
-Nothing here waits for that, not even on the gateway -- every call returns a
-prompt_id, and the file arrives either through the detached deliverer (KakaoTalk)
-or through ``music_status`` (gateway, CLI).
+**A song is not a render, and its cost is the song's length, not the graph.**
+Measured on this box: a 60s cap gave 41s of music in 205s wall clock (cold), a 40s
+cap 23.6s of music in 108s (warm), and a full 3-4 minute song 846s / 1159s (music
+repo, ``runs/2026-08-29-minimax-music3-ai-future.md``). Nothing here waits for
+that, not even on the gateway -- every call returns a prompt_id, and the file
+arrives either through the detached deliverer (KakaoTalk) or through
+``music_status`` (gateway, CLI).
 """
 
 from __future__ import annotations
@@ -52,10 +54,11 @@ GENERATE_SCHEMA = {
     "description": (
         "Write and record a full song locally with MiniMax Music 3 (vocals, lyrics, arrangement). "
         "Use it for any 노래/음악/곡 만들어 달라는 요청. You write the caption and the lyrics -- the "
-        "model sings exactly the lyrics you pass. IT TAKES 10-20 MINUTES: this returns immediately "
-        "with a prompt_id and the song is delivered on its own when it is done. Say one short line "
-        "('노래 만들고 있어, 좀 걸려') and end the turn. NEVER call it twice for one request -- a second "
-        "call is another 15 minutes of GPU and a second song. Text only; it cannot cover, remix, or "
+        "model sings exactly the lyrics you pass. IT TAKES MINUTES, roughly as long as the song is "
+        "allowed to be: ~3 minutes of waiting for a 60-second song, 15-20 for a full 3-4 minute one. "
+        "This returns immediately with a prompt_id and the song is delivered on its own when it is "
+        "done. Say one short line ('노래 만들고 있어, 좀 걸려') and end the turn. NEVER call it twice for "
+        "one request -- a second call is another whole render and a second song. Text only; it cannot cover, remix, or "
         "continue an existing track, and it has no melody or reference-audio input."
     ),
     "parameters": {
@@ -99,7 +102,7 @@ STATUS_SCHEMA = {
     "description": (
         "Check a song started by music_generate and get its file path once it is finished. "
         "Only useful outside KakaoTalk -- there the song is delivered to the room on its own. "
-        "Expect 'running' for the first 10-20 minutes."
+        "Expect 'running' for the first few minutes, longer for a long song."
     ),
     "parameters": {
         "type": "object",
@@ -158,10 +161,10 @@ def generate(args: Dict[str, Any]) -> Dict[str, Any]:
     if target and comfy.spawn_deliverer(
             prompt_id, target, client, node=SAVE_NODE, fence="file", noun="노래",
             caption=comfy.caption_for(caption), timeout=DELIVER_TIMEOUT_S):
-        result["note"] = ("노래는 다 되면 따로 이 방으로 간다 (10~20분). 지금은 '만들고 있어' 한 줄만 "
+        result["note"] = ("노래는 다 되면 따로 이 방으로 간다 (길이에 따라 3~20분). 지금은 '만들고 있어' 한 줄만 "
                           "답하고 턴을 끝내라. 다시 부르지 마라 - 중복으로 두 곡이 나간다.")
         return result
-    result["note"] = (f"10~20분 걸린다. 끝나면 music_status 로 prompt_id={prompt_id} 를 확인해라. "
+    result["note"] = (f"길이에 따라 3~20분 걸린다. 끝나면 music_status 로 prompt_id={prompt_id} 를 확인해라. "
                       "지금은 '만들고 있어' 한 줄만 답하고 턴을 끝내라.")
     return result
 
@@ -177,7 +180,7 @@ def status(args: Dict[str, Any]) -> Dict[str, Any]:
         entry = client.poll(prompt_id, timeout=0.0)
         if entry is None:
             return {"status": "running", "prompt_id": prompt_id,
-                    "note": "아직 만들고 있다. 10~20분 걸린다."}
+                    "note": "아직 만들고 있다. 길이에 따라 3~20분 걸린다."}
         rendered = client.output_paths(entry, SAVE_NODE)[0]
         handed = comfy.hand_over(rendered, comfy.destination_dir("audio"), comfy.max_bytes())
         comfy.prune(handed.parent)
