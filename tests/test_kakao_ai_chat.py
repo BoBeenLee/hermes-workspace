@@ -322,12 +322,23 @@ class PromptTests(unittest.TestCase):
 
     def test_the_agent_is_told_what_it_cannot_do(self):
         # a "draw me a diagram" turn once ran 9m33s hunting for a generator that did not
-        # exist on this host, muting every room behind it. Images exist now; video and
-        # audio still do not, and the sentence that says so is what stops the hunt.
+        # exist on this host, muting every room behind it. Images and video exist now;
+        # audio still does not, and the sentence that says so is what stops the hunt.
         prompt = module.build_prompt([], [], "(없음)", "다이어그램 그림으로 표현해줘")
         self.assertIn("네가 못 하는 일", prompt)
-        self.assertIn("영상·음성", prompt)
+        self.assertIn("못 하는 일: 음성", prompt)
+        self.assertNotIn("영상·음성", prompt)
         self.assertNotIn("그림·영상·음성", prompt)
+
+    def test_the_agent_is_told_it_can_make_video_and_what_the_limit_is(self):
+        # the sentence cuts both ways. While the prompt still said video generation was
+        # impossible, a real room turn refused in 60s without ever calling tool_search --
+        # even though video_generate was registered, enabled and working. A capability
+        # the prompt denies is a capability the model does not have.
+        prompt = module.build_prompt([], [], "(없음)", "3초 영상 만들어줘")
+        self.assertIn("video_generate", prompt)
+        self.assertIn("[[file: ]]", prompt)
+        self.assertIn("quota", prompt)
 
     def test_the_agent_is_told_it_can_draw_and_how_the_slow_case_ends(self):
         # a queued render is delivered by a detached child, so waiting or re-calling
