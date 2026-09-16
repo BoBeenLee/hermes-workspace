@@ -165,17 +165,66 @@ DGX 에서는 그게 GPU 를 쥔다.
 `~/.hermes/kakao-ai-chat/kakao_ai_chat.py` 에만 적용. 백업:
 `kakao_ai_chat.py.bak-20260916-094954`(--resume 전), `...-20260916-103132`(TTL 전).
 
-1. `SESSIONS_DIR` 상수 + `SESSION_TTL_SECONDS = 6*3600`
+1. `SESSIONS_DIR` 상수 + `SESSION_TTL_SECONDS = 12*3600`
 2. `session_path` / `load_session_id` / `save_session_id` / `reset_sessions`
 3. `run_hermes` 가 저장된 id 로 `--resume` 를 붙인다
 4. `finally` 가 `--usage-file` 의 `session_id` 를 **지우기 전에** 회수한다 (원래는 읽지도 않고 삭제)
 5. `--resume` 실패 시 저장된 id 폐기 (stale/압축 대상 자가 치유)
 6. TTL 초과 세션은 `load_session_id` 가 폐기, Discord 제어 채널에 `세션 초기화` 명령 추가
 
+### TTL 이 막는 것은 성장이 아니다 (2026-09-16 조사)
+
+"TTL 말고 압축 명령이 낫지 않나" 를 검토했고 **지금 구조에선 못 만든다**:
+
+- **외부에서 압축을 부를 방법이 없다.** `hermes sessions` 서브커맨드 16개
+  (`list/export/delete/prune/archive/optimize/clean-markers/optimize-storage/repair/
+  repair-routing/recover/stats/rename/pin/unpin/pinned/retitle-skills/browse/import`)에
+  compact 가 없다. 압축은 에이전트 내부 함수(`agent/turn_context_compaction.py:128`
+  `run_turn_start_compaction`)이고, `/compact` 는 살아있는 게이트웨이 에이전트 안의 슬래시 명령이다.
+- **`compression.idle_compact_after_seconds` 는 `-z` 경로에서 죽어 있다.**
+  `_idle_compaction`(`:143`)이 재는 `_idle_gap = time.time() - agent._last_activity_ts` 인데,
+  `_last_activity_ts` 는 `agent/agent_init.py:559` 에서 **프로세스마다 `time.time()` 으로 다시 찍히고**
+  `sessions.last_activity_at` 로는 **쓰기만** 한다(`run_agent.py:844`). 되읽는 경로가 없다.
+  `hermes -z` 는 턴마다 새 프로세스라 gap 이 항상 0 → 절대 안 터진다.
+  **게이트웨이로 옮기면 에이전트가 살아 있어 이 노브가 비로소 동작한다** — TO-BE 의 숨은 이득 하나.
+  (바닥은 `threshold_tokens × summary_target_ratio` = 131072 × 0.2 = **26,214** 토큰이라
+  작은 세션은 건드리지 않는다.)
+
+그리고 **압축은 이미 자동으로 돈다** — 유휴와 무관하게 매 턴 시작 preflight 가 131k 를 넘으면 압축한다.
+즉 세션을 오래 둬도 터지지 않는다. TTL 의 실제 역할은 (a) 사흘 전 대화가 답 중간에 되살아나는 것을
+막고 (b) 프리티어 메인 모델이 맡는 131k 요약 호출을 아예 안 만나는 것이다. 12시간이 그 절충이다.
+`세션 초기화` 는 실제로 동작하는 유일한 수동 탈출구라 남긴다.
+
 자가 검증: `tests/check_kakao_sessions.py` (배포본 대상, DGX 에서 실행).
 
 ⚠️ **레포본이 배포본보다 뒤져 있다** — `scripts/hermes/kakao_ai_chat.py` 2472줄 vs 배포본 2706줄.
 위 변경을 레포에 반영하려면 **먼저 234줄치 드리프트를 동기화**해야 한다. 별도 작업으로 남긴다.
+
+### 세션 사이클을 스레드 단위로? — 하이브리드가 맞고, 그게 네이티브다
+
+"카톡은 스레드 단위로 답하니 세션도 스레드로" 를 검토했다. **순수 스레드 키잉은 손해다.**
+
+실측 (최근 내 발화 351건 표본): `@jarvis` 멘션 **80건 중 댓글 안에서 친 것 5건(6%)**,
+최상위 **75건(94%)**. `thread_root()` 가 `trigger.thread_id or trigger.log_id` 라 최상위 멘션은
+매번 자기 자신이 루트다 → 순수 스레드 키잉이면 **94% 가 1턴짜리 세션**이 되어 이 패치가 없애려던
+무연속 동작으로 되돌아간다.
+
+**게이트웨이의 네이티브 동작이 하이브리드다** — `build_session_key` 는 `thread_id` 가 **있을 때만**
+키에 붙인다 (`<ns>:<platform>:<chat_type>[:chat_id][:thread_id][:user]`).
+
+| 트리거 | 세션 키 | 성질 |
+| --- | --- | --- |
+| 최상위 멘션 (94%) | `<chat_id>` | 방 단위로 이어짐, TTL 적용 |
+| 댓글 안 멘션 (6%) | `<chat_id>-<thread_id>` | 격리 |
+
+"이 얘기는 따로 가고 싶다" 를 사용자가 **댓글을 열어서** 표현하고, 평소엔 방 단위로 이어진다.
+TTL 을 대체하지 않고 보완한다.
+
+⚠️ **구현 함정**: `run_hermes` 에 이미 넘어가는 `thread_id` 는 **답장 앵커**(`thread_root`,
+최상위면 멘션 자기 id)다. 세션 키로 쓰면 최상위 멘션마다 새 세션이 되어 순수 스레드 키잉과 같아진다.
+원본 `trigger.get("thread_id")` 를 별도 인자로 넘길 것.
+
+**상태: 미배포.** 패치는 작성했으나 DGX 반영은 하지 않았다.
 
 ## 검증 명령
 
