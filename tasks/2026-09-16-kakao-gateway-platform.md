@@ -25,7 +25,7 @@
 | 방별 규칙 | `MessageEvent.channel_prompt` — 턴 한정, transcript 에 안 남는다 |
 | `jobs/<chat_id>.json` 방 락 | `gateway/turn_lease.py` — resolved session_id 단위 직렬화, 대기 fail-closed(기본 5초) |
 | `reap_jobs` / `pending_send` | `gateway/delivery_ledger.py` (`delivery_obligations` 테이블) |
-| `post_tool_call` 셸 훅 | `_run_agent_notify_long_running` (`gateway/run_turn.py:3868-3900`, 180초). **`~/.hermes/config.yaml` 의 손붙임 훅 블록이 통째로 사라진다** |
+| `post_tool_call` 셸 훅 | `_run_agent_notify_long_running` (`gateway/run_turn.py:3868-3900`, **180초**). **`~/.hermes/config.yaml` 의 손붙임 훅 블록이 통째로 사라진다.** 단 180초는 지금 데몬의 60초보다 **느리다** — 아래 참조 |
 | 12툴셋 하드코딩 문자열 | `config.yaml` 의 `platform_toolsets.kakao` |
 | 멘션/방 allowlist | Discord env 세트와 동형 (아래 표) |
 | ComfyUI outbox env 해킹 | `cron_deliver_env_var` + `standalone_sender_fn` → `--deliver kakao:<chat_id>`. **프롬프트의 `python3 {send_bin} --send-to` 줄도 같이 사라진다** (방 텍스트에서 도달 가능한 자기호출 프리미티브였다) |
@@ -179,6 +179,10 @@ DGX 에서는 그게 GPU 를 쥔다.
    한 턴에 두 줄은 사람도 읽는 방에서 시끄럽고, 12초짜리 턴은 알림 직후 바로 답했다.
    대가는 실재한다 — 느린 턴은 **90초 하트비트까지 무음**이다. 되돌리지 말고
    `HEARTBEAT_SECONDS` 를 조이는 쪽으로 갈 것. 확인: 11:39 턴이 `넷` 만 보냈다(5초)
+9. `HEARTBEAT_SECONDS` **90 → 60** (요청, 2026-09-16). 8번으로 이것이 방이 받는 첫
+   반응이 됐고 측정 턴이 12/97/171초라 90초는 느린 둘을 대부분 침묵시켰다.
+   1.6배 백오프는 그대로 — 캡 안에서 1.0 / 2.6 / 5.2 / 9.3 / 15.8 / 26.3 / 43.1분,
+   알림 한 번 늘어난다(7 vs 6). 검증: `tests/check_kakao_heartbeat.py`
 
 ### TTL 이 막는 것은 성장이 아니다 (2026-09-16 조사)
 
@@ -256,6 +260,34 @@ TTL 을 대체하지 않고 보완한다.
 ```bash
 sqlite3 ~/.hermes/state.db "select count(*) total, sum(compacted) compacted_rows, sum(active) active_rows from messages where session_id='<id>';"
 ```
+
+### 하트비트: `-z` 의 침묵은 의도다, 그리고 게이트웨이 기본값은 더 느리다
+
+hermes 에 하트비트는 **두 층으로 있고 둘 다 `hermes -z` 에서는 닿지 않는다.**
+
+| 층 | 어디 | `-z` 에서 |
+| --- | --- | --- |
+| 게이트웨이 180초 알림 | `gateway/run_turn.py:3868` `_run_agent_notify_long_running`, `:3995` 에서 spawn | **없다** — 게이트웨이 턴 러너 코드다 |
+| 에이전트 `_emit_status` | `agent/status_output.py:63-76` → `_vprint` + `status_callback` | **둘 다 막혀 있다** |
+
+`-z` 가 조용한 것은 버그가 아니라 **명시적 설계**다. `hermes_cli/oneshot.py:497-500`:
+
+```python
+# Belt-and-braces: no streaming display callbacks may bypass our stdout capture.
+agent.suppress_status_output = True
+agent.stream_delta_callback = None
+agent.tool_gen_callback = None
+```
+
+`suppress_status_output` 는 `_vprint` 첫 줄에서 `force=True` 보다도 먼저 이긴다
+(`agent/status_output.py:30-31`). `AIAgent` 가 `status_callback` 인자를 받긴 하지만
+(`run_agent.py:255`) oneshot 은 넘기지 않는다. stdout 이 곧 답이어야 하니 당연하다.
+**그래서 데몬의 `post_tool_call` 셸 훅 + 자체 하트비트는 우회가 아니라 유일한 길이었다** —
+그 콜백들은 in-process 파이썬 콜러블이고 데몬은 서브프로세스를 띄운다.
+
+⚠️ **마이그레이션 함정**: 게이트웨이 기본 알림 주기는 **180초**로, 데몬의 **60초**보다 느리다.
+그대로 옮기면 첫 반응이 지금보다 늦어진다. `agent.gateway_notify_interval` /
+`HERMES_AGENT_NOTIFY_INTERVAL` 로 낮출 것.
 
 ## 검증 명령
 
