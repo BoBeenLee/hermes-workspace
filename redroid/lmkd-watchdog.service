@@ -1,0 +1,6 @@
+[Unit]
+Description=redroid lmkd watchdog (epoll_wait EINVAL spin -> ctl.restart lmkd)
+
+[Service]
+Type=oneshot
+ExecStart=%h/redroid-poc/lmkd-watchdog.sh
