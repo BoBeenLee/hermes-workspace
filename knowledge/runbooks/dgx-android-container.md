@@ -1,10 +1,10 @@
 ---
 type: Runbook
 title: DGX Android Container
-description: Verified recipe for running a redroid Android container on the DGX Spark, the five kernel and container gotchas that must each be worked around including one that hard-resets the host, and why the KakaoTalk login inside it has no expiry clock to read.
+description: Verified recipe for running a redroid Android container on the DGX Spark, the six kernel and container gotchas that must each be worked around including one that hard-resets the host, and why the KakaoTalk login inside it has no expiry clock to read.
 resource: repo://hermes-workspace/knowledge/runbooks/dgx-android-container.md
 tags: [dgx-spark, redroid, android, docker, binderfs, arm64, kakaotalk]
-timestamp: 2026-09-14T14:40:00+09:00
+timestamp: 2026-09-18T21:40:00+09:00
 ---
 
 # DGX Android Container
@@ -81,7 +81,7 @@ docker run -itd --name redroid-poc --privileged \
   redroid/redroid:14.0.0_64only-latest androidboot.redroid_gpu_mode=guest
 ```
 
-## The Five Gotchas
+## The Six Gotchas
 
 ### 1. Bind-mount the binder nodes; `--device` does not work
 
@@ -164,6 +164,77 @@ Do not reach for `journalctl --vacuum-size` to clean up afterwards. The spam is 
 data, so vacuum-by-size deletes the oldest archives first — here that is the boot ledger back to
 August that the shutdown diagnosis rests on. journald already self-caps (4 GB default) and 591 MB
 on a 3.7 TB disk is not a problem worth trading evidence for.
+
+
+### 6. lmkd wedges `system_server` on a 6.9+ host kernel
+
+Symptom: KakaoTalk goes dark. Inside the container `ip rule` has no rule for table 1002 although
+the routes are all there; `zygote64`, `netd` and `system_server` share one age and it resets every
+~90 s; `lmkd` and `logd` sit at 100% CPU; `/data/anr/` fills with `system_server` dumps whose main
+thread is in `LmkdConnection` (`waitForConnection`, `write`, or waiting for the AMS lock held by a
+thread in `LmkdConnection.write`). The missing rule is a by-product of the restart loop, not a
+config fault — a clean boot has no 1002 rule either.
+
+Cause, verified 2026-09-18 from source and a live kernel test. lmkd registers a `pidfd` in its
+epoll set while it waits for a process it killed to die. Linux 6.9+ reports `EPOLLHUP` on a pidfd
+once the process is *reaped* (this host runs 6.17; measured 1 before reap, 17 after). Android 14's
+lmkd treats every `EPOLLHUP` as a dropped data-socket connection: it closes data slot 0 —
+system_server's socket — and decrements `maxevents`, and because the second pass skips `EPOLLHUP`
+events the pidfd is never unregistered, so the level-triggered event repeats each iteration until
+`maxevents` reaches 0 and `epoll_wait` returns `EINVAL` forever: a busy loop that logs 600k lines/s
+and never accepts on `/dev/socket/lmkd`. Upstream fixed it in AOSP `667fdbfe` ("lmkd: fix handling
+of EPOLLHUP for pidfd", 2024-09-13), first shipped in `android-15.0.0_r20`; none of the 71
+`android-14` tags has it, so a redroid 14 image always carries the bug.
+
+It fires only when lmkd kills, and lmkd kills here because `/proc/pressure/memory` inside the
+container is the **host's** PSI. A heavy host job (this time a YuE2 run launched 74 s before the
+first watchdog) trips the trigger, lmkd kills a cached app, and the race against zygote's reap
+decides whether lmkd survives. `dumpsys activity exit-info` showed 16 such kills over five days;
+one lost the race. The kill that wedges lmkd never shows there — AMS persists exit records every
+30 min and Watchdog kills `system_server` within 90 s.
+
+The fix, in force since 2026-09-18 and persisted in `/data/property` (bind-mounted, so it survives
+restarts and even `docker rm`):
+
+```bash
+docker exec redroid-poc setprop persist.device_config.lmkd_native.psi_partial_stall_ms 0
+docker exec redroid-poc setprop persist.device_config.lmkd_native.psi_complete_stall_ms 0
+```
+
+A threshold of 0 makes `init_mp_psi` skip that level, so lmkd registers no PSI monitor: no kills,
+no pidfd, no wedge. `lmkd.rc` turns each `setprop` into `lmkd --reinit`, which reloads the props
+over the socket without a restart — the lmkd pid did not change. Verify with
+`ls -l /proc/$(pidof lmkd)/fd | grep -c pressure` → `0` and `Properties reinitilized` in logcat.
+lmkd was protecting nothing here (the container has no memory limit) and was killing container
+apps in response to host swap.
+
+If it wedges anyway, **do not `docker restart`** — that drops Iris and KakaoTalk, which do not come
+back on their own, and destroys the evidence. Capture, then restart lmkd alone:
+
+```bash
+docker exec redroid-poc sh -c 'ls -l /proc/$(pidof lmkd)/fd'   # fd 3 should be anon_inode:[eventpoll]
+docker exec redroid-poc setprop ctl.restart lmkd
+```
+
+`ctl.restart` sets `SVC_RESTART`, which init's critical-crash counter ignores; `kill -9` counts as
+a crash and four in four minutes reboot the container. lmkd is back in about 5 s and
+`system_server` is untouched, because a *missing* lmkd socket makes `LmkdConnection.connect()` fail
+fast — only a *deaf* one blocks. `setprop lmkd.reinit 1` cannot repair a wedge: it talks to lmkd
+over the same deaf socket and its helper blocks in `read()` forever. `redroid/lmkd-watchdog.{sh,service,timer}`
+automates capture-then-restart when lmkd exceeds 90% CPU over 5 s, at most once per 10 minutes;
+it runs as a systemd user timer on the DGX.
+
+Upgrading the image instead: the fix first shipped in `android-15.0.0_r20`, and redroid's
+`15.0.0_64only-latest` (arm64, pushed 2025-06-29) is `BP1A.250505.005.D1` = `android-15.0.0_r36`
+— read from `system/build.prop` inside its layer — so it carries the fix; the running
+`14.0.0_64only-latest` is `UD2A.240505.001` = `android-14.0.0_r41`, and no 14 tag has it. It is
+still not the move for this bug. lmkd on 15 reads the host's PSI just the same, so the
+`psi_*_stall_ms=0` knobs stay either way and already close the wedge path. Booting 15 on the 14
+`/data` is an OTA-grade upgrade redroid gives no guidance for, with the KakaoTalk login (a device
+slot) at stake, and the gotchas above, Iris (minSdk 26 / targetSdk 34) and Frida 16.7.19 all need
+re-verifying on 15. Do not go to 16 for this: Android 16 needs Frida 17, which breaks the hook (no
+global `Java`). If 15 is ever wanted for another reason: stop the 14 container, boot 15 on a copy of
+`data64`, verify KakaoTalk and Iris, and fall back to 14 on the original if it fails.
 
 
 ## Installing A Play-Distributed App

@@ -1,5 +1,14 @@
 # Knowledge Log
 
+## 2026-09-18
+
+- The 2026-09-18 KakaoTalk outage was lmkd, not Iris, KakaoTalk or netd. lmkd spun on `epoll_wait` returning `EINVAL`, never accepted on its socket, `system_server` blocked in `LmkdConnection`, Watchdog restarted the `main` class every ~90 s, and each restart left netd without a rule for table 1002. Memory pressure, Bluetooth and the log flood were each measured and ruled out; silencing the log tags cut logd from 100% to 12% and changed nothing.
+- Root cause is upstream: Linux 6.9+ reports `EPOLLHUP` on a pidfd once the killed process is reaped (measured on this 6.17 host), and Android 14 lmkd treats any `EPOLLHUP` as a dropped data connection, closing system_server's socket and decrementing `maxevents` every loop until it is 0. AOSP `667fdbfe` fixed it in `android-15.0.0_r20`; no `android-14` tag has it. It needs an lmkd kill to trigger, and lmkd kills in this container because it reads the host's PSI — the first watchdog came 74 s after a YuE2 run was launched.
+- Disarmed lmkd with the knob `lmkd.rc` already exposes: `persist.device_config.lmkd_native.psi_{partial,complete}_stall_ms=0`. Each setprop became `lmkd --reinit` over the socket; PSI fds went 2 → 1 → 0 with the lmkd pid unchanged. No monitors means no kills, no pidfd, no wedge, and no more container apps killed by host swap.
+- The repair is `setprop ctl.restart lmkd` (5 s, `system_server` untouched, no critical-crash count), not `docker restart`, which dropped Iris and KakaoTalk and destroyed the fd evidence. `kill -9` also works but counts toward init's 4-in-4-minutes reboot. `setprop lmkd.reinit 1` cannot repair a wedge — its helper blocks reading the same deaf socket.
+- Added `redroid/lmkd-watchdog.{sh,service,timer}`: two 5 s CPU samples, capture `/proc/<lmkd>/fd` and the lmkd log, then `ctl.restart`, at most once per 10 minutes.
+- Upgrading the image would also remove the bug: redroid `15.0.0_64only-latest` is `android-15.0.0_r36` (`BP1A.250505.005.D1`, read from its layer) and the fix is in every 15 tag from r20 on, in no 14 tag. Not done: lmkd on 15 still reads the host's PSI so the `psi_*=0` knobs stay anyway, booting 15 on the 14 `/data` puts the KakaoTalk device-slot login at risk, and 16 would force Frida 17 and a hook rewrite.
+
 ## 2026-09-14
 
 - There is no readable expiry for the KakaoTalk companion login in the DGX container, and the question has three separate answers that all land there: the DataStore credential file has no time field among its 36 keys, `OauthHelper` only refreshes after a request has already failed, and the status enum has no `TOKEN_EXPIRED`. Detection is the only option; prediction is not.
