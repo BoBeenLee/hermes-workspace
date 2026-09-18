@@ -574,6 +574,44 @@ class NicknameTests(unittest.TestCase):
         self.assertIsNone(module.plain_nickname(self.config, "   ", 31))
 
 
+class MyProfileTests(unittest.TestCase):
+    """My own profile, the one every room used to answer "없다" for."""
+
+    # multi_profiles keeps camelCase names Iris does not auto-decrypt, so all three
+    # of these come back as ciphertext and go through plain_nickname's /decrypt.
+    ROW = [str(ME), "31", "bmlja25hbWU=", "c21hbGx1cmw=", "bGFyZ2V1cmw="]
+
+    def setUp(self):
+        self.config = dict(CONFIG, backend="iris", my_user_id=ME)
+
+    def _profile(self, nickname=None, small=None, large=None):
+        # keyed by ciphertext rather than call order, so the test keeps passing if
+        # my_profile decrypts the three fields in a different sequence
+        plain = {self.ROW[2]: nickname, self.ROW[3]: small, self.ROW[4]: large}
+        with mock.patch.object(module, "backend_query", return_value=[self.ROW]), \
+             mock.patch.object(module, "plain_nickname", lambda _c, raw, _e: plain.get(raw)):
+            return module.my_profile(self.config)
+
+    def test_my_row_becomes_a_member_marked_me(self):
+        me = self._profile(nickname="이보빈", large="https://p.kakaocdn.net/talkp/big.jpg")
+        self.assertEqual(me["nickname"], "이보빈")
+        self.assertEqual(me["profile_image_url"], "https://p.kakaocdn.net/talkp/big.jpg")
+        self.assertIs(me["me"], True)
+        self.assertEqual(me["user_id"], str(ME))
+
+    def test_the_small_url_stands_in_when_there_is_no_big_one(self):
+        me = self._profile(nickname="이보빈", small="https://p.kakaocdn.net/th/talkp/small.jpg")
+        self.assertEqual(me["profile_image_url"], "https://p.kakaocdn.net/th/talkp/small.jpg")
+
+    def test_my_picture_host_is_allowed(self):
+        # p.kakaocdn.net is not the open.* host room members use, and a missing entry
+        # here fails silently: the URL is returned but the download is refused.
+        self.assertTrue(
+            module.media_host_allowed("https://p.kakaocdn.net/talkp/x.jpg",
+                                      list(module.PROFILE_HOSTS))
+        )
+
+
 class HermesInvocationTests(unittest.TestCase):
     def test_the_run_declares_itself_a_gateway_session(self):
         # without this cronjob_manage is filtered out and `cronjob` in --toolsets is a no-op
