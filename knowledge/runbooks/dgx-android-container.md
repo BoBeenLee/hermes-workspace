@@ -393,6 +393,12 @@ bind-mounted `/data`.
 1. `binder_linux` and the `/dev/binderfs` mount — re-run the host setup block above.
 2. `chmod 0666` on the three binderfs nodes — same block; without it Android's non-root services loop on `servicemanager.ready`.
 3. `docker start redroid-poc`, then start Iris again (see [Iris On DGX](iris-on-dgx.md)); `app_process` does not come back on its own.
+4. Launch KakaoTalk **into the foreground**: `docker exec redroid-poc am start -W -n com.kakao.talk/.activity.SplashActivity`.
+   Iris reading the DB starts KakaoTalk as a background service only, and a background KakaoTalk
+   drops every `/reply` with `Background start not allowed` while reporting success (see
+   [Iris On DGX](iris-on-dgx.md)). `dgx-ai-control`'s `kakao_stack_start` does not do this step.
+   `com.kakao.talk` is also on the device-idle allowlist since 2026-09-18 so a later
+   backgrounding does not lose replies, but it still has to be launched once to hold the session.
 
 ## Teardown
 
