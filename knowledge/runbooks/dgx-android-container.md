@@ -224,6 +224,18 @@ over the same deaf socket and its helper blocks in `read()` forever. `redroid/lm
 automates capture-then-restart when lmkd exceeds 90% CPU over 5 s, at most once per 10 minutes;
 it runs as a systemd user timer on the DGX.
 
+Upgrading the image instead: the fix first shipped in `android-15.0.0_r20`, and redroid's
+`15.0.0_64only-latest` (arm64, pushed 2025-06-29) is `BP1A.250505.005.D1` = `android-15.0.0_r36`
+— read from `system/build.prop` inside its layer — so it carries the fix; the running
+`14.0.0_64only-latest` is `UD2A.240505.001` = `android-14.0.0_r41`, and no 14 tag has it. It is
+still not the move for this bug. lmkd on 15 reads the host's PSI just the same, so the
+`psi_*_stall_ms=0` knobs stay either way and already close the wedge path. Booting 15 on the 14
+`/data` is an OTA-grade upgrade redroid gives no guidance for, with the KakaoTalk login (a device
+slot) at stake, and the gotchas above, Iris (minSdk 26 / targetSdk 34) and Frida 16.7.19 all need
+re-verifying on 15. Do not go to 16 for this: Android 16 needs Frida 17, which breaks the hook (no
+global `Java`). If 15 is ever wanted for another reason: stop the 14 container, boot 15 on a copy of
+`data64`, verify KakaoTalk and Iris, and fall back to 14 on the original if it fails.
+
 
 ## Installing A Play-Distributed App
 

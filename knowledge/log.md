@@ -7,6 +7,7 @@
 - Disarmed lmkd with the knob `lmkd.rc` already exposes: `persist.device_config.lmkd_native.psi_{partial,complete}_stall_ms=0`. Each setprop became `lmkd --reinit` over the socket; PSI fds went 2 → 1 → 0 with the lmkd pid unchanged. No monitors means no kills, no pidfd, no wedge, and no more container apps killed by host swap.
 - The repair is `setprop ctl.restart lmkd` (5 s, `system_server` untouched, no critical-crash count), not `docker restart`, which dropped Iris and KakaoTalk and destroyed the fd evidence. `kill -9` also works but counts toward init's 4-in-4-minutes reboot. `setprop lmkd.reinit 1` cannot repair a wedge — its helper blocks reading the same deaf socket.
 - Added `redroid/lmkd-watchdog.{sh,service,timer}`: two 5 s CPU samples, capture `/proc/<lmkd>/fd` and the lmkd log, then `ctl.restart`, at most once per 10 minutes.
+- Upgrading the image would also remove the bug: redroid `15.0.0_64only-latest` is `android-15.0.0_r36` (`BP1A.250505.005.D1`, read from its layer) and the fix is in every 15 tag from r20 on, in no 14 tag. Not done: lmkd on 15 still reads the host's PSI so the `psi_*=0` knobs stay anyway, booting 15 on the 14 `/data` puts the KakaoTalk device-slot login at risk, and 16 would force Frida 17 and a hook rewrite.
 
 ## 2026-09-14
 
