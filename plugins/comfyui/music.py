@@ -59,7 +59,8 @@ GENERATE_SCHEMA = {
         "This returns immediately with a prompt_id and the song is delivered on its own when it is "
         "done. Say one short line ('노래 만들고 있어, 좀 걸려') and end the turn. NEVER call it twice for "
         "one request -- a second call is another whole render and a second song. Text only; it cannot cover, remix, or "
-        "continue an existing track, and it has no melody or reference-audio input."
+        "continue an existing track, and it has no melody or reference-audio input -- when the user "
+        "points at a song they already have (이 곡처럼 / 이 느낌으로 / 커버 / 레퍼런스), use music_cover instead."
     ),
     "parameters": {
         "type": "object",
