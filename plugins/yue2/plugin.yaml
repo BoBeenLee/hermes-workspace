@@ -1,0 +1,5 @@
+name: yue2
+version: 1.0.0
+description: "Reference-driven song generation with YuE2 on this host. Takes a song you already have (a KakaoTalk file attachment or a URL) and writes a new one from it, either borrowing only its mood and instrumentation or keeping its melody. Runs outside ComfyUI in its own venv; weights are CC BY-NC 4.0."
+author: bobeenlee
+kind: backend
