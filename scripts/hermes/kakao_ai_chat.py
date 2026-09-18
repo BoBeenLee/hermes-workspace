@@ -942,7 +942,9 @@ def learn_room_names(config: dict, chat_id: int) -> None:
 # KakaoTalk issues these itself, so they are not attacker-chosen the way a message
 # URL is - but pinning the host costs one tuple and keeps every download in the
 # daemon behind the same kind of gate.
-PROFILE_HOSTS = ("open.kakaocdn.net", "iopen.kakaocdn.net")
+# My own picture is served from p.kakaocdn.net, not the open.* pair the room
+# members use, so it needs its own entry or profile_picture refuses it.
+PROFILE_HOSTS = ("open.kakaocdn.net", "iopen.kakaocdn.net", "p.kakaocdn.net")
 
 
 def room_profiles(config: dict, chat_id: int, match: str = "", with_image: bool = False) -> list[dict]:
@@ -980,6 +982,40 @@ def room_profiles(config: dict, chat_id: int, match: str = "", with_image: bool 
             member["file"] = profile_picture(member["profile_image_url"], user_id)
         members.append(member)
     return members
+
+
+def my_profile(config: dict, with_image: bool = False) -> dict | None:
+    """My own nickname and picture, which no room table carries.
+
+    `open_chat_member` holds other people, so every room answered "없다" for the one
+    profile that is always available: mine. It lives in `db3.multi_profiles`
+    (`isMain=1`, one row) under camelCase names Iris does not auto-decrypt, so all
+    three fields take `plain_nickname`'s /decrypt fallback rather than the usual
+    ride-along. `user_id` is in the SELECT because `require_decryptable` reads
+    `nickName` as `nickname` and would refuse the query without it.
+    """
+    if backend_name(config) != "iris":
+        return None
+    me_id = int(config.get("my_user_id") or 0)
+    if not me_id:
+        return None
+    columns = ("user_id", "encryptType", "nickName", "profileImageURL",
+               "originalProfileImageURL")
+    rows = backend_query(
+        config,
+        f"SELECT {me_id} AS user_id, encryptType, nickName, profileImageURL, "
+        "originalProfileImageURL FROM db3.multi_profiles WHERE isMain = 1",
+        columns,
+    )
+    for _, enc, nickname, small, large in rows:
+        url = plain_nickname(config, large, enc) or plain_nickname(config, small, enc)
+        member = {"user_id": str(me_id),
+                  "nickname": plain_nickname(config, nickname, enc) or "나",
+                  "profile_image_url": url or None, "me": True}
+        if with_image and member["profile_image_url"]:
+            member["file"] = profile_picture(member["profile_image_url"], me_id)
+        return member
+    return None
 
 
 def profile_picture(url: str, user_id) -> str | None:
@@ -1306,7 +1342,9 @@ PROMPT_TEMPLATE = """너는 카카오톡 방에서 나(운영자)를 돕는 어�
 - 이 방 사람의 **닉네임과 프사**는 아래 한 줄로 조회한다 (terminal 도구로 실행해라).
       python3 {send_bin} --profiles {chat_id} [--match <이름 일부>] [--image]
   `--image` 가 있으면 프사를 내려받아 `file` 경로를 준다. 그 경로는 울타리 안이라 `[[image: ]]` 에 그대로 넣으면 된다.
-  **오픈채팅에서만 나온다.** 일반 방은 카톡이 명단을 기기에 안 남겨서 빈 목록이 정상이다.
+  **내 프로필은 방 종류와 상관없이 항상 나온다** - `"me": true` 가 붙은 항목이다.
+  나와의 채팅이든 1:1 이든, `cached_members` 가 0 이어도 내 닉네임과 프사는 그 목록에 있다.
+  **남의** 프로필은 오픈채팅에서만 나온다. 일반 방은 카톡이 명단을 기기에 안 남겨서 정상이다.
   오픈채팅이어도 카톡이 렌더한 사람만 있는 **부분 캐시**라 `cached_members` 가 방 인원보다 작다.
   없는 사람은 "그 방에 없다" 가 아니라 "내가 가진 목록에 없다" 고 말해라.
 - **다른 방의 내용**은 아래 두 줄로 읽는다 (terminal 도구로 실행해라).
@@ -2616,8 +2654,15 @@ def print_profiles(config_path: Path, chat_id: int, match: str, with_image: bool
     in an eighty-person room as if that were the room.
     """
     config = load_config(config_path)
-    members = room_profiles(config, chat_id, match, with_image)
-    print(json.dumps({"chat_id": chat_id, "cached_members": len(members), "members": members},
+    room = room_profiles(config, chat_id, match, with_image)
+    # Mine rides in front and is counted separately: `cached_members` means "rows
+    # KakaoTalk cached for this room", and adding a member it never cached would
+    # turn the one number that says the list is partial into a lie.
+    me = my_profile(config, with_image)
+    needle = match.strip().casefold()
+    wanted = me and (not needle or needle in me["nickname"].casefold())
+    members = ([me] if wanted else []) + room
+    print(json.dumps({"chat_id": chat_id, "cached_members": len(room), "members": members},
                      ensure_ascii=False, indent=2))
     return 0
 
