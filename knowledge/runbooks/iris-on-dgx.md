@@ -132,6 +132,32 @@ gates it.
 Iris queued the intent; with a bogus referer it returns the same thing and nothing leaves. Verify
 against `chat_logs` or the observer loop-back, never against the response body.
 
+**The second way it silently fails: KakaoTalk in the background.** That intent is a
+`startService` into KakaoTalk, and Android 8+ refuses those for an app that is neither foreground
+nor exempt. `/reply` still answers `{"success":true}`; the only trace is one line in the
+container's logcat:
+
+```
+W ActivityManager: Background start not allowed: service Intent { act=com.kakao.talk.notification.REPLY_MESSAGE cmp=com.kakao.talk/.notification.NotificationActionService ...
+```
+
+2026-09-18: after a container restart KakaoTalk came up only as a service (`TalkAuthenticatorService`,
+`am_proc_start ... service`), nobody launched its activity, the launcher stayed on top and the
+process sat at `procState CEM`. One reply went out inside the fresh-process grace window; the next,
+an hour later, was dropped with the daemon logging `비동기 응답 전송` as usual. Two fixes, both
+verified against `dumpsys` and Android 14's `appServicesRestrictedInBackgroundLOSP`, which returns
+`APP_START_MODE_NORMAL` for a uid on the device-idle allowlist:
+
+```bash
+docker exec redroid-poc cmd deviceidle whitelist +com.kakao.talk          # persists in /data/system/deviceidle.xml
+docker exec redroid-poc am start -W -n com.kakao.talk/.activity.SplashActivity
+```
+
+The allowlist makes replies survive a backgrounded KakaoTalk; the foreground launch keeps
+KakaoTalk out of the cached-empty pool that AMS trims (`TOO MANY EMPTY PROCS`), which would take
+the LOCO session and the Frida hook with it. Check with
+`dumpsys activity activities | grep topResumedActivity` — it must name `com.kakao.talk`.
+
 ## Files: `/reply` Cannot, The Intent Behind It Can
 
 `/reply` takes exactly three types. `ReplyType` is a Kotlin enum with three entries and
