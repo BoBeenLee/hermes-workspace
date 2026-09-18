@@ -70,7 +70,18 @@ class TriggerTests(unittest.TestCase):
         )
 
     def test_a_mention_anywhere_in_the_line_counts(self):
-        for content in ("이거 어때 @jarvis", "이거 @jarvis 어때", "@jarvis 이거 어때", "어때 @jarvis?"):
+        for content in ("이거 어때 @jarvis", "이거 @jarvis 어때", "@jarvis 이거 어때", "어때 @jarvis?",
+                        "@jarvis야 이거 어때", "이거봐@jarvis"):
+            self.assertEqual(
+                module.classify_trigger(row(message=content), CONFIG, no_bot_parents), "mention", content
+            )
+
+    def test_a_mention_glued_to_hangul_or_wrapped_counts(self):
+        # the edges used to be `\w`, which is Unicode, so a Korean particle after the
+        # mention - the commonest form there is - silently made it not a mention
+        for content in ("@jarvis야 이거 어때", "@jarvis님 안녕", "@jarvis가 해줘",
+                        "@jarvis한테 물어봐", "이거봐@jarvis", "ㅋㅋ@jarvis",
+                        "(@jarvis) 확인해줘", "「@jarvis」 봐줘", "이거 어때 @jarvis."):
             self.assertEqual(
                 module.classify_trigger(row(message=content), CONFIG, no_bot_parents), "mention", content
             )
@@ -78,12 +89,15 @@ class TriggerTests(unittest.TestCase):
     def test_a_mention_that_is_part_of_something_else_does_not_count(self):
         # a mail address and a pasted log line both contain the string and mean nothing by it
         for content in ("메일이 bob@jarvis.example 이야", "로그: [@jarvis] 어쩌고",
-                        "@jarvis.example 로 보내"):
+                        "@jarvis.example 로 보내", "@jarvis-bot 불러", "@jarvis2 해줘"):
             self.assertIsNone(module.classify_trigger(row(message=content), CONFIG, no_bot_parents), content)
 
     def test_the_mention_comes_out_of_the_body_wherever_it_sat(self):
         self.assertEqual(module.mention_body("오늘 날씨 어때 @jarvis", "@jarvis"), "오늘 날씨 어때")
         self.assertEqual(module.mention_body("오늘 @jarvis 날씨 어때", "@jarvis"), "오늘 날씨 어때")
+        self.assertEqual(module.mention_body("오늘 날씨 어때@jarvis", "@jarvis"), "오늘 날씨 어때")
+        # a glued particle rides along into the body; the model reads it fine
+        self.assertEqual(module.mention_body("@jarvis야 오늘 날씨 어때", "@jarvis"), "야 오늘 날씨 어때")
 
     def test_mention_needs_a_boundary_after_it(self):
         self.assertIsNone(module.classify_trigger(row(message="@jarvistest 안녕"), CONFIG, no_bot_parents))

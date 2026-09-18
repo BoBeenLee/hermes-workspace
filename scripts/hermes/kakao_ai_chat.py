@@ -810,14 +810,22 @@ def reply_source_log_id(row: dict) -> int | None:
 
 
 def mention_pattern(mention: str) -> re.Pattern:
-    """Where a mention may sit: anywhere, but only on its own.
+    r"""Where a mention may sit: anywhere, but only on its own.
 
-    Left edge is start-of-text or whitespace, so `bob@jarvis.example` and `[@jarvis]`
-    in a pasted log are not mentions. Right edge is anything that cannot continue a
-    word, a host name or another handle, so `@jarvistest` and `@jarvis.example` are
-    not either, while a sentence ending `... 어때 @jarvis?` is.
+    Both edges exclude only what could carry the mention into an address or another
+    handle - ASCII word characters, `.`, `@`, `-` - so `bob@jarvis.example` and
+    `@jarvistest` are not mentions. Hangul is deliberately not in that set: the edges
+    used to be `\w`, which is Unicode, and it ate the commonest Korean form of all -
+    `@jarvis야`, `@jarvis님`, `@jarvis한테` were silently no trigger, and so was a
+    mention glued to the word before it (`이거봐@jarvis`). Wrapping punctuation is
+    fine too now: `(@jarvis)`, `「@jarvis」`. A `.` only blocks when a word follows,
+    so a sentence ending `@jarvis.` counts while the host `@jarvis.example` does not.
+    `[` stays out on the left: a pasted log line `[@jarvis] ...` means nothing by it.
     """
-    return re.compile(rf"(?:(?<=\s)|^){re.escape(mention)}(?![\w.@-])", re.IGNORECASE)
+    return re.compile(
+        rf"(?<![A-Za-z0-9_.@\[-]){re.escape(mention)}(?![A-Za-z0-9_@-]|\.\w)",
+        re.IGNORECASE,
+    )
 
 
 def mention_body(text: str, mention: str) -> str | None:
@@ -826,6 +834,8 @@ def mention_body(text: str, mention: str) -> str | None:
     The mention used to have to open the line. People tack it on the end instead, so
     it may now sit anywhere; only the boundaries above still hold.
     """
+    # ponytail: a particle glued to the mention stays in the body - `@jarvis야 날씨` comes
+    # out as `야 날씨`. Harmless to read; strip it only if a prompt ever trips over it.
     stripped = (text or "").strip()
     match = mention_pattern(mention).search(stripped)
     if match is None:
